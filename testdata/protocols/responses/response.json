@@ -1,0 +1,17 @@
+{
+  "id": "resp_fake0000000000000000000000000001",
+  "object": "response",
+  "created_at": 1750000000.0,
+  "status": "completed",
+  "model": "qwen3",
+  "output": [
+    {
+      "id": "msg_fake_1",
+      "type": "message",
+      "status": "completed",
+      "role": "assistant",
+      "content": [{"type": "output_text", "text": "One, two, three.", "annotations": []}]
+    }
+  ],
+  "usage": {"input_tokens": 8, "output_tokens": 5, "total_tokens": 13}
+}

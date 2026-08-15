@@ -1,0 +1,210 @@
+package responses
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"strings"
+	"testing"
+
+	"ai-gateway/internal/ir"
+)
+
+func TestParseRequestItems(t *testing.T) {
+	body := []byte(`{
+		"model": "m",
+		"instructions": "Be brief.",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+			{"type": "function_call", "call_id": "call_1", "name": "f", "arguments": "{\"a\":1}"},
+			{"type": "function_call_output", "call_id": "call_1", "output": "ok"}
+		]
+	}`)
+	req, err := ParseRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Model != "m" || len(req.System) != 1 || req.System[0].Text != "Be brief." {
+		t.Errorf("req = %+v", req)
+	}
+	if len(req.Messages) != 3 {
+		t.Fatalf("messages = %+v", req.Messages)
+	}
+	if req.Messages[0].Role != ir.RoleUser || req.Messages[0].Content[0].Text != "hi" {
+		t.Errorf("user = %+v", req.Messages[0])
+	}
+	if req.Messages[1].Content[0].ToolCall == nil || req.Messages[1].Content[0].ToolCall.ID != "call_1" {
+		t.Errorf("tool call = %+v", req.Messages[1])
+	}
+	if req.Messages[2].Role != ir.RoleTool || req.Messages[2].Content[0].ToolResult.Content != "ok" {
+		t.Errorf("tool result = %+v", req.Messages[2])
+	}
+}
+
+func TestParseRequestStringInput(t *testing.T) {
+	req, err := ParseRequest([]byte(`{"model":"m","input":"just text"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Messages) != 1 || req.Messages[0].Content[0].Text != "just text" {
+		t.Errorf("messages = %+v", req.Messages)
+	}
+}
+
+func TestParseRequestImageAndReasoning(t *testing.T) {
+	body := []byte(`{"model":"m","reasoning":{"effort":"medium","summary":"concise"},"input":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"https://x/i.png"}]}]}`)
+	req, err := ParseRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	image := req.Messages[0].Content[0].Image
+	if image == nil || image.URL != "https://x/i.png" {
+		t.Fatalf("image = %+v", image)
+	}
+	if req.Reasoning.Effort != "medium" || req.Reasoning.Summary != "concise" || req.Reasoning.Source != ir.ProtocolResponses {
+		t.Fatalf("reasoning = %+v", req.Reasoning)
+	}
+	if features := InspectFeatures(body); !features.Image || !features.Reasoning {
+		t.Fatalf("features = %+v", features)
+	}
+}
+
+func TestFieldsRewritePreservesUnknown(t *testing.T) {
+	req, err := Parse([]byte(`{"model":"m","input":"hi","temperature":0.5,"x-extra":{"k":1}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := req.Rewrite("new-model", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["model"] != "new-model" || doc["stream"] != true {
+		t.Errorf("doc = %v", doc)
+	}
+	if doc["x-extra"] == nil || doc["temperature"] == nil {
+		t.Error("unknown fields lost")
+	}
+}
+
+func eventSource(events []ir.Event) func() (ir.Event, error) {
+	i := 0
+	return func() (ir.Event, error) {
+		if i >= len(events) {
+			return ir.Event{}, io.EOF
+		}
+		ev := events[i]
+		i++
+		return ev, nil
+	}
+}
+
+func TestEncodeStreamTextAndCompletion(t *testing.T) {
+	var buf bytes.Buffer
+	err := EncodeStream(&buf, func() {}, "m", eventSource([]ir.Event{
+		{Type: ir.EventStarted},
+		{Type: ir.EventTextDelta, Text: "Hel"},
+		{Type: ir.EventTextDelta, Text: "lo"},
+		{Type: ir.EventCompleted},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"event: response.created",
+		"event: response.output_item.added",
+		"event: response.content_part.added",
+		"event: response.output_text.delta",
+		`"delta":"Hel"`,
+		`"delta":"lo"`,
+		"event: response.completed",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stream missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "response.failed") {
+		t.Errorf("successful stream contains failed: %s", out)
+	}
+	// 文本 delta 顺序。
+	if strings.Index(out, "Hel") > strings.Index(out, "lo") {
+		t.Error("delta order wrong")
+	}
+}
+
+func TestEncodeStreamToolCall(t *testing.T) {
+	var buf bytes.Buffer
+	err := EncodeStream(&buf, func() {}, "m", eventSource([]ir.Event{
+		{Type: ir.EventStarted},
+		{Type: ir.EventToolCallStarted, ToolCallID: "call_1", ToolName: "f"},
+		{Type: ir.EventToolCallArgumentsDlt, ToolCallID: "call_1", ArgumentsDelta: `{"a":`},
+		{Type: ir.EventToolCallArgumentsDlt, ToolCallID: "call_1", ArgumentsDelta: `1}`},
+		{Type: ir.EventToolCallCompleted, ToolCallID: "call_1", ToolName: "f", Arguments: `{"a":1}`},
+		{Type: ir.EventCompleted},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		`"type":"function_call"`,
+		`"call_id":"call_1"`,
+		"event: response.function_call_arguments.delta",
+		`"delta":"{\"a\":"`,
+		"event: response.function_call_arguments.done",
+		`"arguments":"{\"a\":1}"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stream missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEncodeStreamErrorNoCompletion(t *testing.T) {
+	var buf bytes.Buffer
+	err := EncodeStream(&buf, func() {}, "m", eventSource([]ir.Event{
+		{Type: ir.EventStarted},
+		{Type: ir.EventError, Error: &ir.ErrorInfo{Message: "boom"}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "response.completed") {
+		t.Errorf("error stream must not contain response.completed: %s", out)
+	}
+	if !strings.Contains(out, "response.failed") || !strings.Contains(out, "boom") {
+		t.Errorf("error stream should carry response.failed: %s", out)
+	}
+}
+
+func TestEncodeNonStream(t *testing.T) {
+	var buf bytes.Buffer
+	resp := &ir.Response{Text: "hello", ToolCalls: []ir.ToolCall{{ID: "call_1", Name: "f", Arguments: json.RawMessage(`{}`)}}}
+	if err := EncodeNonStream(&buf, "m", resp); err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["object"] != "response" || doc["status"] != "completed" {
+		t.Errorf("doc = %v", doc)
+	}
+	output := doc["output"].([]any)
+	if len(output) != 2 {
+		t.Fatalf("output = %v", output)
+	}
+	msg := output[0].(map[string]any)
+	if msg["type"] != "message" {
+		t.Errorf("output[0] = %v", msg)
+	}
+	fc := output[1].(map[string]any)
+	if fc["type"] != "function_call" || fc["call_id"] != "call_1" {
+		t.Errorf("output[1] = %v", fc)
+	}
+}

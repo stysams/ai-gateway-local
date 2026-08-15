@@ -1,0 +1,12 @@
+{
+  "model": "gateway-default",
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Explain quantum entanglement in one sentence."}
+  ],
+  "stream": false,
+  "temperature": 0.2,
+  "max_tokens": 128,
+  "user": "fixture-user-1",
+  "x-custom-field": {"note": "unknown fields must survive same-protocol forwarding"}
+}

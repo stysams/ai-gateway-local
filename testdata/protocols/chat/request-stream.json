@@ -1,0 +1,9 @@
+{
+  "model": "ollama/qwen3",
+  "messages": [
+    {"role": "user", "content": "Count to three."}
+  ],
+  "stream": true,
+  "temperature": 0.8,
+  "x-custom-field": {"keep": true}
+}

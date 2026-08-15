@@ -1,0 +1,10 @@
+{
+  "id": "msg_fake0000000000000000000000000001",
+  "type": "message",
+  "role": "assistant",
+  "model": "qwen3",
+  "content": [{"type": "text", "text": "One, two, three."}],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 8, "output_tokens": 5}
+}

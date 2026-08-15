@@ -1,0 +1,5 @@
+{
+  "model": "gateway-default",
+  "input": "Count to three.",
+  "stream": true
+}

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": ["Read"]
+  },
+  "env": {
+    "KEEP_ME": "yes"
+  }
+}

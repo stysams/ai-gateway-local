@@ -1,0 +1,21 @@
+{
+  "id": "chatcmpl-fake00000000000000000000000001",
+  "object": "chat.completion",
+  "created": 1750000000,
+  "model": "qwen3",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "One, two, three."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 8,
+    "completion_tokens": 5,
+    "total_tokens": 13
+  }
+}

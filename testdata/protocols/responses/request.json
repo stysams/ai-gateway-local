@@ -1,0 +1,10 @@
+{
+  "model": "gateway-default",
+  "instructions": "You are a helpful assistant.",
+  "input": [
+    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "What is the weather in Berlin?"}]}
+  ],
+  "stream": false,
+  "temperature": 0.2,
+  "x-custom-field": {"keep": true}
+}

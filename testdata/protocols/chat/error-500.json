@@ -1,0 +1,7 @@
+{
+  "error": {
+    "message": "The upstream provider is experiencing an outage.",
+    "type": "server_error",
+    "code": "upstream_unavailable"
+  }
+}

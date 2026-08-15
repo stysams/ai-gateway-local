@@ -1,0 +1,14 @@
+/bin/
+/dist/
+/.tmp-*/
+/desktop/node_modules/
+/desktop/dist/
+/desktop/test-results/
+/desktop/playwright-report/
+/memory/
+.env
+.env.*
+*.pid
+*.lock
+.DS_Store
+*.test

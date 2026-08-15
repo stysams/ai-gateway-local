@@ -1,0 +1,10 @@
+{
+  "model": "gateway-default",
+  "max_tokens": 512,
+  "system": "You are a helpful assistant.",
+  "messages": [
+    {"role": "user", "content": "What is the weather in Berlin?"}
+  ],
+  "temperature": 0.3,
+  "x-custom-field": {"keep": true}
+}
