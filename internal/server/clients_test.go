@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"ai-gateway/internal/point"
+	"ai-gateway/internal/point/clientcatalog"
+	"ai-gateway/internal/route"
 )
 
 func TestClientPointAndRestoreAPI(t *testing.T) {
@@ -18,10 +20,15 @@ func TestClientPointAndRestoreAPI(t *testing.T) {
 		dir      string
 		file     string
 		original string
+		// Only Grok Build holds the selectable model catalog in its own
+		// configuration file (docs/v1-scheme.md §12.5); Codex and Claude Code
+		// receive the preferred model only and read the catalog over
+		// /c/{client}/v1/models (§12.3, §12.4).
+		catalogInFile bool
 	}{
 		{client: point.ClientCodex, dir: ".codex", file: "config.toml", original: "custom = \"kept\"\n"},
 		{client: point.ClientClaude, dir: ".claude", file: "settings.json", original: "{\"custom\":\"kept\"}\n"},
-		{client: point.ClientGrok, dir: ".grok", file: "config.toml", original: "custom = \"kept\"\n"},
+		{client: point.ClientGrok, dir: ".grok", file: "config.toml", original: "custom = \"kept\"\n", catalogInFile: true},
 	}
 
 	for _, tt := range tests {
@@ -63,10 +70,13 @@ func TestClientPointAndRestoreAPI(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(string(pointedConfig), "gateway-default") || strings.Contains(string(pointedConfig), "openrouter/anthropic/claude-sonnet-4") {
-				t.Fatalf("%s config is not provider-neutral:\n%s", tt.client, pointedConfig)
+			if !strings.Contains(string(pointedConfig), "gateway-default") {
+				t.Fatalf("%s config lost the provider-neutral preferred model:\n%s", tt.client, pointedConfig)
 			}
-			providerNeutralConfig := string(pointedConfig)
+			if got := strings.Contains(string(pointedConfig), "openrouter/anthropic/claude-sonnet-4"); got != tt.catalogInFile {
+				t.Fatalf("%s catalog in config = %v, want %v:\n%s", tt.client, got, tt.catalogInFile, pointedConfig)
+			}
+			pointedBytes := string(pointedConfig)
 
 			resp, body = clientJSON(t, ts, http.MethodPost, path+"/point")
 			assertPointState(t, resp, body, http.StatusOK, point.StatePointed)
@@ -86,8 +96,8 @@ func TestClientPointAndRestoreAPI(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if string(pointedConfig) != providerNeutralConfig {
-				t.Fatalf("%s route update rewrote provider-neutral client config:\n%s", tt.client, pointedConfig)
+			if string(pointedConfig) != pointedBytes {
+				t.Fatalf("%s route update rewrote the pointed client config:\n%s", tt.client, pointedConfig)
 			}
 
 			resp, body = clientJSON(t, ts, http.MethodGet, "/api/v1/status")
@@ -110,6 +120,21 @@ func TestClientPointAndRestoreAPI(t *testing.T) {
 				t.Fatalf("restored bytes = %q, want %q", restored, tt.original)
 			}
 		})
+	}
+}
+
+// route resolves the reserved model, internal/point writes it into client
+// configurations, and the two constants live in different packages because
+// internal/point must not import the router. If they ever drift, every pointed
+// client would send a model the router treats as a passthrough model id
+// (docs/v1-scheme.md §7.3, §7.4).
+func TestReservedModelNamesAgree(t *testing.T) {
+	if clientcatalog.ReservedModel != route.ReservedModel {
+		t.Fatalf("clientcatalog.ReservedModel = %q, route.ReservedModel = %q",
+			clientcatalog.ReservedModel, route.ReservedModel)
+	}
+	if clientcatalog.ReservedDisplayName == "" {
+		t.Fatal("reserved model has no display name; §7.5 requires every catalog entry to carry one")
 	}
 }
 

@@ -114,9 +114,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	baseURL := s.ClientBaseURL(cfg)
-	codexState := s.points.Check("codex", baseURL, displayModelForClient(cfg, "codex"))
-	claudeState := s.points.Check("claude", baseURL, displayModelForClient(cfg, "claude"))
-	grokState := s.points.Check("grok", baseURL, displayModelForClient(cfg, "grok"))
+	codexState := s.points.Check("codex", baseURL, s.clientSettings(cfg, "codex"))
+	claudeState := s.points.Check("claude", baseURL, s.clientSettings(cfg, "claude"))
+	grokState := s.points.Check("grok", baseURL, s.clientSettings(cfg, "grok"))
 	st := StatusResponse{
 		Version:          s.version,
 		PID:              s.pid,

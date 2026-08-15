@@ -83,7 +83,8 @@ Scope delivered:
   full inbound auth/header dropping.
 - `GET /v1/models` and `/c/{client}/v1/models` returning
   `gateway-default` plus each persisted or discovered
-  `<provider-id>/<model-id>`.
+  `<provider-id>/<model-id>`, every entry carrying a `display_name` that
+  falls back to the model id.
 - Desensitized fixtures under `testdata/protocols/chat/` and fake-upstream
   integration tests covering every C-package branch (four-client
   isolation, prefix override/passthrough, unknown-field preservation,
@@ -165,10 +166,14 @@ management surface.
 Codex, Claude Code, and Grok Build adapters preserve unrelated configuration,
 create SHA-256 backup manifests, atomically point at client-specific loopback
 paths, detect drift, and restore exact original bytes and the prior Codex
-environment value. Pointed clients use the provider-neutral `gateway-default`
-model; the gateway model endpoints expose every enabled provider and model,
-and route changes apply at request time without rewriting the pointed client or
-replacing the original restore point. Client status, point, restore, and doctor APIs are covered by
+environment value. A route is the client's preferred model at startup only:
+pointed clients keep the provider-neutral `gateway-default` model in that slot,
+so route changes apply at request time without rewriting the pointed client or
+replacing the original restore point. Every enabled
+`<provider-id>/<model-id>` stays selectable inside the client — through
+`/c/{client}/v1/models` for all three clients, and additionally as native
+`[model."ai-gateway:<provider-id>/<model-id>"]` entries in Grok Build's
+configuration, the only one of the three that can hold a catalog itself. Client status, point, restore, and doctor APIs are covered by
 unit and HTTP integration tests. See [docs/install.md](docs/install.md) for the
 operator flow and the required Windows client compatibility check.
 

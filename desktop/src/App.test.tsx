@@ -36,7 +36,7 @@ describe("desktop workflow", () => {
   it("navigates by keyboard and switches a route", async () => {
     const user = userEvent.setup(); render(<App />); await ready();
     const routes = screen.getByRole("button", { name: "Routes" }); routes.focus(); await user.keyboard("{Enter}");
-    expect(await screen.findByText("Route changes apply to the next request.")).toBeVisible();
+    expect(await screen.findByText(/preferred model at startup/)).toBeVisible();
     const modelSelects = screen.getAllByRole("combobox"); await user.selectOptions(modelSelects[1], "qwen3");
     await user.click(screen.getAllByRole("button", { name: "Apply" })[0]);
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/routes/codex"), expect.objectContaining({ method: "PUT", body: expect.stringContaining("qwen3") })));

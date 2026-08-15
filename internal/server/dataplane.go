@@ -815,11 +815,16 @@ func encodeNonStream(proto ir.Protocol, w io.Writer, model string, resp *ir.Resp
 // ---- models -----------------------------------------------------------------
 
 // modelItem is one entry of GET /v1/models.
+//
+// display_name is required by §7.5: it is the label clients show in their model
+// pickers. Claude Code's gateway model discovery reads it, and the Grok Build
+// catalog written by internal/point uses it as the entry name.
 type modelItem struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
+	ID          string `json:"id"`
+	Object      string `json:"object"`
+	Created     int64  `json:"created"`
+	OwnedBy     string `json:"owned_by"`
+	DisplayName string `json:"display_name"`
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
@@ -843,34 +848,46 @@ func (s *Server) serveModels(w http.ResponseWriter, _ *http.Request) {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "config not loaded", "")
 		return
 	}
+	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": s.modelCatalog(cfg)})
+}
+
+// modelCatalog is the single source of the enabled model list: the reserved
+// model first, then every enabled `<provider-id>/<model-id>` (§7.5). Both
+// GET /v1/models and the catalog written into client configurations by
+// internal/point are built from it, so a client picker and the data plane can
+// never disagree about which models exist.
+func (s *Server) modelCatalog(cfg *config.Config) []modelItem {
 	ids := make([]string, 0, len(cfg.Providers))
 	for id := range cfg.Providers {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
 
-	data := []modelItem{{ID: route.ReservedModel, Object: "model", OwnedBy: "ai-gateway"}}
+	data := []modelItem{{ID: route.ReservedModel, Object: "model", OwnedBy: "ai-gateway", DisplayName: route.ReservedModel}}
 	seen := map[string]bool{route.ReservedModel: true}
+	add := func(modelID, providerID, displayName string) {
+		if seen[modelID] {
+			return
+		}
+		seen[modelID] = true
+		if displayName == "" {
+			displayName = modelID
+		}
+		data = append(data, modelItem{ID: modelID, Object: "model", OwnedBy: providerID, DisplayName: displayName})
+	}
 	for _, id := range ids {
 		p := cfg.Providers[id]
 		if !p.EnabledValue() {
 			continue
 		}
-		modelID := id + "/" + p.DefaultModel
 		if providerModelEnabled(p, p.DefaultModel) {
-			data = append(data, modelItem{ID: modelID, Object: "model", OwnedBy: id})
-			seen[modelID] = true
+			add(id+"/"+p.DefaultModel, id, providerModelName(p, p.DefaultModel))
 		}
 		for _, model := range p.Models {
 			if !model.EnabledValue() {
 				continue
 			}
-			modelID = id + "/" + model.ID
-			if seen[modelID] {
-				continue
-			}
-			seen[modelID] = true
-			data = append(data, modelItem{ID: modelID, Object: "model", OwnedBy: id})
+			add(id+"/"+model.ID, id, model.Name)
 		}
 	}
 	cache := s.cachedModels()
@@ -882,14 +899,10 @@ func (s *Server) serveModels(w http.ResponseWriter, _ *http.Request) {
 			if !providerModelEnabled(cfg.Providers[id], model.RawID) {
 				continue
 			}
-			if seen[model.ID] {
-				continue
-			}
-			seen[model.ID] = true
-			data = append(data, modelItem{ID: model.ID, Object: "model", OwnedBy: id})
+			add(model.ID, id, model.DisplayName)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+	return data
 }
 
 func providerModelEnabled(provider config.Provider, modelID string) bool {
@@ -899,4 +912,15 @@ func providerModelEnabled(provider config.Provider, modelID string) bool {
 		}
 	}
 	return true
+}
+
+// providerModelName is the configured display name of a model, empty when the
+// provider catalog does not carry one.
+func providerModelName(provider config.Provider, modelID string) string {
+	for _, model := range provider.Models {
+		if model.ID == modelID {
+			return model.Name
+		}
+	}
+	return ""
 }

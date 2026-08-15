@@ -11,11 +11,16 @@ import (
 	"time"
 
 	"ai-gateway/internal/point/claude"
+	"ai-gateway/internal/point/clientcatalog"
 	"ai-gateway/internal/point/codex"
 	"ai-gateway/internal/point/grok"
 )
 
 const testBaseURL = "http://127.0.0.1:12600"
+
+// The reserved model name is owned by clientcatalog; tests must not re-declare
+// it (docs/v1-scheme.md §7.3).
+const reservedModel = clientcatalog.ReservedModel
 
 func testManager(t *testing.T, home string, env UserEnvironment, lookup map[string]string, after func() error) *Manager {
 	t.Helper()
@@ -56,13 +61,13 @@ func TestPointRestorePreservesOriginalBytesUnknownFieldsAndEnvironment(t *testin
 		check   func([]byte) (bool, error)
 		unknown string
 	}{
-		{ClientCodex, "codex-existing.toml", nil, func(b []byte) (bool, error) { return codex.Check(b, testBaseURL) }, "approval_policy"},
+		{ClientCodex, "codex-existing.toml", nil, func(b []byte) (bool, error) { return codex.Check(b, testBaseURL, Settings{}) }, "approval_policy"},
 		{ClientClaude, "claude-existing.json", func(home string) map[string]string {
 			return map[string]string{"CLAUDE_CONFIG_DIR": filepath.Join(home, "claude-custom")}
-		}, func(b []byte) (bool, error) { return claude.Check(b, testBaseURL) }, "KEEP_ME"},
+		}, func(b []byte) (bool, error) { return claude.Check(b, testBaseURL, Settings{}) }, "KEEP_ME"},
 		{ClientGrok, "grok-existing.toml", func(home string) map[string]string {
 			return map[string]string{"GROK_HOME": filepath.Join(home, "grok-custom")}
-		}, func(b []byte) (bool, error) { return grok.Check(b, testBaseURL) }, "plugin"},
+		}, func(b []byte) (bool, error) { return grok.Check(b, testBaseURL, Settings{}) }, "plugin"},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.client), func(t *testing.T) {
@@ -87,7 +92,7 @@ func TestPointRestorePreservesOriginalBytesUnknownFieldsAndEnvironment(t *testin
 				env.Values[codex.PlaceholderEnvironment] = "original-placeholder"
 			}
 			m := testManager(t, home, env, lookup, nil)
-			result, err := m.Point(tc.client, testBaseURL)
+			result, err := m.Point(tc.client, testBaseURL, Settings{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -114,7 +119,7 @@ func TestPointRestorePreservesOriginalBytesUnknownFieldsAndEnvironment(t *testin
 				t.Fatalf("manifest = %+v", manifest)
 			}
 			backupsBefore, _ := filepath.Glob(filepath.Join(m.dataRoot, "backups", string(tc.client), "*", "manifest.json"))
-			second, err := m.Point(tc.client, testBaseURL)
+			second, err := m.Point(tc.client, testBaseURL, Settings{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -126,10 +131,10 @@ func TestPointRestorePreservesOriginalBytesUnknownFieldsAndEnvironment(t *testin
 			if err := os.WriteFile(target, modified, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if state := m.Check(tc.client, testBaseURL).PointState; state != StateDrifted {
+			if state := m.Check(tc.client, testBaseURL, Settings{}).PointState; state != StateDrifted {
 				t.Fatalf("manual edit state = %s", state)
 			}
-			restored, err := m.Restore(tc.client, testBaseURL)
+			restored, err := m.Restore(tc.client, testBaseURL, Settings{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -150,7 +155,7 @@ func TestPointRestorePreservesOriginalBytesUnknownFieldsAndEnvironment(t *testin
 			if manifest.RestoredAt == nil {
 				t.Fatal("manifest not marked restored")
 			}
-			if _, err := m.Restore(tc.client, testBaseURL); !errors.Is(err, ErrNoRestore) {
+			if _, err := m.Restore(tc.client, testBaseURL, Settings{}); !errors.Is(err, ErrNoRestore) {
 				t.Fatalf("second restore error = %v", err)
 			}
 		})
@@ -167,7 +172,7 @@ func TestPointAndRestoreWhenOriginalFileDoesNotExist(t *testing.T) {
 				t.Fatal(err)
 			}
 			m := testManager(t, home, NewMemoryEnvironment(), lookup, nil)
-			result, err := m.Point(client, testBaseURL)
+			result, err := m.Point(client, testBaseURL, Settings{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -178,7 +183,7 @@ func TestPointAndRestoreWhenOriginalFileDoesNotExist(t *testing.T) {
 			if manifest.Files[0].OriginalExists {
 				t.Fatal("manifest claims nonexistent original existed")
 			}
-			if _, err := m.Restore(client, testBaseURL); err != nil {
+			if _, err := m.Restore(client, testBaseURL, Settings{}); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
@@ -188,8 +193,15 @@ func TestPointAndRestoreWhenOriginalFileDoesNotExist(t *testing.T) {
 	}
 }
 
-func TestPointMigratesLegacyDisplayModelWithoutReplacingOriginalBackup(t *testing.T) {
-	const displayModel = "openrouter/anthropic/claude-sonnet-4"
+// A catalog change must be applied to an already pointed configuration in
+// place. Re-pointing would create a second restore point whose "original" is
+// the gateway's own output, permanently losing the user's real configuration
+// (docs/v1-scheme.md §12.1).
+func TestPointAppliesCatalogChangeWithoutReplacingOriginalBackup(t *testing.T) {
+	catalog := Settings{PreferredModel: reservedModel, Catalog: []clientcatalog.Entry{
+		{ID: "openrouter/anthropic/claude-sonnet-4", DisplayName: "Claude Sonnet 4"},
+		{ID: "deepseek/deepseek-chat"},
+	}}
 	for _, client := range []Client{ClientCodex, ClientClaude, ClientGrok} {
 		t.Run(string(client), func(t *testing.T) {
 			home := t.TempDir()
@@ -204,29 +216,37 @@ func TestPointMigratesLegacyDisplayModelWithoutReplacingOriginalBackup(t *testin
 			if err := os.WriteFile(target, original, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			env := NewMemoryEnvironment()
-			m := testManager(t, home, env, map[string]string{}, nil)
-			legacy, err := m.Point(client, testBaseURL)
+			m := testManager(t, home, NewMemoryEnvironment(), map[string]string{}, nil)
+			first, err := m.Point(client, testBaseURL, Settings{PreferredModel: reservedModel})
 			if err != nil {
 				t.Fatal(err)
 			}
 			manifestsBefore, _ := filepath.Glob(filepath.Join(m.dataRoot, "backups", string(client), "*", "manifest.json"))
-			migrated, err := m.Point(client, testBaseURL, displayModel)
+			updated, err := m.Point(client, testBaseURL, catalog)
 			if err != nil {
 				t.Fatal(err)
 			}
 			manifestsAfter, _ := filepath.Glob(filepath.Join(m.dataRoot, "backups", string(client), "*", "manifest.json"))
-			if !migrated.Changed || migrated.BackupDir != "" || len(manifestsAfter) != len(manifestsBefore) {
-				t.Fatalf("legacy migration replaced the restore point: legacy=%+v migrated=%+v before=%d after=%d", legacy, migrated, len(manifestsBefore), len(manifestsAfter))
+			if updated.BackupDir != "" || len(manifestsAfter) != len(manifestsBefore) {
+				t.Fatalf("catalog change replaced the restore point: first=%+v updated=%+v before=%d after=%d", first, updated, len(manifestsBefore), len(manifestsAfter))
+			}
+			if updated.PointState != StatePointed {
+				t.Fatalf("state after catalog change = %s", updated.PointState)
 			}
 			data, err := os.ReadFile(target)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(string(data), displayModel) {
-				t.Fatalf("display model was not migrated:\n%s", data)
+			// Only Grok Build can hold the catalog in its configuration file; the
+			// other two clients must stay provider-neutral (§12.3, §12.4).
+			wantCatalogInFile := client == ClientGrok
+			if got := strings.Contains(string(data), "deepseek/deepseek-chat"); got != wantCatalogInFile {
+				t.Fatalf("%s catalog in file = %v, want %v:\n%s", client, got, wantCatalogInFile, data)
 			}
-			if _, err := m.Restore(client, testBaseURL, displayModel); err != nil {
+			if !updated.Changed && wantCatalogInFile {
+				t.Fatalf("catalog change was not applied: %+v", updated)
+			}
+			if _, err := m.Restore(client, testBaseURL, catalog); err != nil {
 				t.Fatal(err)
 			}
 			restored, err := os.ReadFile(target)
@@ -234,7 +254,130 @@ func TestPointMigratesLegacyDisplayModelWithoutReplacingOriginalBackup(t *testin
 				t.Fatal(err)
 			}
 			if string(restored) != string(original) {
-				t.Fatalf("restore after migration = %q, want %q", restored, original)
+				t.Fatalf("restore after catalog change = %q, want %q", restored, original)
+			}
+		})
+	}
+}
+
+// A catalog that shrinks must not leave stale rows in the Grok picker, and
+// models the user declared themselves must survive both point and restore.
+func TestGrokCatalogShrinksAndPreservesUserModels(t *testing.T) {
+	home := t.TempDir()
+	target := clientTarget(home, ClientGrok, nil)
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("[model.\"my-own\"]\nmodel = \"my-own\"\nbase_url = \"http://example.invalid/v1\"\n")
+	if err := os.WriteFile(target, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := testManager(t, home, NewMemoryEnvironment(), map[string]string{}, nil)
+	wide := Settings{PreferredModel: reservedModel, Catalog: []clientcatalog.Entry{
+		{ID: "openrouter/anthropic/claude-sonnet-4"},
+		{ID: "deepseek/deepseek-chat"},
+	}}
+	if _, err := m.Point(ClientGrok, testBaseURL, wide); err != nil {
+		t.Fatal(err)
+	}
+	narrow := Settings{PreferredModel: reservedModel, Catalog: []clientcatalog.Entry{{ID: "deepseek/deepseek-chat"}}}
+	changed, err := m.SyncSettings(ClientGrok, testBaseURL, narrow)
+	if err != nil || !changed {
+		t.Fatalf("shrink sync changed=%v err=%v", changed, err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "openrouter/anthropic/claude-sonnet-4") {
+		t.Fatalf("removed model still present in picker:\n%s", data)
+	}
+	if !strings.Contains(string(data), "my-own") {
+		t.Fatalf("user declared model was dropped:\n%s", data)
+	}
+	if state := m.Check(ClientGrok, testBaseURL, narrow).PointState; state != StatePointed {
+		t.Fatalf("state after shrink = %s", state)
+	}
+	// The wider catalog must now read as drifted, otherwise a stale picker would
+	// silently pass verification.
+	if state := m.Check(ClientGrok, testBaseURL, wide).PointState; state == StatePointed {
+		t.Fatal("stale catalog reported as pointed")
+	}
+	if _, err := m.Restore(ClientGrok, testBaseURL, narrow); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(restored) != string(original) {
+		t.Fatalf("restore = %q, want %q", restored, original)
+	}
+}
+
+// Each client expresses the catalog differently, and getting this wrong is
+// silent: a Codex `model_catalog_json` would replace the agent system prompt,
+// and Claude Code without the discovery flag would offer nothing but the
+// preferred model (docs/v1-scheme.md §12.3, §12.4, evidence in §20).
+func TestPointWritesPerClientCatalogContract(t *testing.T) {
+	settings := Settings{PreferredModel: reservedModel, Catalog: []clientcatalog.Entry{
+		{ID: "openrouter/anthropic/claude-sonnet-4", DisplayName: "Claude Sonnet 4"},
+	}}
+	cases := []struct {
+		client Client
+		want   []string
+		reject []string
+	}{
+		{
+			client: ClientCodex,
+			want:   []string{"model = 'gateway-default'", "model_provider = 'ai-gateway'"},
+			reject: []string{"model_catalog_json", "base_instructions"},
+		},
+		{
+			client: ClientClaude,
+			want: []string{
+				"\"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY\": \"1\"",
+				"\"ANTHROPIC_MODEL\": \"gateway-default\"",
+				"\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"gateway-default\"",
+				"\"ANTHROPIC_DEFAULT_SONNET_MODEL\": \"gateway-default\"",
+				"\"ANTHROPIC_DEFAULT_HAIKU_MODEL\": \"gateway-default\"",
+			},
+			reject: []string{"openrouter/anthropic/claude-sonnet-4"},
+		},
+		{
+			client: ClientGrok,
+			want: []string{
+				"[model.'ai-gateway:openrouter/anthropic/claude-sonnet-4']",
+				"model = 'openrouter/anthropic/claude-sonnet-4'",
+				"name = 'Claude Sonnet 4'",
+				"default = 'ai-gateway'",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.client), func(t *testing.T) {
+			home := t.TempDir()
+			target := clientTarget(home, tc.client, nil)
+			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			m := testManager(t, home, NewMemoryEnvironment(), map[string]string{}, nil)
+			if _, err := m.Point(tc.client, testBaseURL, settings); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(string(data), want) {
+					t.Fatalf("%s config missing %q:\n%s", tc.client, want, data)
+				}
+			}
+			for _, reject := range tc.reject {
+				if strings.Contains(string(data), reject) {
+					t.Fatalf("%s config unexpectedly contains %q:\n%s", tc.client, reject, data)
+				}
 			}
 		})
 	}
@@ -253,7 +396,7 @@ func TestPointFailureAfterFileWriteRollsBack(t *testing.T) {
 	env := NewMemoryEnvironment()
 	env.Values[codex.PlaceholderEnvironment] = "old"
 	m := testManager(t, home, env, map[string]string{}, func() error { return errors.New("injected failure") })
-	result, err := m.Point(ClientCodex, testBaseURL)
+	result, err := m.Point(ClientCodex, testBaseURL, Settings{})
 	if err == nil || result.BackupDir == "" {
 		t.Fatalf("point error=%v result=%+v", err, result)
 	}
@@ -280,7 +423,7 @@ func TestRestoreRejectsCorruptBackupWithoutChangingPointedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := testManager(t, home, NewMemoryEnvironment(), map[string]string{}, nil)
-	result, err := m.Point(ClientGrok, testBaseURL)
+	result, err := m.Point(ClientGrok, testBaseURL, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +431,7 @@ func TestRestoreRejectsCorruptBackupWithoutChangingPointedFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(result.BackupDir, "config.toml"), []byte("corrupt"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Restore(ClientGrok, testBaseURL); err == nil || !strings.Contains(err.Error(), "SHA-256") {
+	if _, err := m.Restore(ClientGrok, testBaseURL, Settings{}); err == nil || !strings.Contains(err.Error(), "SHA-256") {
 		t.Fatalf("restore error = %v", err)
 	}
 	after, _ := os.ReadFile(target)

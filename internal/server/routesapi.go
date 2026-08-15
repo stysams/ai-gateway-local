@@ -55,15 +55,15 @@ func (s *Server) handlePutRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	baseURL := s.ClientBaseURL(cfg)
 	current := s.cfg.Snapshot()
-	changes := displayModelChanges(current, cfg)
-	applied, err := s.applyDisplayModelChanges(baseURL, changes)
+	changes := s.clientSettingsChanges(current, cfg)
+	applied, err := s.applyClientSettingsChanges(baseURL, changes)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "client_sync_failed", err.Error(), nil)
 		return
 	}
 	if err := s.cfg.Write(cfg); err != nil {
-		if rollbackErr := s.rollbackDisplayModelChanges(baseURL, applied); rollbackErr != nil {
-			writeAPIError(w, http.StatusInternalServerError, "partial_failure", fmt.Sprintf("write route config: %v; rollback client display model: %v", err, rollbackErr), nil)
+		if rollbackErr := s.rollbackClientSettingsChanges(baseURL, applied); rollbackErr != nil {
+			writeAPIError(w, http.StatusInternalServerError, "partial_failure", fmt.Sprintf("write route config: %v; rollback client settings: %v", err, rollbackErr), nil)
 			return
 		}
 		writeAPIError(w, http.StatusInternalServerError, "config_write_failed", err.Error(), nil)

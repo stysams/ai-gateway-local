@@ -6,18 +6,31 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"ai-gateway/internal/point/clientcatalog"
 )
 
-var targetEnvironment = map[string]string{
-	"ANTHROPIC_BASE_URL":             "",
-	"ANTHROPIC_API_KEY":              "sk-ai-gateway-local",
-	"ANTHROPIC_MODEL":                "gateway-default",
-	"ANTHROPIC_DEFAULT_OPUS_MODEL":   "gateway-default",
-	"ANTHROPIC_DEFAULT_SONNET_MODEL": "gateway-default",
-	"ANTHROPIC_DEFAULT_HAIKU_MODEL":  "gateway-default",
+const apiKeyPlaceholder = "sk-ai-gateway-local"
+
+// modelKeys are the single-value slots Claude Code reads for its startup model.
+var modelKeys = []string{
+	"ANTHROPIC_MODEL",
+	"ANTHROPIC_DEFAULT_OPUS_MODEL",
+	"ANTHROPIC_DEFAULT_SONNET_MODEL",
+	"ANTHROPIC_DEFAULT_HAIKU_MODEL",
 }
 
-func Transform(original []byte, baseURL string, displayModel ...string) ([]byte, error) {
+// discoveryKey makes Claude Code query the gateway for selectable models at
+// startup. Claude Code keeps only ids matching /(claude|anthropic)/i, so its
+// picker cannot show the whole enabled catalog — that is client behaviour and
+// must not be worked around by rewriting model ids. The complete catalog stays
+// reachable through /c/claude/v1/models and `claude --model <id>`.
+// See docs/v1-scheme.md §12.4 and the 2026-08-15 evidence in §20.
+const discoveryKey = "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
+
+// Transform merges the gateway's env slots into Claude Code's user settings,
+// leaving every unrelated `env` variable untouched.
+func Transform(original []byte, baseURL string, settings clientcatalog.Settings) ([]byte, error) {
 	doc, err := parse(original)
 	if err != nil {
 		return nil, err
@@ -26,7 +39,7 @@ func Transform(original []byte, baseURL string, displayModel ...string) ([]byte,
 	if err != nil {
 		return nil, err
 	}
-	for name, value := range targets(baseURL, displayModel...) {
+	for name, value := range targets(baseURL, settings) {
 		env[name] = value
 	}
 	out, err := json.MarshalIndent(doc, "", "  ")
@@ -36,7 +49,7 @@ func Transform(original []byte, baseURL string, displayModel ...string) ([]byte,
 	return append(out, '\n'), nil
 }
 
-func Check(data []byte, baseURL string, displayModel ...string) (bool, error) {
+func Check(data []byte, baseURL string, settings clientcatalog.Settings) (bool, error) {
 	doc, err := parse(data)
 	if err != nil {
 		return false, err
@@ -45,7 +58,7 @@ func Check(data []byte, baseURL string, displayModel ...string) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	for name, value := range targets(baseURL, displayModel...) {
+	for name, value := range targets(baseURL, settings) {
 		if env[name] != value {
 			return false, nil
 		}
@@ -53,16 +66,29 @@ func Check(data []byte, baseURL string, displayModel ...string) (bool, error) {
 	return true, nil
 }
 
-func targets(baseURL string, displayModel ...string) map[string]string {
-	out := make(map[string]string, len(targetEnvironment))
-	for k, v := range targetEnvironment {
-		out[k] = v
+// Managed reports whether ai-gateway owns these settings, independent of which
+// model was written into them.
+func Managed(data []byte, baseURL string) (bool, error) {
+	doc, err := parse(data)
+	if err != nil {
+		return false, err
 	}
-	out["ANTHROPIC_BASE_URL"] = baseURL + "/c/claude"
-	if len(displayModel) > 0 && displayModel[0] != "" {
-		for _, key := range []string{"ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"} {
-			out[key] = displayModel[0]
-		}
+	env, ok := doc["env"].(map[string]any)
+	if !ok {
+		return false, nil
+	}
+	return env["ANTHROPIC_BASE_URL"] == baseURL+"/c/claude", nil
+}
+
+func targets(baseURL string, settings clientcatalog.Settings) map[string]string {
+	out := map[string]string{
+		"ANTHROPIC_BASE_URL": baseURL + "/c/claude",
+		"ANTHROPIC_API_KEY":  apiKeyPlaceholder,
+		discoveryKey:         "1",
+	}
+	preferred := settings.Model()
+	for _, key := range modelKeys {
+		out[key] = preferred
 	}
 	return out
 }

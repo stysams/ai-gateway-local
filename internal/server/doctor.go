@@ -94,9 +94,9 @@ func (s *Server) doctorReport(ctx context.Context) DoctorReport {
 		report.Logs = s.warnings.Inspect(cfg.Logging.Dir, cfg.Logging.EnabledValue())
 		baseURL := s.ClientBaseURL(cfg)
 		report.Clients = map[string]point.Status{
-			"codex":  s.points.Check(point.ClientCodex, baseURL, displayModelForClient(cfg, point.ClientCodex)),
-			"claude": s.points.Check(point.ClientClaude, baseURL, displayModelForClient(cfg, point.ClientClaude)),
-			"grok":   s.points.Check(point.ClientGrok, baseURL, displayModelForClient(cfg, point.ClientGrok)),
+			"codex":  s.points.Check(point.ClientCodex, baseURL, s.clientSettings(cfg, point.ClientCodex)),
+			"claude": s.points.Check(point.ClientClaude, baseURL, s.clientSettings(cfg, point.ClientClaude)),
+			"grok":   s.points.Check(point.ClientGrok, baseURL, s.clientSettings(cfg, point.ClientGrok)),
 		}
 		report.Autostart.ConfigEnabled = cfg.Autostart.Enabled
 		registration, err := s.autostart.Status()

@@ -2,11 +2,28 @@ package grok
 
 import (
 	"fmt"
+	"strings"
 
+	"ai-gateway/internal/point/clientcatalog"
 	"github.com/pelletier/go-toml/v2"
 )
 
-func Transform(original []byte, baseURL string, displayModel ...string) ([]byte, error) {
+const apiKeyPlaceholder = "sk-ai-gateway-local"
+
+// preferredKey holds the startup model; `[models] default` always points at it,
+// so changing a route only rewrites this one entry.
+const preferredKey = "ai-gateway"
+
+// catalogPrefix marks the entries the gateway owns. User-declared models never
+// carry it, so a catalog refresh can drop stale rows without touching them.
+const catalogPrefix = "ai-gateway:"
+
+// Transform points Grok Build at the gateway and lands the full enabled catalog
+// in its configuration. Grok is the only first-class client whose config file
+// can express many models at once: `[model."<id>"]` tables are additive to the
+// built-in models rather than replacing them, and ids containing `/` and `:`
+// both parse correctly (docs/v1-scheme.md §12.5, evidence in §20).
+func Transform(original []byte, baseURL string, settings clientcatalog.Settings) ([]byte, error) {
 	doc, err := parse(original)
 	if err != nil {
 		return nil, err
@@ -19,17 +36,18 @@ func Transform(original []byte, baseURL string, displayModel ...string) ([]byte,
 	if err != nil {
 		return nil, err
 	}
-	models["default"] = "ai-gateway"
-	model := "gateway-default"
-	name := "ai-gateway"
-	if len(displayModel) > 0 && displayModel[0] != "" {
-		model = displayModel[0]
-		name = displayModel[0]
+	for key := range modelSet {
+		if ownedKey(key) {
+			delete(modelSet, key)
+		}
 	}
-	modelSet["ai-gateway"] = map[string]any{
-		"model": model, "base_url": baseURL + "/c/grok/v1",
-		"name": name, "api_backend": "responses", "api_key": "sk-ai-gateway-local",
+	for _, entry := range entries(settings) {
+		modelSet[entry.key] = map[string]any{
+			"model": entry.model, "base_url": baseURL + "/c/grok/v1",
+			"name": entry.name, "api_backend": "responses", "api_key": apiKeyPlaceholder,
+		}
 	}
+	models["default"] = preferredKey
 	out, err := toml.Marshal(doc)
 	if err != nil {
 		return nil, fmt.Errorf("encode Grok config: %w", err)
@@ -37,31 +55,110 @@ func Transform(original []byte, baseURL string, displayModel ...string) ([]byte,
 	return out, nil
 }
 
-func Check(data []byte, baseURL string, displayModel ...string) (bool, error) {
+func Check(data []byte, baseURL string, settings clientcatalog.Settings) (bool, error) {
 	doc, err := parse(data)
 	if err != nil {
 		return false, err
 	}
 	models, ok := doc["models"].(map[string]any)
-	if !ok || models["default"] != "ai-gateway" {
+	if !ok || models["default"] != preferredKey {
 		return false, nil
 	}
 	modelSet, ok := doc["model"].(map[string]any)
 	if !ok {
 		return false, nil
 	}
-	p, ok := modelSet["ai-gateway"].(map[string]any)
+	want := entries(settings)
+	for _, entry := range want {
+		p, ok := modelSet[entry.key].(map[string]any)
+		if !ok {
+			return false, nil
+		}
+		if p["model"] != entry.model || p["base_url"] != baseURL+"/c/grok/v1" ||
+			p["name"] != entry.name || p["api_backend"] != "responses" ||
+			p["api_key"] != apiKeyPlaceholder {
+			return false, nil
+		}
+	}
+	// A gateway-owned entry that is no longer part of the catalog means the file
+	// is stale rather than pointed.
+	for key := range modelSet {
+		if ownedKey(key) && !containsKey(want, key) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// Managed reports whether ai-gateway owns this configuration, independent of
+// which catalog generation it currently holds.
+func Managed(data []byte, baseURL string) (bool, error) {
+	doc, err := parse(data)
+	if err != nil {
+		return false, err
+	}
+	modelSet, ok := doc["model"].(map[string]any)
 	if !ok {
 		return false, nil
 	}
-	model := "gateway-default"
-	name := "ai-gateway"
-	if len(displayModel) > 0 && displayModel[0] != "" {
-		model = displayModel[0]
-		name = displayModel[0]
+	table, ok := modelSet[preferredKey].(map[string]any)
+	if !ok {
+		return false, nil
 	}
-	return p["model"] == model && p["base_url"] == baseURL+"/c/grok/v1" &&
-		p["name"] == name && p["api_backend"] == "responses" && p["api_key"] == "sk-ai-gateway-local", nil
+	return table["base_url"] == baseURL+"/c/grok/v1", nil
+}
+
+type entry struct {
+	key   string
+	model string
+	name  string
+}
+
+// entries is the exact set of tables the gateway owns: the preferred model that
+// `[models] default` points at, then every other selectable model. The reserved
+// model is always offered so the user can fall back to following the route.
+func entries(settings clientcatalog.Settings) []entry {
+	preferred := settings.Model()
+	out := []entry{{key: preferredKey, model: preferred, name: label(settings, preferred)}}
+	seen := map[string]bool{preferred: true}
+	candidates := make([]string, 0, len(settings.Catalog)+1)
+	candidates = append(candidates, clientcatalog.ReservedModel)
+	for _, item := range settings.Catalog {
+		candidates = append(candidates, item.ID)
+	}
+	for _, id := range candidates {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, entry{key: catalogPrefix + id, model: id, name: label(settings, id)})
+	}
+	return out
+}
+
+func label(settings clientcatalog.Settings, id string) string {
+	if id == clientcatalog.ReservedModel {
+		return clientcatalog.ReservedDisplayName
+	}
+	for _, item := range settings.Catalog {
+		if item.ID == id {
+			return item.Label()
+		}
+	}
+	return id
+}
+
+func ownedKey(key string) bool {
+	return key == preferredKey || strings.HasPrefix(key, catalogPrefix)
+}
+
+func containsKey(entries []entry, key string) bool {
+	for _, e := range entries {
+		if e.key == key {
+			return true
+		}
+	}
+	return false
 }
 
 func parse(data []byte) (map[string]any, error) {

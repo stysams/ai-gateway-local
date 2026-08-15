@@ -117,13 +117,28 @@ atomically, updates the Codex placeholder environment variable when required,
 and verifies the final state. A failed write triggers rollback; a rollback
 failure is reported as `partial_failure` with the backup directory.
 
-Pointed agent CLIs use the provider-neutral `gateway-default` model. The
-gateway's `/v1/models` and `/c/{client}/v1/models` endpoints expose every
-enabled provider and model, while the configured route selects the upstream
-for `gateway-default` requests. Updating a client route changes the next
-request without rewriting the client configuration or replacing its restore
-backup. Restart an already-running agent CLI session if it caches
-configuration at startup.
+A route is the client's preferred model at startup, not the only model it can
+use. Pointed agent CLIs keep the provider-neutral `gateway-default` model in
+that slot, and the configured route selects the upstream for `gateway-default`
+requests, so updating a route changes the next request without rewriting the
+client configuration or replacing its restore backup.
+
+Every enabled `<provider-id>/<model-id>` remains selectable inside the client:
+
+- All three clients read the full catalog from `/c/{client}/v1/models`, and any
+  of those ids can be requested directly (for example `claude --model
+  openrouter/anthropic/claude-sonnet-4`).
+- Claude Code is pointed with
+  `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` so its picker queries the
+  gateway. Claude Code keeps only ids containing `claude` or `anthropic`, so its
+  picker shows a subset; the gateway does not rename models to work around that.
+- Grok Build additionally receives one native
+  `[model."ai-gateway:<provider-id>/<model-id>"]` entry per enabled model, so
+  its own picker lists the whole catalog. Restore removes only the entries the
+  gateway wrote.
+
+Restart an already-running agent CLI session if it caches configuration at
+startup.
 
 | Client | Default file | Override |
 | --- | --- | --- |

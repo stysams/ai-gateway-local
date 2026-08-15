@@ -435,14 +435,25 @@ generic
 
 其中 `{client}` 只能是固定标识。无前缀 `/v1/*` 等价于 `/c/generic/v1/*`。
 
-### 7.3 保留模型名
+### 7.3 保留模型名与首选模型
 
 `gateway-default` 是网关保留的模型名，含义是“使用该客户端当前路由中的默认模型”。
 
-三个一等客户端执行 point 后，必须把其默认模型设为供应商无关的
-`gateway-default`。客户端通过各自的 `/c/{client}/v1/models` 获取全部已启用
-供应商和模型，网关在请求到达时按客户端路由解析上游。管理面切换客户端路由时
-只影响下一次请求，不得改写已指向的客户端配置，也不得替换最初 point 创建的恢复点。
+客户端路由的语义是**该客户端的启动首选模型**，不是该客户端唯一可用的模型。
+进入 agent 之后，用户仍然可以选择任意已启用的 `<provider-id>/<model-id>`：
+完整目录由 `/c/{client}/v1/models` 提供（§7.5），这是三个一等客户端唯一共同
+可用的入口。请求携带的模型名按 §7.4 解析，与该客户端的路由无关。
+
+三个一等客户端执行 point 后，写入的首选模型必须是 `gateway-default`，或当前路由
+对应的 `<provider-id>/<model-id>`。两种形式都必须能被 §7.4 正确解析。
+
+客户端配置文件中落地完整目录只在客户端原生支持时进行。依据 §20 的 2026-08-15
+复核结论，第一阶段只有 Grok Build 落地完整目录；Codex 与 Claude Code 只写首选
+模型，因为在这两个客户端里塞入完整目录会替换客户端自身的系统提示词，或被客户端
+的 id 过滤规则丢弃大部分条目。
+
+管理面切换客户端路由时只影响下一次请求。切换路由不得替换最初 point 创建的恢复点。
+若某客户端配置中写的是 `gateway-default`，切换路由不得改写该客户端配置文件。
 
 ### 7.4 路由算法
 
@@ -467,6 +478,12 @@ generic
 若管理面成功从某个 provider 拉取模型列表，返回值中的模型 id 必须加 `<provider-id>/` 前缀。不同 provider 的同名模型不得互相覆盖。
 
 模型列表拉取失败不得影响数据面启动。
+
+每项必须带 `display_name`，取值优先使用模型目录中的 `name`，缺失时回退为模型 id。
+该字段是 §7.3 中「进入 agent 后选择任意已启用模型」的显示名来源：Claude Code 的
+网关模型发现会读取它，Grok Build 的选择器用它作为条目标签（证据见 §20）。
+
+被禁用的 provider 和被禁用的模型不得出现在列表中。
 
 ---
 
@@ -950,7 +967,13 @@ env_key = "AI_GATEWAY_PLACEHOLDER_KEY"
 - 禁止覆盖保留 id `openai`、`ollama` 或 `lmstudio`。
 - `wire_api` 必须是 `responses`；当前 Codex 自定义 provider 不支持其他值。
 - 用户环境变量 `AI_GATEWAY_PLACEHOLDER_KEY` 必须是任意非空占位值。
-- `model` 固定为 `gateway-default`；客户端通过 `/c/codex/v1/models` 获取全部已启用供应商和模型。
+- `model` 固定为 `gateway-default`，即 §7.3 的启动首选模型。
+- 禁止写入 `model_catalog_json`。该键确实可用，但自定义目录会整体替换 Codex 内置目录，
+  并且条目的 `base_instructions` / `model_messages` 会替换 Codex 真正的系统提示词
+  （实测 21178 字符降到 32 字符，克隆内置条目后降到 0），证据见 §20。
+- 进入 agent 后选择其它已启用模型的方式是 `codex -m <provider-id>/<model-id>`，
+  完整目录由 `/c/codex/v1/models` 提供。实测该形式可直接使用，上游收到的模型名逐字一致，
+  仅多打印一行模型元数据缺失警告。
 - 若环境变量原本存在，restore 必须恢复原值。
 - `doctor` 必须检查 provider 块、base URL、wire API、模型和环境变量。
 
@@ -971,7 +994,8 @@ env_key = "AI_GATEWAY_PLACEHOLDER_KEY"
     "ANTHROPIC_MODEL": "gateway-default",
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "gateway-default",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "gateway-default",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gateway-default"
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gateway-default",
+    "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"
   }
 }
 ```
@@ -979,7 +1003,14 @@ env_key = "AI_GATEWAY_PLACEHOLDER_KEY"
 规则：
 
 - `ANTHROPIC_BASE_URL` 不带 `/v1`。
-- 四个模型环境变量固定为 `gateway-default`；客户端通过 `/c/claude/v1/models` 获取全部已启用供应商和模型。
+- 四个模型环境变量固定为 `gateway-default`，即 §7.3 的启动首选模型。
+- `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` 置为 `1`，让 Claude Code 启动时请求
+  `/c/claude/v1/models?limit=1000` 并把结果加入模型选择器。
+- 必须在指向说明中写明该发现机制的客户端侧限制：Claude Code 只保留 id 匹配
+  `/(claude|anthropic)/i` 的条目，其余一律丢弃，因此选择器不会显示全部已启用模型。
+  这是客户端行为，不得通过改写模型 id 去迎合它。证据见 §20。
+- 完整目录仍由 `/c/claude/v1/models` 提供；`claude --model <provider-id>/<model-id>`
+  可以直接使用任意已启用模型，实测上游收到的模型名逐字一致。
 - 只改用户级配置，禁止改项目内 `.claude/settings.json`。
 - 指向说明必须明确：自定义非 Anthropic base URL 会禁用 Remote Control。
 - 指向说明必须明确：MCP tool search 在非第一方 host 下默认关闭或降级，行为取决于当前 Claude Code 版本和管理设置。
@@ -1005,12 +1036,25 @@ base_url = "http://127.0.0.1:12600/c/grok/v1"
 name = "gateway-default"
 api_backend = "responses"
 api_key = "sk-ai-gateway-local"
+
+[model."ai-gateway:openrouter/anthropic/claude-sonnet-4"]
+model = "openrouter/anthropic/claude-sonnet-4"
+base_url = "http://127.0.0.1:12600/c/grok/v1"
+name = "openrouter/anthropic/claude-sonnet-4"
+api_backend = "responses"
+api_key = "sk-ai-gateway-local"
 ```
 
 规则：
 
 - `api_backend` 第一阶段固定为 `responses`。
-- `model` 和 `name` 固定为 `gateway-default`；客户端通过 `/c/grok/v1/models` 获取全部已启用供应商和模型。
+- `[model."ai-gateway"]` 是 §7.3 的启动首选模型，由 `[models] default` 指向。
+- Grok Build 是唯一能在配置文件里承载完整目录的客户端：每个已启用的
+  `<provider-id>/<model-id>` 各写一个 `[model."ai-gateway:<provider-id>/<model-id>"]`
+  条目，与内置模型并存而非替换（证据见 §20）。
+- 网关写入的条目一律以 `ai-gateway:` 为 id 前缀，除首选模型条目 `ai-gateway` 之外。
+  restore 必须删除网关写入的全部条目，不得删除用户自己声明的模型。
+- 目录条目的增删只发生在 point 与路由同步时，且不得替换最初 point 创建的恢复点。
 - 不修改项目级 `.grok/config.toml`。
 - 保留现有其他模型、MCP、插件、权限和 UI 配置。
 - `doctor` 应当提示用户可以运行 `grok inspect` 验证配置来源。
@@ -1799,6 +1843,81 @@ docs/
 - Wails v3 在 2026-08-14 仍为 beta。
 - Wails v3 当前采用 Go 安装 CLI，并发布 beta 标签。
 - Node.js `24.19.0` 是 LTS 基线。
+
+### 2026-08-15 复核：客户端可选模型目录
+
+本次复核针对「把全部已启用 `<provider-id>/<model-id>` 交给客户端选择」这一需求，
+在本机安装的真实客户端上做了可复现实验，结论直接约束第 7.3、7.5 和 12.3 至 12.5 节。
+
+实验对象：Codex `0.147.0`、Claude Code `2.1.228`、Grok Build `1.0.4`。
+方法：为每个客户端设置独立配置目录（`CODEX_HOME`、`CLAUDE_CONFIG_DIR`、`GROK_HOME`），
+指向本地假上游，观察客户端实际发出的 HTTP 请求正文。
+
+#### Codex：`model_catalog_json` 可用，但第一阶段不采用
+
+- `model_catalog_json` 确实是 Codex `0.147.0` 的根级配置键，值为一个 JSON 文件路径。
+  写在 `[model_providers.<id>]` 表内不生效。
+- 文件结构为 `{"models":[...]}`。条目必填字段为 `slug`、`display_name`、
+  `supported_reasoning_levels`、`shell_type`、`visibility`、`supported_in_api`、
+  `priority`、`support_verbosity`、`truncation_policy`、`supports_parallel_tool_calls`、
+  `experimental_supported_tools`，并且必须提供 `base_instructions` 或 `model_messages`
+  之一，否则 Codex 拒绝启动。
+- `visibility` 取值为 `list` 或 `hide`。`slug` 允许包含 `/`：`codex debug models`
+  能正确列出 `openrouter/anthropic/claude-sonnet-4` 这类 slug。
+- 自定义目录**整体替换**内置目录，不是追加。
+- 决定性证据：条目中的 `base_instructions` 会替换 Codex 真正的 agent 系统提示词。
+  用哨兵字符串做对照实验，上游收到的 `instructions` 从 21178 字符降到 32 字符；
+  改为克隆内置条目的 `model_messages` 后，上游收到的 `instructions` 长度为 0。
+- 同时验证了目录并非必需：只把根级 `model` 写成
+  `openrouter/anthropic/claude-sonnet-4`、完全不配置目录，Codex 仍能正常完成回合，
+  上游收到的模型名逐字一致，系统提示词保持 21178 字符，仅多打印一行元数据缺失警告。
+
+结论：第一阶段不写 `model_catalog_json`。为了让选择器多出几行，代价是替换掉客户端
+系统提示词、并把上游厂商的提示词文本复制进本仓库并随其版本腐坏。§1.3
+「不修改 Codex 内置模型目录」继续有效。Codex 侧改为写入首选模型，
+完整目录通过 `/c/codex/v1/models` 与 `codex -m <provider-id>/<model-id>` 使用。
+
+#### Claude Code：网关模型发现可用，但只保留含 claude/anthropic 的 id
+
+- `settings.json` 无法承载模型列表。可用机制有两个：
+  `ANTHROPIC_CUSTOM_MODEL_OPTION`（外加 `_NAME`、`_DESCRIPTION`）只能新增**一个**
+  选择器条目；`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` 可以发现多个。
+- 发现流程已在真实二进制上跑通：Claude Code 启动时以
+  `User-Agent: claude-code/2.1.228` 请求 `GET <ANTHROPIC_BASE_URL>/v1/models?limit=1000`，
+  带 `anthropic-version: 2023-06-01`，超时 3 秒，`redirect: "error"`（重定向即失败），
+  只读取 `data[].id` 和可选 `data[].display_name`，结果缓存到
+  `<CLAUDE_CONFIG_DIR>/cache/gateway-models.json`，选择器中标注 `From gateway`。
+- 生效前置条件：`ANTHROPIC_BASE_URL` 已设置且 host 不是 `api.anthropic.com`，
+  并且存在 `ANTHROPIC_AUTH_TOKEN` 或 `ANTHROPIC_API_KEY`。缺少 key 时静默跳过发现。
+- 决定性约束：Claude Code 只保留 id 匹配 `/(claude|anthropic)/i` 的条目。实验中网关
+  返回 4 个模型，缓存文件里只剩 `openrouter/anthropic/claude-sonnet-4` 一个，
+  `gateway-default`、`deepseek/deepseek-chat`、`zhipu/glm-5` 全部被丢弃。
+  因此 Claude Code 的选择器天然无法展示全部已启用模型，这是客户端行为，不是网关缺陷。
+- 另一项验证：`--model <provider-id>/<model-id>` 可以直接使用任意模型名，
+  上游收到的 `model` 逐字一致，不做改写；模型名不在其内置表中时只降级
+  auto-compact 的上下文窗口估算，并按子串匹配打印退役提示（例如 id 中包含
+  `claude-sonnet-4` 会触发退役警告），不影响请求成功。
+
+#### Grok Build：原生支持完整目录
+
+- `[model."<id>"]` 可以声明任意多个自定义模型，与内置模型**并存**而非替换。
+- 第一次实测（id 直接用模型名）：内置 `grok-4.6`、`grok-4.5` 与自定义
+  `gateway-default`、`openrouter/anthropic/claude-sonnet-4`、`deepseek/deepseek-chat`
+  同时列出，`[models] default` 指定的条目被标记为默认。
+- 第二次实测（id 加 `ai-gateway:` 前缀，并预置一个用户自有模型 `my-own-model`）：
+  `grok models` 输出 `grok-4.6`、`grok-4.5`、`ai-gateway`（默认）、
+  `ai-gateway:openrouter/anthropic/claude-sonnet-4`、`ai-gateway:deepseek/deepseek-chat`、
+  `my-own-model`。即 id 含 `/` 和 `:` 都不影响解析，且用户自有条目不受影响。
+- `grok models` 列出的是配置中的表 id，不是 `name`。`name` 按官方 settings reference
+  是选择器显示名，本次未在 TUI 中直接验证。
+
+#### 由此确定的第一阶段做法
+
+- 客户端路由从「客户端唯一可用模型」改为「客户端启动首选模型」，语义见 §7.3。
+- 完整的已启用 `<provider-id>/<model-id>` 目录一律由 `/c/{client}/v1/models` 提供，
+  这是三个客户端唯一共同可用的入口。
+- 只有 Grok Build 在配置文件里落地完整目录；Codex 与 Claude Code 只写首选模型。
+- `/v1/models` 每项增加 `display_name`，供 Claude Code 发现与 Grok 选择器显示。
 
 ---
 

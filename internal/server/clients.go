@@ -6,55 +6,69 @@ import (
 
 	"ai-gateway/internal/config"
 	"ai-gateway/internal/point"
+	"ai-gateway/internal/point/clientcatalog"
 	"ai-gateway/internal/route"
 )
 
-func (s *Server) pointContext(w http.ResponseWriter, r *http.Request) (point.Client, string, string, bool) {
+func (s *Server) pointContext(w http.ResponseWriter, r *http.Request) (point.Client, string, point.Settings, bool) {
 	client, err := point.ParseClient(r.PathValue("client"))
 	if err != nil {
 		writeAPIError(w, http.StatusNotFound, "client_not_found", err.Error(), nil)
-		return "", "", "", false
+		return "", "", point.Settings{}, false
 	}
 	cfg := s.cfg.Snapshot()
 	if cfg == nil {
 		writeAPIError(w, http.StatusInternalServerError, "config_not_loaded", "config not loaded", nil)
-		return "", "", "", false
+		return "", "", point.Settings{}, false
 	}
-	return client, s.ClientBaseURL(cfg), displayModelForClient(cfg, client), true
+	return client, s.ClientBaseURL(cfg), s.clientSettings(cfg, client), true
 }
 
-func displayModelForClient(_ *config.Config, _ point.Client) string {
-	// Client CLIs must stay provider-neutral. The gateway exposes the complete
-	// provider/model catalog through /v1/models and resolves gateway-default via
-	// the client route at request time.
-	return route.ReservedModel
+// clientSettings is what a pointed client configuration must express.
+//
+// The preferred startup model stays the provider-neutral reserved name so that
+// switching a route never rewrites a pointed client's file (§1.2, §7.3): the
+// gateway resolves gateway-default against the current route per request. The
+// catalog carries every enabled `<provider-id>/<model-id>` so a user can pick
+// any of them inside the agent; adapters that cannot hold a list natively
+// ignore it (§12.3, §12.4).
+func (s *Server) clientSettings(cfg *config.Config, _ point.Client) point.Settings {
+	items := s.modelCatalog(cfg)
+	catalog := make([]clientcatalog.Entry, 0, len(items))
+	for _, item := range items {
+		if item.ID == route.ReservedModel {
+			continue
+		}
+		catalog = append(catalog, clientcatalog.Entry{ID: item.ID, DisplayName: item.DisplayName})
+	}
+	return point.Settings{PreferredModel: route.ReservedModel, Catalog: catalog}
 }
 
-type displayModelSync struct {
-	client   point.Client
-	oldModel string
-	newModel string
+type clientSettingsSync struct {
+	client point.Client
+	before point.Settings
+	after  point.Settings
 }
 
-func displayModelChanges(current, next *config.Config) []displayModelSync {
+func (s *Server) clientSettingsChanges(current, next *config.Config) []clientSettingsSync {
 	clients := []point.Client{point.ClientCodex, point.ClientClaude, point.ClientGrok}
-	changes := make([]displayModelSync, 0, len(clients))
+	changes := make([]clientSettingsSync, 0, len(clients))
 	for _, client := range clients {
-		oldModel := displayModelForClient(current, client)
-		newModel := displayModelForClient(next, client)
-		if oldModel != newModel {
-			changes = append(changes, displayModelSync{client: client, oldModel: oldModel, newModel: newModel})
+		before := s.clientSettings(current, client)
+		after := s.clientSettings(next, client)
+		if !before.Equal(after) {
+			changes = append(changes, clientSettingsSync{client: client, before: before, after: after})
 		}
 	}
 	return changes
 }
 
-func (s *Server) applyDisplayModelChanges(baseURL string, changes []displayModelSync) ([]displayModelSync, error) {
-	applied := make([]displayModelSync, 0, len(changes))
+func (s *Server) applyClientSettingsChanges(baseURL string, changes []clientSettingsSync) ([]clientSettingsSync, error) {
+	applied := make([]clientSettingsSync, 0, len(changes))
 	for _, change := range changes {
-		changed, err := s.points.SyncDisplayModel(change.client, baseURL, change.oldModel, change.newModel)
+		changed, err := s.points.SyncSettings(change.client, baseURL, change.after)
 		if err != nil {
-			rollbackErr := s.rollbackDisplayModelChanges(baseURL, applied)
+			rollbackErr := s.rollbackClientSettingsChanges(baseURL, applied)
 			if rollbackErr != nil {
 				return nil, errors.Join(err, rollbackErr)
 			}
@@ -67,30 +81,30 @@ func (s *Server) applyDisplayModelChanges(baseURL string, changes []displayModel
 	return applied, nil
 }
 
-func (s *Server) rollbackDisplayModelChanges(baseURL string, applied []displayModelSync) error {
+func (s *Server) rollbackClientSettingsChanges(baseURL string, applied []clientSettingsSync) error {
 	var rollbackErr error
 	for index := len(applied) - 1; index >= 0; index-- {
 		change := applied[index]
-		_, err := s.points.SyncDisplayModel(change.client, baseURL, change.newModel, change.oldModel)
+		_, err := s.points.SyncSettings(change.client, baseURL, change.before)
 		rollbackErr = errors.Join(rollbackErr, err)
 	}
 	return rollbackErr
 }
 
 func (s *Server) handleGetClient(w http.ResponseWriter, r *http.Request) {
-	client, baseURL, displayModel, ok := s.pointContext(w, r)
+	client, baseURL, settings, ok := s.pointContext(w, r)
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, s.points.Check(client, baseURL, displayModel))
+	writeJSON(w, http.StatusOK, s.points.Check(client, baseURL, settings))
 }
 
 func (s *Server) handlePointClient(w http.ResponseWriter, r *http.Request) {
-	client, baseURL, displayModel, ok := s.pointContext(w, r)
+	client, baseURL, settings, ok := s.pointContext(w, r)
 	if !ok {
 		return
 	}
-	result, err := s.points.Point(client, baseURL, displayModel)
+	result, err := s.points.Point(client, baseURL, settings)
 	if err != nil {
 		s.writePointError(w, "point", result.BackupDir, err)
 		return
@@ -99,11 +113,11 @@ func (s *Server) handlePointClient(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRestoreClient(w http.ResponseWriter, r *http.Request) {
-	client, baseURL, displayModel, ok := s.pointContext(w, r)
+	client, baseURL, settings, ok := s.pointContext(w, r)
 	if !ok {
 		return
 	}
-	result, err := s.points.Restore(client, baseURL, displayModel)
+	result, err := s.points.Restore(client, baseURL, settings)
 	if err != nil {
 		s.writePointError(w, "restore", result.BackupDir, err)
 		return

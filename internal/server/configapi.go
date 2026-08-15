@@ -140,14 +140,14 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	baseURL := s.ClientBaseURL(current)
-	applied, err := s.applyDisplayModelChanges(baseURL, displayModelChanges(current, next))
+	applied, err := s.applyClientSettingsChanges(baseURL, s.clientSettingsChanges(current, next))
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "client_sync_failed", err.Error(), nil)
 		return
 	}
 	if err := s.cfg.Write(next); err != nil {
-		if rollbackErr := s.rollbackDisplayModelChanges(baseURL, applied); rollbackErr != nil {
-			writeAPIError(w, http.StatusInternalServerError, "partial_failure", fmt.Sprintf("write config: %v; rollback client display models: %v", err, rollbackErr), nil)
+		if rollbackErr := s.rollbackClientSettingsChanges(baseURL, applied); rollbackErr != nil {
+			writeAPIError(w, http.StatusInternalServerError, "partial_failure", fmt.Sprintf("write config: %v; rollback client settings: %v", err, rollbackErr), nil)
 			return
 		}
 		writeAPIError(w, http.StatusInternalServerError, "config_write_failed", err.Error(), nil)

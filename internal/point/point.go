@@ -17,9 +17,13 @@ import (
 	"time"
 
 	"ai-gateway/internal/point/claude"
+	"ai-gateway/internal/point/clientcatalog"
 	"ai-gateway/internal/point/codex"
 	"ai-gateway/internal/point/grok"
 )
+
+// Settings is what the caller wants a pointed client configuration to express.
+type Settings = clientcatalog.Settings
 
 type Client string
 
@@ -143,13 +147,13 @@ func ParseClient(raw string) (Client, error) {
 	}
 }
 
-func (m *Manager) Check(client Client, baseURL string, displayModel ...string) Status {
+func (m *Manager) Check(client Client, baseURL string, settings Settings) Status {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.check(client, baseURL, displayModel...)
+	return m.check(client, baseURL, settings)
 }
 
-func (m *Manager) check(client Client, baseURL string, displayModel ...string) Status {
+func (m *Manager) check(client Client, baseURL string, settings Settings) Status {
 	target, installed, err := m.target(client)
 	status := Status{Client: client, Target: target, PointState: StateUnknown, BackupAvailable: m.latestManifest(client) != ""}
 	if err != nil {
@@ -170,7 +174,7 @@ func (m *Manager) check(client Client, baseURL string, displayModel ...string) S
 		status.Message = err.Error()
 		return status
 	}
-	pointed, err := checkContent(client, data, baseURL, displayModel...)
+	pointed, err := checkContent(client, data, baseURL, settings)
 	if err != nil {
 		status.PointState = StateDrifted
 		status.Message = err.Error()
@@ -196,23 +200,24 @@ func (m *Manager) check(client Client, baseURL string, displayModel ...string) S
 	return status
 }
 
-func (m *Manager) Point(client Client, baseURL string, displayModel ...string) (Result, error) {
+func (m *Manager) Point(client Client, baseURL string, settings Settings) (Result, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if len(displayModel) > 0 && displayModel[0] != "" {
-		migrated, err := m.syncDisplayModelLocked(client, baseURL, "gateway-default", displayModel[0])
-		if err != nil {
-			return Result{}, err
-		}
-		if migrated {
-			status := m.checkUnlocked(client, baseURL, displayModel...)
-			if status.PointState != StatePointed {
-				return Result{Status: status}, fmt.Errorf("point migration verification failed: %s", status.Message)
-			}
-			return Result{Status: status, Changed: true}, nil
-		}
+	// A configuration this gateway already owns is updated in place. Creating a
+	// second restore point over it would lose the user's pre-point configuration
+	// (docs/v1-scheme.md §12.1).
+	synced, err := m.syncSettingsLocked(client, baseURL, settings)
+	if err != nil {
+		return Result{}, err
 	}
-	current := m.checkUnlocked(client, baseURL, displayModel...)
+	if synced {
+		status := m.checkUnlocked(client, baseURL, settings)
+		if status.PointState != StatePointed {
+			return Result{Status: status}, fmt.Errorf("point update verification failed: %s", status.Message)
+		}
+		return Result{Status: status, Changed: true}, nil
+	}
+	current := m.checkUnlocked(client, baseURL, settings)
 	if current.PointState == StatePointed {
 		return Result{Status: current, Changed: false}, nil
 	}
@@ -224,7 +229,7 @@ func (m *Manager) Point(client Client, baseURL string, displayModel ...string) (
 	if err != nil {
 		return Result{Status: current}, err
 	}
-	modified, err := transformContent(client, original, baseURL, displayModel...)
+	modified, err := transformContent(client, original, baseURL, settings)
 	if err != nil {
 		return Result{Status: current}, err
 	}
@@ -279,7 +284,7 @@ func (m *Manager) Point(client Client, baseURL string, displayModel ...string) (
 			return rollback(err)
 		}
 	}
-	verified := m.checkUnlocked(client, baseURL, displayModel...)
+	verified := m.checkUnlocked(client, baseURL, settings)
 	if verified.PointState != StatePointed {
 		return rollback(fmt.Errorf("point verification failed: %s", verified.Message))
 	}
@@ -291,24 +296,21 @@ func (m *Manager) Point(client Client, baseURL string, displayModel ...string) (
 	return Result{Status: verified, BackupDir: backupDir, Changed: true}, nil
 }
 
-func (m *Manager) checkUnlocked(client Client, baseURL string, displayModel ...string) Status {
-	return m.check(client, baseURL, displayModel...)
+func (m *Manager) checkUnlocked(client Client, baseURL string, settings Settings) Status {
+	return m.check(client, baseURL, settings)
 }
 
-// SyncDisplayModel updates an already managed client configuration when its
-// route changes. It deliberately does not create a new restore point: the
-// existing manifest must continue to restore the client configuration that
-// existed before ai-gateway first pointed it.
-func (m *Manager) SyncDisplayModel(client Client, baseURL, oldDisplayModel, newDisplayModel string) (bool, error) {
+// SyncSettings updates an already managed client configuration when its route
+// or the enabled model catalog changes. It deliberately does not create a new
+// restore point: the existing manifest must continue to restore the client
+// configuration that existed before ai-gateway first pointed it.
+func (m *Manager) SyncSettings(client Client, baseURL string, settings Settings) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.syncDisplayModelLocked(client, baseURL, oldDisplayModel, newDisplayModel)
+	return m.syncSettingsLocked(client, baseURL, settings)
 }
 
-func (m *Manager) syncDisplayModelLocked(client Client, baseURL, oldDisplayModel, newDisplayModel string) (bool, error) {
-	if oldDisplayModel == newDisplayModel {
-		return false, nil
-	}
+func (m *Manager) syncSettingsLocked(client Client, baseURL string, settings Settings) (bool, error) {
 	target, installed, err := m.target(client)
 	if err != nil {
 		return false, err
@@ -323,17 +325,12 @@ func (m *Manager) syncDisplayModelLocked(client Client, baseURL, oldDisplayModel
 	if !exists {
 		return false, nil
 	}
-	managed, err := checkContent(client, original, baseURL, oldDisplayModel)
+	// Any configuration ai-gateway owns is eligible, whichever preferred model
+	// or catalog generation it currently holds. Configurations written by earlier
+	// releases are therefore migrated in place rather than re-pointed.
+	managed, err := managedContent(client, original, baseURL)
 	if err != nil {
 		return false, err
-	}
-	if !managed {
-		// Accept the legacy gateway-default form so the first route change
-		// transparently migrates clients pointed by earlier releases.
-		managed, err = checkContent(client, original, baseURL)
-		if err != nil {
-			return false, err
-		}
 	}
 	if !managed {
 		return false, nil
@@ -347,33 +344,40 @@ func (m *Manager) syncDisplayModelLocked(client Client, baseURL, oldDisplayModel
 			return false, nil
 		}
 	}
-	modified, err := transformContent(client, original, baseURL, newDisplayModel)
+	current, err := checkContent(client, original, baseURL, settings)
+	if err != nil {
+		return false, err
+	}
+	if current {
+		return false, nil
+	}
+	modified, err := transformContent(client, original, baseURL, settings)
 	if err != nil {
 		return false, err
 	}
 	if err := atomicWrite(target, modified, mode); err != nil {
 		return false, err
 	}
-	verified, err := checkContent(client, modified, baseURL, newDisplayModel)
+	verified, err := checkContent(client, modified, baseURL, settings)
 	if err != nil || !verified {
 		rollbackErr := restoreFile(target, original, true, mode)
 		if err == nil {
-			err = errors.New("display model verification failed")
+			err = errors.New("client settings verification failed")
 		}
 		if rollbackErr != nil {
-			return false, &PartialFailureError{Operation: "sync display model", Cause: err, Rollback: rollbackErr}
+			return false, &PartialFailureError{Operation: "sync client settings", Cause: err, Rollback: rollbackErr}
 		}
 		return false, err
 	}
 	return true, nil
 }
 
-func (m *Manager) Restore(client Client, baseURL string, displayModel ...string) (Result, error) {
+func (m *Manager) Restore(client Client, baseURL string, settings Settings) (Result, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	manifestPath := m.latestManifest(client)
 	if manifestPath == "" {
-		return Result{Status: m.checkUnlocked(client, baseURL, displayModel...)}, ErrNoRestore
+		return Result{Status: m.checkUnlocked(client, baseURL, settings)}, ErrNoRestore
 	}
 	manifest, err := readManifest(manifestPath)
 	if err != nil {
@@ -431,7 +435,7 @@ func (m *Manager) Restore(client Client, baseURL string, displayModel ...string)
 	if err := writeManifest(manifestPath, manifest); err != nil {
 		return rollback(err)
 	}
-	status := m.checkUnlocked(client, baseURL, displayModel...)
+	status := m.checkUnlocked(client, baseURL, settings)
 	return Result{Status: status, BackupDir: backupDir, Changed: true}, nil
 }
 
@@ -514,26 +518,40 @@ func (m *Manager) latestManifest(client Client) string {
 	return ""
 }
 
-func transformContent(client Client, data []byte, baseURL string, displayModel ...string) ([]byte, error) {
+func transformContent(client Client, data []byte, baseURL string, settings Settings) ([]byte, error) {
 	switch client {
 	case ClientCodex:
-		return codex.Transform(data, baseURL, displayModel...)
+		return codex.Transform(data, baseURL, settings)
 	case ClientClaude:
-		return claude.Transform(data, baseURL, displayModel...)
+		return claude.Transform(data, baseURL, settings)
 	case ClientGrok:
-		return grok.Transform(data, baseURL, displayModel...)
+		return grok.Transform(data, baseURL, settings)
 	}
 	return nil, errors.New("unknown client")
 }
 
-func checkContent(client Client, data []byte, baseURL string, displayModel ...string) (bool, error) {
+func checkContent(client Client, data []byte, baseURL string, settings Settings) (bool, error) {
 	switch client {
 	case ClientCodex:
-		return codex.Check(data, baseURL, displayModel...)
+		return codex.Check(data, baseURL, settings)
 	case ClientClaude:
-		return claude.Check(data, baseURL, displayModel...)
+		return claude.Check(data, baseURL, settings)
 	case ClientGrok:
-		return grok.Check(data, baseURL, displayModel...)
+		return grok.Check(data, baseURL, settings)
+	}
+	return false, errors.New("unknown client")
+}
+
+// managedContent reports whether ai-gateway owns this configuration, regardless
+// of which preferred model or catalog generation it holds.
+func managedContent(client Client, data []byte, baseURL string) (bool, error) {
+	switch client {
+	case ClientCodex:
+		return codex.Managed(data, baseURL)
+	case ClientClaude:
+		return claude.Managed(data, baseURL)
+	case ClientGrok:
+		return grok.Managed(data, baseURL)
 	}
 	return false, errors.New("unknown client")
 }
