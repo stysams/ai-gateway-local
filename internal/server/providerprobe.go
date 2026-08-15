@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,12 +14,16 @@ import (
 	"time"
 
 	"ai-gateway/internal/config"
+	"ai-gateway/internal/outbound/anthropic"
+	"ai-gateway/internal/outbound/openaichat"
+	"ai-gateway/internal/outbound/openairesponses"
 	"ai-gateway/internal/secret"
 )
 
 const (
 	providerProbeTimeout = 15 * time.Second
 	maxModelsBody        = 16 << 20
+	probePrompt          = "表明你的身份"
 )
 
 var providerProbeClient = &http.Client{
@@ -34,11 +39,21 @@ var providerProbeClient = &http.Client{
 }
 
 type ProviderModel struct {
-	ID          string `json:"id"`
-	ProviderID  string `json:"provider_id"`
-	RawID       string `json:"raw_id"`
-	DisplayName string `json:"display_name,omitempty"`
-	OwnedBy     string `json:"owned_by,omitempty"`
+	ID              string `json:"id"`
+	ProviderID      string `json:"provider_id"`
+	RawID           string `json:"raw_id"`
+	DisplayName     string `json:"display_name,omitempty"`
+	OwnedBy         string `json:"owned_by,omitempty"`
+	ContextWindow   int    `json:"context_window,omitempty"`
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
+}
+
+type DiscoverProviderModelsRequest struct {
+	ProviderID string  `json:"provider_id"`
+	Adapter    string  `json:"adapter"`
+	BaseURL    string  `json:"base_url"`
+	ModelsURL  string  `json:"models_url,omitempty"`
+	APIKey     *string `json:"api_key"`
 }
 
 type ProviderModelsResponse struct {
@@ -53,6 +68,7 @@ type ProbeResponse struct {
 	LatencyMS int64  `json:"latency_ms"`
 	Models    int    `json:"models,omitempty"`
 	Error     string `json:"error,omitempty"`
+	Response  string `json:"response,omitempty"`
 }
 
 func (s *Server) handleProbeProvider(w http.ResponseWriter, r *http.Request) {
@@ -63,12 +79,118 @@ func (s *Server) handleProbeProvider(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), providerProbeTimeout)
 	defer cancel()
 	started := time.Now()
-	models, status, err := s.fetchProviderModels(ctx, id, p)
-	result := ProbeResponse{OK: err == nil, Status: status, LatencyMS: time.Since(started).Milliseconds(), Models: len(models)}
+	status, err, responseBody := s.probeProvider(ctx, id, p)
+	modelCount := len(p.Models)
+	if modelCount == 0 && strings.TrimSpace(p.DefaultModel) != "" {
+		modelCount = 1
+	}
+	result := ProbeResponse{OK: err == nil, Status: status, LatencyMS: time.Since(started).Milliseconds(), Models: modelCount, Response: responseBody}
 	if err != nil {
 		result.Error = err.Error()
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// probeProvider performs a minimal real completion request. Model discovery is
+// intentionally kept in fetchProviderModels: probing must validate that the
+// configured model can answer a user message, rather than only proving that a
+// provider exposes a /models endpoint.
+func (s *Server) probeProvider(ctx context.Context, id string, p config.Provider) (int, error, string) {
+	var payload any
+	var endpoint string
+	switch p.Adapter {
+	case "openai-chat":
+		endpoint = openaichat.CompletionURL(p.BaseURL)
+		payload = map[string]any{
+			"model":    p.DefaultModel,
+			"messages": []map[string]string{{"role": "user", "content": probePrompt}},
+			"stream":   false,
+		}
+	case "openai-responses":
+		endpoint = openairesponses.CompletionURL(p.BaseURL)
+		payload = map[string]any{"model": p.DefaultModel, "input": probePrompt, "stream": false}
+	case "anthropic":
+		endpoint = anthropic.CompletionURL(p.BaseURL)
+		payload = map[string]any{
+			"model":      p.DefaultModel,
+			"max_tokens": 256,
+			"messages":   []map[string]string{{"role": "user", "content": probePrompt}},
+			"stream":     false,
+		}
+	default:
+		return 0, fmt.Errorf("provider %q uses unsupported adapter %q", id, p.Adapter), ""
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return 0, fmt.Errorf("encode probe request: %w", err), ""
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return 0, fmt.Errorf("build probe request: %w", err), ""
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "ai-gateway/provider-probe")
+	key, err := s.providerProbeKey(ctx, p)
+	if err != nil {
+		return 0, err, ""
+	}
+	if key != nil {
+		defer secret.Zero(key)
+		if p.Adapter == "anthropic" {
+			req.Header.Set("x-api-key", string(key))
+			req.Header.Set("anthropic-version", anthropic.APIVersion)
+		} else {
+			req.Header.Set("Authorization", "Bearer "+string(key))
+		}
+	} else if p.Adapter == "anthropic" {
+		req.Header.Set("anthropic-version", anthropic.APIVersion)
+	}
+	resp, err := providerProbeClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("probe request failed: %w", err), ""
+	}
+	defer resp.Body.Close()
+	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxProbeResponse+1))
+	if readErr != nil {
+		return resp.StatusCode, fmt.Errorf("read probe response: %w", readErr), ""
+	}
+	if len(responseBody) > maxProbeResponse {
+		responseBody = responseBody[:maxProbeResponse]
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return resp.StatusCode, fmt.Errorf("upstream returned %s", resp.Status), ""
+	}
+	return resp.StatusCode, nil, formatProbeResponse(responseBody)
+}
+
+func (s *Server) providerProbeKey(ctx context.Context, p config.Provider) ([]byte, error) {
+	if p.SecretRef == "" {
+		return nil, nil
+	}
+	if s.secrets == nil {
+		return nil, errors.New("provider secret store is unavailable")
+	}
+	key, err := s.secrets.Get(ctx, p.SecretRef)
+	if err != nil {
+		if errors.Is(err, secret.ErrNotFound) {
+			return nil, fmt.Errorf("provider secret %q is missing", p.SecretRef)
+		}
+		return nil, fmt.Errorf("read provider secret: %w", err)
+	}
+	return key, nil
+}
+
+func formatProbeResponse(body []byte) string {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return ""
+	}
+	var formatted bytes.Buffer
+	if err := json.Indent(&formatted, trimmed, "", "  "); err == nil {
+		return formatted.String()
+	}
+	return string(trimmed)
 }
 
 func (s *Server) handleProviderModels(w http.ResponseWriter, r *http.Request) {
@@ -79,6 +201,41 @@ func (s *Server) handleProviderModels(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), providerProbeTimeout)
 	defer cancel()
 	models, status, err := s.fetchProviderModels(ctx, id, p)
+	if err != nil {
+		details := map[string]string{}
+		if status != 0 {
+			details["upstream_status"] = fmt.Sprint(status)
+		}
+		writeAPIError(w, http.StatusBadGateway, "provider_models_failed", err.Error(), details)
+		return
+	}
+	writeJSON(w, http.StatusOK, ProviderModelsResponse{Object: "list", Provider: id, Data: models})
+}
+
+func (s *Server) handleDiscoverProviderModels(w http.ResponseWriter, r *http.Request) {
+	var request DiscoverProviderModelsRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	id := strings.TrimSpace(request.ProviderID)
+	p := config.Provider{Name: "model discovery", Adapter: strings.TrimSpace(request.Adapter), BaseURL: strings.TrimSpace(request.BaseURL), ModelsURL: strings.TrimSpace(request.ModelsURL), DefaultModel: "discovery-placeholder"}
+	if existing := s.cfg.Snapshot(); existing != nil {
+		if saved, ok := existing.Providers[id]; ok {
+			p.SecretRef = saved.SecretRef
+		}
+	}
+	if err := config.ValidateProvider(id, p); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "config_invalid", err.Error(), map[string]string{"field": validationField(err)})
+		return
+	}
+	var key []byte
+	if request.APIKey != nil && *request.APIKey != "" {
+		key = []byte(*request.APIKey)
+		defer secret.Zero(key)
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), providerProbeTimeout)
+	defer cancel()
+	models, status, err := s.fetchProviderModelsWithKey(ctx, id, p, key, false)
 	if err != nil {
 		details := map[string]string{}
 		if status != 0 {
@@ -105,24 +262,38 @@ func (s *Server) lookupProvider(w http.ResponseWriter, id string) (string, confi
 }
 
 func (s *Server) fetchProviderModels(ctx context.Context, id string, p config.Provider) ([]ProviderModel, int, error) {
+	models, status, err, _ := s.fetchProviderModelsDetailed(ctx, id, p, true)
+	return models, status, err
+}
+
+func (s *Server) fetchProviderModelsWithKey(ctx context.Context, id string, p config.Provider, suppliedKey []byte, cache bool) ([]ProviderModel, int, error) {
+	models, status, err, _ := s.fetchProviderModelsDetailedWithKey(ctx, id, p, suppliedKey, cache)
+	return models, status, err
+}
+
+func (s *Server) fetchProviderModelsDetailed(ctx context.Context, id string, p config.Provider, cache bool) ([]ProviderModel, int, error, string) {
+	return s.fetchProviderModelsDetailedWithKey(ctx, id, p, nil, cache)
+}
+
+func (s *Server) fetchProviderModelsDetailedWithKey(ctx context.Context, id string, p config.Provider, suppliedKey []byte, cache bool) ([]ProviderModel, int, error, string) {
 	endpoint, err := providerModelsURL(p)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, err, ""
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, 0, fmt.Errorf("build models request: %w", err)
+		return nil, 0, fmt.Errorf("build models request: %w", err), ""
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "ai-gateway/provider-probe")
-	var key []byte
-	if p.SecretRef != "" {
+	key := suppliedKey
+	if len(key) == 0 && p.SecretRef != "" {
 		key, err = s.secrets.Get(ctx, p.SecretRef)
 		if err != nil {
 			if errors.Is(err, secret.ErrNotFound) {
-				return nil, 0, fmt.Errorf("provider %q secret is missing", id)
+				return nil, 0, fmt.Errorf("provider %q secret is missing", id), ""
 			}
-			return nil, 0, fmt.Errorf("read provider %q secret: %w", id, err)
+			return nil, 0, fmt.Errorf("read provider %q secret: %w", id, err), ""
 		}
 		defer secret.Zero(key)
 	}
@@ -136,29 +307,38 @@ func (s *Server) fetchProviderModels(ctx context.Context, id string, p config.Pr
 	}
 	resp, err := providerProbeClient.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("models request failed: %w", err)
+		return nil, 0, fmt.Errorf("models request failed: %w", err), ""
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxModelsBody))
-		return nil, resp.StatusCode, fmt.Errorf("upstream returned %s", resp.Status)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxModelsBody))
+		return nil, resp.StatusCode, fmt.Errorf("upstream returned %s", resp.Status), sanitizeProbeBody(body, false)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxModelsBody+1))
 	if err != nil {
-		return nil, resp.StatusCode, fmt.Errorf("read models response: %w", err)
+		return nil, resp.StatusCode, fmt.Errorf("read models response: %w", err), ""
 	}
 	if len(body) > maxModelsBody {
-		return nil, resp.StatusCode, fmt.Errorf("models response exceeds %d bytes", maxModelsBody)
+		return nil, resp.StatusCode, fmt.Errorf("models response exceeds %d bytes", maxModelsBody), ""
 	}
 	var doc struct {
 		Data []struct {
-			ID          string `json:"id"`
-			DisplayName string `json:"display_name"`
-			OwnedBy     string `json:"owned_by"`
+			ID                  string `json:"id"`
+			Name                string `json:"name"`
+			DisplayName         string `json:"display_name"`
+			OwnedBy             string `json:"owned_by"`
+			ContextLength       int    `json:"context_length"`
+			ContextWindow       int    `json:"context_window"`
+			MaxCompletionTokens int    `json:"max_completion_tokens"`
+			MaxOutputTokens     int    `json:"max_output_tokens"`
+			TopProvider         struct {
+				ContextLength       int `json:"context_length"`
+				MaxCompletionTokens int `json:"max_completion_tokens"`
+			} `json:"top_provider"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &doc); err != nil {
-		return nil, resp.StatusCode, fmt.Errorf("decode models response: %w", err)
+		return nil, resp.StatusCode, fmt.Errorf("decode models response: %w", err), sanitizeProbeBody(body, true)
 	}
 	seen := map[string]bool{}
 	models := make([]ProviderModel, 0, len(doc.Data))
@@ -168,11 +348,48 @@ func (s *Server) fetchProviderModels(ctx context.Context, id string, p config.Pr
 			continue
 		}
 		seen[rawID] = true
-		models = append(models, ProviderModel{ID: id + "/" + rawID, ProviderID: id, RawID: rawID, DisplayName: model.DisplayName, OwnedBy: model.OwnedBy})
+		displayName := strings.TrimSpace(model.DisplayName)
+		if displayName == "" {
+			displayName = strings.TrimSpace(model.Name)
+		}
+		contextWindow := model.ContextLength
+		if model.TopProvider.ContextLength > 0 {
+			contextWindow = model.TopProvider.ContextLength
+		} else if contextWindow == 0 {
+			contextWindow = model.ContextWindow
+		}
+		if contextWindow < 0 {
+			contextWindow = 0
+		}
+		maxOutputTokens := model.TopProvider.MaxCompletionTokens
+		if maxOutputTokens == 0 {
+			maxOutputTokens = model.MaxCompletionTokens
+		}
+		if maxOutputTokens == 0 {
+			maxOutputTokens = model.MaxOutputTokens
+		}
+		if maxOutputTokens < 0 {
+			maxOutputTokens = 0
+		}
+		models = append(models, ProviderModel{ID: id + "/" + rawID, ProviderID: id, RawID: rawID, DisplayName: displayName, OwnedBy: model.OwnedBy, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens})
 	}
-	sort.Slice(models, func(i, j int) bool { return models[i].RawID < models[j].RawID })
-	s.cacheModels(id, models)
-	return models, resp.StatusCode, nil
+	if cache {
+		sort.Slice(models, func(i, j int) bool { return models[i].RawID < models[j].RawID })
+		s.cacheModels(id, models)
+	}
+	return models, resp.StatusCode, nil, sanitizeProbeBody(body, true)
+}
+
+const maxProbeResponse = 256 << 10
+
+func sanitizeProbeBody(body []byte, success bool) string {
+	if !success {
+		return ""
+	}
+	if len(body) > maxProbeResponse {
+		body = body[:maxProbeResponse]
+	}
+	return string(body)
 }
 
 func (s *Server) cacheModels(id string, models []ProviderModel) {
@@ -205,6 +422,13 @@ func providerModelsURL(p config.Provider) (string, error) {
 	base, err := url.Parse(strings.TrimRight(p.BaseURL, "/"))
 	if err != nil {
 		return "", fmt.Errorf("parse provider base URL: %w", err)
+	}
+	if strings.TrimSpace(p.ModelsURL) != "" {
+		custom, err := url.Parse(strings.TrimSpace(p.ModelsURL))
+		if err != nil || custom.Scheme == "" || custom.Host == "" {
+			return "", fmt.Errorf("parse provider models URL: %w", err)
+		}
+		return custom.String(), nil
 	}
 	path := strings.TrimRight(base.Path, "/")
 	if p.Adapter == "anthropic" && !strings.HasSuffix(path, "/v1") {

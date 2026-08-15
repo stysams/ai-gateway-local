@@ -126,6 +126,31 @@ func TestFieldsRewritePreservesUnknown(t *testing.T) {
 	}
 }
 
+func TestDropContextManagement(t *testing.T) {
+	body := []byte(`{"model":"m","context_management":{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]},"messages":[]}`)
+	out, dropped, err := DropContextManagement(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dropped {
+		t.Fatal("dropped = false, want true")
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc["context_management"]; ok {
+		t.Fatalf("context_management was not removed: %s", out)
+	}
+	if _, ok := doc["messages"]; !ok {
+		t.Fatalf("unrelated messages field was removed: %s", out)
+	}
+	unchanged, dropped, err := DropContextManagement([]byte(`{"model":"m","messages":[]}`))
+	if err != nil || dropped || string(unchanged) != `{"model":"m","messages":[]}` {
+		t.Fatalf("absent field: out=%s dropped=%v err=%v", unchanged, dropped, err)
+	}
+}
+
 func eventSource(events []ir.Event) func() (ir.Event, error) {
 	i := 0
 	return func() (ir.Event, error) {

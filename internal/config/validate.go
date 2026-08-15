@@ -91,8 +91,35 @@ func validateProvider(id string, p Provider) []FieldError {
 			Reason: "must be an absolute http(s) URL without query string or fragment",
 		})
 	}
+	if p.ModelsURL != "" && !validBaseURL(p.ModelsURL) {
+		errs = append(errs, FieldError{
+			Field:  "providers." + id + ".models_url",
+			Reason: "must be an absolute http(s) URL without query string or fragment",
+		})
+	}
 	if strings.TrimSpace(p.DefaultModel) == "" {
 		errs = append(errs, FieldError{Field: "providers." + id + ".default_model", Reason: "must not be empty"})
+	}
+	modelIDs := make(map[string]bool, len(p.Models))
+	for index, model := range p.Models {
+		field := fmt.Sprintf("providers.%s.models.%d", id, index)
+		modelID := strings.TrimSpace(model.ID)
+		if modelID == "" {
+			errs = append(errs, FieldError{Field: field + ".id", Reason: "must not be empty"})
+		} else if modelIDs[modelID] {
+			errs = append(errs, FieldError{Field: field + ".id", Reason: fmt.Sprintf("duplicates model %q", modelID)})
+		} else {
+			modelIDs[modelID] = true
+		}
+		if model.ContextWindow < 0 {
+			errs = append(errs, FieldError{Field: field + ".context_window", Reason: "must be zero or greater"})
+		}
+		if model.MaxOutputTokens < 0 {
+			errs = append(errs, FieldError{Field: field + ".max_output_tokens", Reason: "must be zero or greater"})
+		}
+	}
+	if len(p.Models) > 0 && !modelIDs[strings.TrimSpace(p.DefaultModel)] {
+		errs = append(errs, FieldError{Field: "providers." + id + ".default_model", Reason: "must reference an entry in models"})
 	}
 	if p.SecretRef != "" && !validSecretRefRe.MatchString(p.SecretRef) {
 		errs = append(errs, FieldError{
@@ -116,6 +143,9 @@ func (c *Config) Validate() error {
 			Field:  "listen.port",
 			Reason: fmt.Sprintf("must be between 1024 and 65535, got %d", p),
 		})
+	}
+	if host := c.Listen.HostValue(); host != "127.0.0.1" && host != "0.0.0.0" {
+		errs = append(errs, FieldError{Field: "listen.host", Reason: "must be 127.0.0.1 or 0.0.0.0"})
 	}
 	logDir := filepath.Clean(c.Logging.Dir)
 	if logDir == "." || filepath.IsAbs(logDir) || filepath.VolumeName(logDir) != "" || logDir == ".." || strings.HasPrefix(logDir, ".."+string(filepath.Separator)) {

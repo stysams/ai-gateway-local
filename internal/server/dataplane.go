@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"ai-gateway/internal/config"
 	"ai-gateway/internal/inbound/chat"
 	"ai-gateway/internal/inbound/messages"
 	"ai-gateway/internal/inbound/responses"
@@ -175,7 +176,7 @@ func (s *Server) serveDataPlane(w http.ResponseWriter, r *http.Request, client r
 		writeInboundError(w, http.StatusInternalServerError, inProto, "config not loaded", "")
 		return
 	}
-	trace, err := s.startTrace(cfg, client, inProto, body)
+	trace, err := s.startTrace(cfg, client, inProto, r, body)
 	if err != nil {
 		writeInboundError(w, http.StatusInternalServerError, inProto, err.Error(), "request_log_failed")
 		return
@@ -218,6 +219,21 @@ func (s *Server) serveDataPlane(w http.ResponseWriter, r *http.Request, client r
 	provider := providerInfo{
 		id: res.Provider, baseURL: cfgProvider.BaseURL, secretRef: cfgProvider.SecretRef,
 		imageInput: cfgProvider.Capabilities.ImageInput, reasoning: cfgProvider.Capabilities.Reasoning,
+		contextManagement: cfgProvider.Capabilities.ContextManagement,
+	}
+	if inProto == ir.ProtocolMessages && !provider.contextManagement {
+		var dropped bool
+		body, dropped, err = messages.DropContextManagement(body)
+		if err != nil {
+			writeInboundError(w, http.StatusBadRequest, inProto, err.Error(), "")
+			return
+		}
+		if dropped {
+			if err := s.writeContextManagementDropped(trace, inProto, outProto, provider.id); err != nil {
+				writeInboundError(w, http.StatusInternalServerError, inProto, err.Error(), "warning_log_failed")
+				return
+			}
+		}
 	}
 
 	if inProto == outProto {
@@ -274,7 +290,7 @@ func (s *Server) serveSameProtocol(w http.ResponseWriter, r *http.Request, proto
 		writeInboundError(w, http.StatusBadRequest, proto, err.Error(), "")
 		return
 	}
-	if err := trace.upstreamRequest(proto, provider, outBody); err != nil {
+	if err := trace.upstreamRequest(proto, provider, outBody, stream); err != nil {
 		trace.setError(err)
 		writeInboundError(w, http.StatusInternalServerError, proto, err.Error(), "request_log_failed")
 		return
@@ -332,7 +348,7 @@ func (s *Server) serveCrossProtocol(w http.ResponseWriter, r *http.Request, inPr
 		writeInboundError(w, http.StatusInternalServerError, inProto, err.Error(), "")
 		return
 	}
-	if err := trace.upstreamRequest(outProto, provider, outBody); err != nil {
+	if err := trace.upstreamRequest(outProto, provider, outBody, stream); err != nil {
 		trace.setError(err)
 		writeInboundError(w, http.StatusInternalServerError, inProto, err.Error(), "request_log_failed")
 		return
@@ -486,11 +502,12 @@ func upstreamErrorMessage(r io.Reader) string {
 
 // providerInfo is the subset of config.Provider the data plane needs.
 type providerInfo struct {
-	id         string
-	baseURL    string
-	secretRef  string
-	imageInput bool
-	reasoning  bool
+	id                string
+	baseURL           string
+	secretRef         string
+	imageInput        bool
+	reasoning         bool
+	contextManagement bool
 }
 
 // upstreamDo dispatches to the adapter pool matching the wire protocol.
@@ -697,6 +714,24 @@ func (s *Server) writeReasoningDropped(trace *requestTrace, inProto, outProto ir
 	return nil
 }
 
+func (s *Server) writeContextManagementDropped(trace *requestTrace, inProto, outProto ir.Protocol, providerID string) error {
+	if trace == nil {
+		return nil
+	}
+	if err := trace.session.Append("warning", map[string]any{
+		"code":    "context_management_dropped",
+		"message": "context_management was removed before the upstream request because the provider capability is disabled",
+		"details": map[string]any{
+			"inbound_protocol":  inProto,
+			"outbound_protocol": outProto,
+			"provider":          providerID,
+		},
+	}); err != nil {
+		return fmt.Errorf("write context management downgrade warning: %w", err)
+	}
+	return nil
+}
+
 func newRequestID() (string, error) {
 	var raw [12]byte
 	if _, err := rand.Read(raw[:]); err != nil {
@@ -818,17 +853,35 @@ func (s *Server) serveModels(w http.ResponseWriter, _ *http.Request) {
 	seen := map[string]bool{route.ReservedModel: true}
 	for _, id := range ids {
 		p := cfg.Providers[id]
+		if !p.EnabledValue() {
+			continue
+		}
 		modelID := id + "/" + p.DefaultModel
-		data = append(data, modelItem{
-			ID:      modelID,
-			Object:  "model",
-			OwnedBy: id,
-		})
-		seen[modelID] = true
+		if providerModelEnabled(p, p.DefaultModel) {
+			data = append(data, modelItem{ID: modelID, Object: "model", OwnedBy: id})
+			seen[modelID] = true
+		}
+		for _, model := range p.Models {
+			if !model.EnabledValue() {
+				continue
+			}
+			modelID = id + "/" + model.ID
+			if seen[modelID] {
+				continue
+			}
+			seen[modelID] = true
+			data = append(data, modelItem{ID: modelID, Object: "model", OwnedBy: id})
+		}
 	}
 	cache := s.cachedModels()
 	for _, id := range ids {
+		if !cfg.Providers[id].EnabledValue() {
+			continue
+		}
 		for _, model := range cache[id] {
+			if !providerModelEnabled(cfg.Providers[id], model.RawID) {
+				continue
+			}
 			if seen[model.ID] {
 				continue
 			}
@@ -837,4 +890,13 @@ func (s *Server) serveModels(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+}
+
+func providerModelEnabled(provider config.Provider, modelID string) bool {
+	for _, model := range provider.Models {
+		if model.ID == modelID {
+			return model.EnabledValue()
+		}
+	}
+	return true
 }

@@ -9,7 +9,7 @@ import (
 const PlaceholderEnvironment = "AI_GATEWAY_PLACEHOLDER_KEY"
 const PlaceholderValue = "ai-gateway-local"
 
-func Transform(original []byte, baseURL string) ([]byte, error) {
+func Transform(original []byte, baseURL string, displayModel ...string) ([]byte, error) {
 	doc, err := parse(original)
 	if err != nil {
 		return nil, err
@@ -19,7 +19,11 @@ func Transform(original []byte, baseURL string) ([]byte, error) {
 		return nil, err
 	}
 	doc["model_provider"] = "ai-gateway"
-	doc["model"] = "gateway-default"
+	model := "gateway-default"
+	if len(displayModel) > 0 && displayModel[0] != "" {
+		model = displayModel[0]
+	}
+	doc["model"] = model
 	providers["ai-gateway"] = map[string]any{
 		"name": "ai-gateway", "base_url": baseURL + "/c/codex/v1",
 		"wire_api": "responses", "env_key": PlaceholderEnvironment,
@@ -31,7 +35,7 @@ func Transform(original []byte, baseURL string) ([]byte, error) {
 	return out, nil
 }
 
-func Check(data []byte, baseURL string) (bool, error) {
+func Check(data []byte, baseURL string, displayModel ...string) (bool, error) {
 	doc, err := parse(data)
 	if err != nil {
 		return false, err
@@ -44,7 +48,11 @@ func Check(data []byte, baseURL string) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	return doc["model_provider"] == "ai-gateway" && doc["model"] == "gateway-default" &&
+	model := "gateway-default"
+	if len(displayModel) > 0 && displayModel[0] != "" {
+		model = displayModel[0]
+	}
+	return doc["model_provider"] == "ai-gateway" && doc["model"] == model &&
 		p["name"] == "ai-gateway" && p["base_url"] == baseURL+"/c/codex/v1" &&
 		p["wire_api"] == "responses" && p["env_key"] == PlaceholderEnvironment, nil
 }

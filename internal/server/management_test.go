@@ -45,6 +45,9 @@ func TestConfigAPIAtomicRoundTripPreservesUnknownTopLevelAndSecrets(t *testing.T
 	payload.Listen.Port = 23456
 	payload.Logging.Enabled = false
 	payload.UI.Language = "en-US"
+	provider := payload.Providers["openrouter"]
+	provider.Models = []ProviderModelPayload{{ID: provider.DefaultModel, Name: "Claude Sonnet", ContextWindow: 200000, MaxOutputTokens: 64000}}
+	payload.Providers["openrouter"] = provider
 	resp, body = httpJSON(t, addr, http.MethodPut, "/api/v1/config", payload)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("PUT config: %d %s", resp.StatusCode, body)
@@ -52,6 +55,9 @@ func TestConfigAPIAtomicRoundTripPreservesUnknownTopLevelAndSecrets(t *testing.T
 	got := s.cfg.Snapshot()
 	if got.Listen.PortValue() != 23456 || got.Logging.EnabledValue() || got.UI.Language != "en-US" {
 		t.Fatalf("active config not updated: %+v", got)
+	}
+	if models := got.Providers["openrouter"].Models; len(models) != 1 || models[0].ContextWindow != 200000 || models[0].MaxOutputTokens != 64000 {
+		t.Fatalf("provider model metadata not preserved: %+v", models)
 	}
 	disk, err := os.ReadFile(s.cfg.Path())
 	if err != nil {
@@ -99,13 +105,23 @@ func TestOpenAIProviderProbeModelsAndDataPlaneCache(t *testing.T) {
 	const key = "sk-probe-openai"
 	var mu sync.Mutex
 	var paths, auth []string
+	var probePromptBody string
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		paths = append(paths, r.URL.RequestURI())
 		auth = append(auth, r.Header.Get("Authorization"))
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"object":"list","data":[{"id":"z-model","owned_by":"vendor"},{"id":"a-model","owned_by":"vendor"},{"id":"a-model"}]}`)
+		switch r.URL.Path {
+		case "/v1/chat/completions":
+			requestBody, _ := io.ReadAll(r.Body)
+			probePromptBody = string(requestBody)
+			fmt.Fprint(w, `{"id":"probe","choices":[{"message":{"role":"assistant","content":"identity response"}}]}`)
+		case "/v1/models":
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"z-model","owned_by":"vendor"},{"id":"a-model","owned_by":"vendor"},{"id":"a-model"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	t.Cleanup(up.Close)
 	cfg := dataPlaneConfig(up.URL+"/v1", up.URL+"/v1", true)
@@ -124,7 +140,7 @@ func TestOpenAIProviderProbeModelsAndDataPlaneCache(t *testing.T) {
 	if err := json.Unmarshal(body, &probe); err != nil {
 		t.Fatal(err)
 	}
-	if !probe.OK || probe.Status != http.StatusOK || probe.Models != 2 {
+	if !probe.OK || probe.Status != http.StatusOK || probe.Models != 1 || !strings.Contains(probe.Response, "identity response") || !strings.Contains(probePromptBody, probePrompt) {
 		t.Fatalf("probe = %+v", probe)
 	}
 	resp, body = httpJSON(t, addr, http.MethodGet, "/api/v1/providers/openrouter/models", nil)
@@ -139,8 +155,8 @@ func TestOpenAIProviderProbeModelsAndDataPlaneCache(t *testing.T) {
 		t.Fatalf("models = %+v", models.Data)
 	}
 	mu.Lock()
-	for i := range paths {
-		if paths[i] != "/v1/models" || auth[i] != "Bearer "+key {
+	for i, expectedPath := range []string{"/v1/chat/completions", "/v1/models"} {
+		if paths[i] != expectedPath || auth[i] != "Bearer "+key {
 			t.Errorf("request %d path=%q auth=%q", i, paths[i], auth[i])
 		}
 	}
@@ -169,10 +185,14 @@ func TestOpenAIProviderProbeModelsAndDataPlaneCache(t *testing.T) {
 
 func TestAnthropicModelsHeadersAndProbeFailureDoesNotLeakBody(t *testing.T) {
 	const key = "sk-anthropic-probe"
-	var gotPath, gotKey, gotVersion, gotAuth string
+	var gotPath, gotKey, gotVersion, gotAuth, probeBody string
 	fail := false
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath, gotKey, gotVersion, gotAuth = r.URL.RequestURI(), r.Header.Get("x-api-key"), r.Header.Get("anthropic-version"), r.Header.Get("Authorization")
+		if r.Method == http.MethodPost {
+			body, _ := io.ReadAll(r.Body)
+			probeBody = string(body)
+		}
 		if fail {
 			w.WriteHeader(http.StatusUnauthorized)
 			io.WriteString(w, `{"error":"`+key+`"}`)
@@ -200,7 +220,7 @@ func TestAnthropicModelsHeadersAndProbeFailureDoesNotLeakBody(t *testing.T) {
 
 	fail = true
 	resp, body = httpJSON(t, addr, http.MethodPost, "/api/v1/providers/ollama/probe", nil)
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"ok":false`) || strings.Contains(string(body), key) {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"ok":false`) || strings.Contains(string(body), key) || gotPath != "/v1/messages" || !strings.Contains(probeBody, probePrompt) {
 		t.Fatalf("failed probe response = %d %s", resp.StatusCode, body)
 	}
 	resp, body = httpJSON(t, addr, http.MethodGet, "/api/v1/providers/ollama/models", nil)
@@ -208,3 +228,67 @@ func TestAnthropicModelsHeadersAndProbeFailureDoesNotLeakBody(t *testing.T) {
 		t.Fatalf("failed models response = %d %s", resp.StatusCode, body)
 	}
 }
+
+func TestDiscoverProviderModelsUsesDraftMetadataAndDoesNotPolluteCache(t *testing.T) {
+	const draftKey = "sk-draft-models"
+	var gotAuthorization string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuthorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[{"id":"model-b","name":"Model B","context_length":131072,"top_provider":{"context_length":200000,"max_completion_tokens":32000}},{"id":"model-a"}]}`)
+	}))
+	t.Cleanup(up.Close)
+	s, addr := startWithStore(t, config.Defaults(), secret.NewMemStore())
+	resp, body := httpJSON(t, addr, http.MethodPost, "/api/v1/provider-models/discover", DiscoverProviderModelsRequest{ProviderID: "draft", Adapter: "openai-chat", BaseURL: up.URL + "/v1", APIKey: stringPtr(draftKey)})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("discover models: %d %s", resp.StatusCode, body)
+	}
+	var result ProviderModelsResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuthorization != "Bearer "+draftKey {
+		t.Fatalf("authorization = %q", gotAuthorization)
+	}
+	if len(result.Data) != 2 || result.Data[0].RawID != "model-b" || result.Data[0].DisplayName != "Model B" || result.Data[0].ContextWindow != 200000 || result.Data[0].MaxOutputTokens != 32000 {
+		t.Fatalf("discovered models = %+v", result.Data)
+	}
+	if result.Data[1].ContextWindow != 0 || result.Data[1].MaxOutputTokens != 0 {
+		t.Fatalf("missing metadata was not kept unknown: %+v", result.Data[1])
+	}
+	if _, ok := s.cachedModels()["draft"]; ok {
+		t.Fatal("draft discovery polluted the data-plane model cache")
+	}
+	if _, ok := s.cfg.Snapshot().Providers["draft"]; ok {
+		t.Fatal("draft discovery persisted a provider")
+	}
+}
+
+func TestDiscoverProviderModelsReusesSavedSecretWhenDraftKeyIsEmpty(t *testing.T) {
+	const savedKey = "sk-saved-models"
+	var gotAuthorization string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuthorization = r.Header.Get("Authorization")
+		fmt.Fprint(w, `{"data":[{"id":"model"}]}`)
+	}))
+	t.Cleanup(up.Close)
+	cfg := config.Defaults()
+	p := cfg.Providers["ollama"]
+	p.BaseURL, p.SecretRef = up.URL+"/v1", "provider.ollama"
+	cfg.Providers["ollama"] = p
+	store := secret.NewMemStore()
+	if err := store.Put(context.Background(), p.SecretRef, []byte(savedKey)); err != nil {
+		t.Fatal(err)
+	}
+	_, addr := startWithStore(t, cfg, store)
+	empty := ""
+	resp, body := httpJSON(t, addr, http.MethodPost, "/api/v1/provider-models/discover", DiscoverProviderModelsRequest{ProviderID: "ollama", Adapter: p.Adapter, BaseURL: p.BaseURL, APIKey: &empty})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("discover models: %d %s", resp.StatusCode, body)
+	}
+	if gotAuthorization != "Bearer "+savedKey {
+		t.Fatalf("authorization = %q", gotAuthorization)
+	}
+}
+
+func stringPtr(value string) *string { return &value }

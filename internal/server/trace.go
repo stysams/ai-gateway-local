@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"ai-gateway/internal/config"
@@ -25,7 +27,7 @@ type requestTrace struct {
 	errText string
 }
 
-func (s *Server) startTrace(cfg *config.Config, client route.ClientID, proto ir.Protocol, body []byte) (*requestTrace, error) {
+func (s *Server) startTrace(cfg *config.Config, client route.ClientID, proto ir.Protocol, r *http.Request, body []byte) (*requestTrace, error) {
 	if !cfg.Logging.EnabledValue() {
 		return nil, nil
 	}
@@ -39,10 +41,11 @@ func (s *Server) startTrace(cfg *config.Config, client route.ClientID, proto ir.
 		return nil, err
 	}
 	t := &requestTrace{session: session, start: start}
-	if err := session.Append("request", map[string]any{
-		"protocol": proto, "client": client, "method": http.MethodPost,
-		"body": json.RawMessage(append([]byte(nil), body...)),
-	}); err != nil {
+	fields := requestLogFields(r)
+	fields["protocol"] = proto
+	fields["client"] = client
+	fields["body"] = json.RawMessage(append([]byte(nil), body...))
+	if err := session.Append("request", fields); err != nil {
 		return nil, err
 	}
 	return t, nil
@@ -70,7 +73,7 @@ func (t *requestTrace) route(provider, model, adapter string) error {
 	return t.session.Append("route", map[string]any{"provider": provider, "model": model, "adapter": adapter})
 }
 
-func (t *requestTrace) upstreamRequest(proto ir.Protocol, p providerInfo, body []byte) error {
+func (t *requestTrace) upstreamRequest(proto ir.Protocol, p providerInfo, body []byte, stream bool) error {
 	if t == nil {
 		return nil
 	}
@@ -83,10 +86,114 @@ func (t *requestTrace) upstreamRequest(proto ir.Protocol, p providerInfo, body [
 	case ir.ProtocolMessages:
 		endpoint = anthropic.CompletionURL(p.baseURL)
 	}
-	return t.session.Append("upstream_request", map[string]any{
+	fields := map[string]any{
 		"method": http.MethodPost, "url": endpoint,
-		"body": json.RawMessage(append([]byte(nil), body...)),
-	})
+		"headers": upstreamLogHeaders(proto, stream),
+		"body":    json.RawMessage(append([]byte(nil), body...)),
+	}
+	if p.secretRef != "" {
+		fields["omitted_sensitive_header_count"] = 1
+	}
+	return t.session.Append("upstream_request", fields)
+}
+
+func requestLogFields(r *http.Request) map[string]any {
+	headers, omittedHeaders := safeLogHeaders(r.Header)
+	query, omittedQuery := safeLogQuery(r.URL.Query())
+	scheme := r.URL.Scheme
+	if scheme == "" {
+		if r.TLS != nil {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
+	}
+	requestURI := r.URL.EscapedPath()
+	if encoded := query.Encode(); encoded != "" {
+		requestURI += "?" + encoded
+	}
+	fields := map[string]any{
+		"method": r.Method, "scheme": scheme, "host": r.Host,
+		"url": scheme + "://" + r.Host + requestURI, "path": r.URL.Path,
+		"request_uri": requestURI, "query": query,
+		"proto": r.Proto, "remote_addr": r.RemoteAddr, "headers": headers,
+		"content_length": r.ContentLength, "transfer_encoding": append([]string(nil), r.TransferEncoding...), "close": r.Close,
+	}
+	if r.URL.RawPath != "" {
+		fields["raw_path"] = r.URL.RawPath
+	}
+	if len(r.Trailer) > 0 {
+		trailers, omittedTrailers := safeLogHeaders(r.Trailer)
+		fields["trailers"] = trailers
+		omittedHeaders += omittedTrailers
+	}
+	if omittedHeaders > 0 {
+		fields["omitted_sensitive_header_count"] = omittedHeaders
+	}
+	if omittedQuery > 0 {
+		fields["omitted_sensitive_query_count"] = omittedQuery
+	}
+	return fields
+}
+
+func safeLogHeaders(source http.Header) (http.Header, int) {
+	result := make(http.Header, len(source))
+	omitted := 0
+	for name, values := range source {
+		if sensitiveLogName(name) {
+			omitted++
+			continue
+		}
+		result[http.CanonicalHeaderKey(name)] = append([]string(nil), values...)
+	}
+	return result, omitted
+}
+
+func safeLogQuery(source url.Values) (url.Values, int) {
+	result := make(url.Values, len(source))
+	omitted := 0
+	for name, values := range source {
+		if sensitiveLogName(name) {
+			omitted++
+			continue
+		}
+		result[name] = append([]string(nil), values...)
+	}
+	return result, omitted
+}
+
+func sensitiveLogName(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	compact := strings.NewReplacer("-", "", ".", "", "[", "", "]", "").Replace(normalized)
+	switch normalized {
+	case "authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key", "api-key":
+		return true
+	}
+	switch compact {
+	case "apikey", "token", "accesstoken", "authtoken", "idtoken", "refreshtoken", "session", "sessionid", "sessiontoken", "password", "passwd":
+		return true
+	}
+	return strings.Contains(normalized, "access-token") ||
+		strings.Contains(normalized, "auth-token") ||
+		strings.Contains(normalized, "password") ||
+		strings.Contains(normalized, "secret")
+}
+
+func upstreamLogHeaders(proto ir.Protocol, stream bool) http.Header {
+	headers := http.Header{
+		"Content-Type": {"application/json"},
+		"User-Agent":   {"ai-gateway"},
+	}
+	if stream {
+		headers["Accept"] = []string{"text/event-stream"}
+	} else {
+		headers["Accept"] = []string{"application/json"}
+	}
+	if proto == ir.ProtocolMessages {
+		headers["Anthropic-Version"] = []string{anthropic.APIVersion}
+	}
+	return headers
 }
 
 func (t *requestTrace) upstreamEvent(value any) {

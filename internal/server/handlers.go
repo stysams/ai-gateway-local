@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 
 	"ai-gateway/internal/config"
@@ -49,8 +50,10 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/providers/{id}", s.handleGetProvider)
 	mux.HandleFunc("PUT /api/v1/providers/{id}", s.handleUpdateProvider)
 	mux.HandleFunc("DELETE /api/v1/providers/{id}", s.handleDeleteProvider)
+	mux.HandleFunc("PUT /api/v1/providers/{id}/availability", s.handleUpdateProviderAvailability)
 	mux.HandleFunc("POST /api/v1/providers/{id}/probe", s.handleProbeProvider)
 	mux.HandleFunc("GET /api/v1/providers/{id}/models", s.handleProviderModels)
+	mux.HandleFunc("POST /api/v1/provider-models/discover", s.handleDiscoverProviderModels)
 	mux.HandleFunc("PUT /api/v1/routes/{client}", s.handlePutRoute)
 	mux.HandleFunc("GET /api/v1/clients/{client}", s.handleGetClient)
 	mux.HandleFunc("POST /api/v1/clients/{client}/point", s.handlePointClient)
@@ -110,10 +113,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "config_not_loaded", "config not loaded", nil)
 		return
 	}
-	baseURL := "http://" + s.ListenString(cfg)
-	codexState := s.points.Check("codex", baseURL)
-	claudeState := s.points.Check("claude", baseURL)
-	grokState := s.points.Check("grok", baseURL)
+	baseURL := s.ClientBaseURL(cfg)
+	codexState := s.points.Check("codex", baseURL, displayModelForClient(cfg, "codex"))
+	claudeState := s.points.Check("claude", baseURL, displayModelForClient(cfg, "claude"))
+	grokState := s.points.Check("grok", baseURL, displayModelForClient(cfg, "grok"))
 	st := StatusResponse{
 		Version:          s.version,
 		PID:              s.pid,
@@ -142,7 +145,23 @@ func (s *Server) ListenString(cfg *config.Config) string {
 	if addr := s.Addr(); addr != "" {
 		return addr
 	}
-	return fmt.Sprintf("127.0.0.1:%d", cfg.Listen.PortValue())
+	return fmt.Sprintf("%s:%d", cfg.Listen.HostValue(), cfg.Listen.PortValue())
+}
+
+// ClientBaseURL is the loopback URL written into local client configuration.
+// A wildcard listener is useful for other devices, but 0.0.0.0 is not a
+// valid destination that local clients should persist.
+func (s *Server) ClientBaseURL(cfg *config.Config) string {
+	port := cfg.Listen.PortValue()
+	if addr := s.Addr(); addr != "" {
+		if _, rawPort, err := net.SplitHostPort(addr); err == nil {
+			addr = rawPort
+			if addr != "" {
+				return "http://127.0.0.1:" + addr
+			}
+		}
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d", port)
 }
 
 // handleShutdown answers 202 Accepted, then triggers graceful shutdown. The

@@ -35,9 +35,29 @@ running. “Stop gateway” is the explicit action that calls the shutdown API.
 .\ai-gateway.exe stop
 ```
 
-The gateway listens only on `127.0.0.1`. The default management address is
-`http://127.0.0.1:12600`; `GET /readyz` must return HTTP 200 before pointing a
-client.
+The gateway defaults to `127.0.0.1`. To let other clients on the local network
+reach it, open Settings and select listen address `0.0.0.0`, then restart the
+gateway. The default management address is `http://127.0.0.1:12600`;
+`GET /readyz` must return HTTP 200 before pointing a client.
+
+## Configure provider models
+
+In the desktop Providers view, add or edit a provider and choose **Fetch
+models** after entering its identifier, adapter, Base URL, optional custom
+models endpoint, and optional API key. The endpoint defaults to `<base_url>/models`.
+The gateway reads the upstream model-list endpoint and fills the model ID,
+display name, context window, and maximum output-token fields only when the
+upstream response publishes those values. Missing values remain unknown; the
+gateway does not infer token limits from a model name.
+
+One provider can retain multiple models. Select one as the default and edit any
+discovered values before saving, or add a model manually when the upstream does
+not expose a model list. These limits are currently management metadata used by
+the catalog and interface; they do not yet truncate or reject data-plane
+requests.
+
+The Routes view shows a provider/model tree. Disabling a provider or model
+removes it from `/v1/models` and prevents requests from resolving to it.
 
 ## Login start
 
@@ -96,6 +116,14 @@ timestamped backup under the gateway data root, writes the client file
 atomically, updates the Codex placeholder environment variable when required,
 and verifies the final state. A failed write triggers rollback; a rollback
 failure is reported as `partial_failure` with the backup directory.
+
+Pointed agent CLIs use the provider-neutral `gateway-default` model. The
+gateway's `/v1/models` and `/c/{client}/v1/models` endpoints expose every
+enabled provider and model, while the configured route selects the upstream
+for `gateway-default` requests. Updating a client route changes the next
+request without rewriting the client configuration or replacing its restore
+backup. Restart an already-running agent CLI session if it caches
+configuration at startup.
 
 | Client | Default file | Override |
 | --- | --- | --- |

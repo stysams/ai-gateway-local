@@ -322,6 +322,8 @@ func TestValidateProvider(t *testing.T) {
 		{"ok", Provider{Name: "x", Adapter: "bogus", BaseURL: "https://x.ai", DefaultModel: "m"}, "providers.ok.adapter"},
 		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "relative", DefaultModel: "m"}, "providers.ok.base_url"},
 		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: ""}, "providers.ok.default_model"},
+		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", Models: []ProviderModel{{ID: "m"}, {ID: "m"}}}, "duplicates model"},
+		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "missing", Models: []ProviderModel{{ID: "m"}}}, "must reference an entry in models"},
 	}
 	for _, tc := range cases {
 		err := ValidateProvider(tc.id, tc.p)

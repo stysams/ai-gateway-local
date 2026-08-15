@@ -351,6 +351,67 @@ func TestChatUnknownFieldsPreserved(t *testing.T) {
 	}
 }
 
+func TestMessagesDropsUnsupportedContextManagement(t *testing.T) {
+	up := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\"}}\n\n")
+		_, _ = io.WriteString(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	})
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	p := cfg.Providers["openrouter"]
+	p.Adapter = "anthropic"
+	p.DefaultModel = "claude-opus-4-6"
+	p.Capabilities = config.Capabilities{Reasoning: true}
+	cfg.Providers["openrouter"] = p
+	s, addr := startWithStore(t, cfg, secret.NewMemStore())
+	body := []byte(`{"model":"m","stream":true,"messages":[],"context_management":{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}}`)
+	resp, data := chatPost(t, addr, "/c/claude/v1/messages", body, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(data), "message_start") {
+		t.Fatalf("response status=%d body=%s", resp.StatusCode, data)
+	}
+	req := up.last()
+	if _, ok := req.Fields["context_management"]; ok {
+		t.Fatalf("unsupported context_management reached upstream: %s", req.Fields["context_management"])
+	}
+	if _, ok := req.Fields["messages"]; !ok {
+		t.Fatal("messages field was lost")
+	}
+	files, err := filepath.Glob(filepath.Join(filepath.Dir(s.cfg.Path()), "logs", "*", "*.jsonl"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("warning files = %v, err = %v", files, err)
+	}
+	warning, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(warning), `"code":"context_management_dropped"`) {
+		t.Fatalf("warning = %s", warning)
+	}
+}
+
+func TestMessagesPreservesSupportedContextManagement(t *testing.T) {
+	up := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\"}}\n\n")
+		_, _ = io.WriteString(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	})
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	p := cfg.Providers["openrouter"]
+	p.Adapter = "anthropic"
+	p.DefaultModel = "claude-opus-4-6"
+	p.Capabilities = config.Capabilities{Reasoning: true, ContextManagement: true}
+	cfg.Providers["openrouter"] = p
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+	body := []byte(`{"model":"m","stream":true,"messages":[],"context_management":{"edits":[]}}`)
+	resp, _ := chatPost(t, addr, "/c/claude/v1/messages", body, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if _, ok := up.last().Fields["context_management"]; !ok {
+		t.Fatal("supported context_management was removed")
+	}
+}
+
 func TestChatInboundAuthDropped(t *testing.T) {
 	up := newFakeUpstream(t, nil)
 	_, addr := startDataPlane(t, up.URL, up.URL, false, nil)
@@ -689,6 +750,28 @@ func TestModelsList(t *testing.T) {
 	resp, _ := chatGet(t, addr, "/c/bogus/v1/models")
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("bogus models client: status %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestModelsListIncludesPersistedProviderCatalog(t *testing.T) {
+	up := newFakeUpstream(t, nil)
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	p := cfg.Providers["openrouter"]
+	p.Models = []config.ProviderModel{
+		{ID: p.DefaultModel, Name: "Claude Sonnet", ContextWindow: 200000, MaxOutputTokens: 64000},
+		{ID: "openai/gpt-5", Name: "GPT-5", ContextWindow: 400000, MaxOutputTokens: 128000},
+	}
+	cfg.Providers["openrouter"] = p
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+	resp, body := chatGet(t, addr, "/v1/models")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("models: %d %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `"id":"openrouter/openai/gpt-5"`) {
+		t.Fatalf("persisted model catalog missing: %s", body)
+	}
+	if strings.Count(string(body), `"id":"openrouter/anthropic/claude-sonnet-4"`) != 1 {
+		t.Fatalf("default model was duplicated: %s", body)
 	}
 }
 

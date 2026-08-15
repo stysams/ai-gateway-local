@@ -143,13 +143,13 @@ func ParseClient(raw string) (Client, error) {
 	}
 }
 
-func (m *Manager) Check(client Client, baseURL string) Status {
+func (m *Manager) Check(client Client, baseURL string, displayModel ...string) Status {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.check(client, baseURL)
+	return m.check(client, baseURL, displayModel...)
 }
 
-func (m *Manager) check(client Client, baseURL string) Status {
+func (m *Manager) check(client Client, baseURL string, displayModel ...string) Status {
 	target, installed, err := m.target(client)
 	status := Status{Client: client, Target: target, PointState: StateUnknown, BackupAvailable: m.latestManifest(client) != ""}
 	if err != nil {
@@ -170,7 +170,7 @@ func (m *Manager) check(client Client, baseURL string) Status {
 		status.Message = err.Error()
 		return status
 	}
-	pointed, err := checkContent(client, data, baseURL)
+	pointed, err := checkContent(client, data, baseURL, displayModel...)
 	if err != nil {
 		status.PointState = StateDrifted
 		status.Message = err.Error()
@@ -196,10 +196,23 @@ func (m *Manager) check(client Client, baseURL string) Status {
 	return status
 }
 
-func (m *Manager) Point(client Client, baseURL string) (Result, error) {
+func (m *Manager) Point(client Client, baseURL string, displayModel ...string) (Result, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	current := m.checkUnlocked(client, baseURL)
+	if len(displayModel) > 0 && displayModel[0] != "" {
+		migrated, err := m.syncDisplayModelLocked(client, baseURL, "gateway-default", displayModel[0])
+		if err != nil {
+			return Result{}, err
+		}
+		if migrated {
+			status := m.checkUnlocked(client, baseURL, displayModel...)
+			if status.PointState != StatePointed {
+				return Result{Status: status}, fmt.Errorf("point migration verification failed: %s", status.Message)
+			}
+			return Result{Status: status, Changed: true}, nil
+		}
+	}
+	current := m.checkUnlocked(client, baseURL, displayModel...)
 	if current.PointState == StatePointed {
 		return Result{Status: current, Changed: false}, nil
 	}
@@ -211,7 +224,7 @@ func (m *Manager) Point(client Client, baseURL string) (Result, error) {
 	if err != nil {
 		return Result{Status: current}, err
 	}
-	modified, err := transformContent(client, original, baseURL)
+	modified, err := transformContent(client, original, baseURL, displayModel...)
 	if err != nil {
 		return Result{Status: current}, err
 	}
@@ -266,7 +279,7 @@ func (m *Manager) Point(client Client, baseURL string) (Result, error) {
 			return rollback(err)
 		}
 	}
-	verified := m.checkUnlocked(client, baseURL)
+	verified := m.checkUnlocked(client, baseURL, displayModel...)
 	if verified.PointState != StatePointed {
 		return rollback(fmt.Errorf("point verification failed: %s", verified.Message))
 	}
@@ -278,16 +291,89 @@ func (m *Manager) Point(client Client, baseURL string) (Result, error) {
 	return Result{Status: verified, BackupDir: backupDir, Changed: true}, nil
 }
 
-func (m *Manager) checkUnlocked(client Client, baseURL string) Status {
-	return m.check(client, baseURL)
+func (m *Manager) checkUnlocked(client Client, baseURL string, displayModel ...string) Status {
+	return m.check(client, baseURL, displayModel...)
 }
 
-func (m *Manager) Restore(client Client, baseURL string) (Result, error) {
+// SyncDisplayModel updates an already managed client configuration when its
+// route changes. It deliberately does not create a new restore point: the
+// existing manifest must continue to restore the client configuration that
+// existed before ai-gateway first pointed it.
+func (m *Manager) SyncDisplayModel(client Client, baseURL, oldDisplayModel, newDisplayModel string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.syncDisplayModelLocked(client, baseURL, oldDisplayModel, newDisplayModel)
+}
+
+func (m *Manager) syncDisplayModelLocked(client Client, baseURL, oldDisplayModel, newDisplayModel string) (bool, error) {
+	if oldDisplayModel == newDisplayModel {
+		return false, nil
+	}
+	target, installed, err := m.target(client)
+	if err != nil {
+		return false, err
+	}
+	if !installed {
+		return false, nil
+	}
+	original, exists, mode, err := readFile(target)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, nil
+	}
+	managed, err := checkContent(client, original, baseURL, oldDisplayModel)
+	if err != nil {
+		return false, err
+	}
+	if !managed {
+		// Accept the legacy gateway-default form so the first route change
+		// transparently migrates clients pointed by earlier releases.
+		managed, err = checkContent(client, original, baseURL)
+		if err != nil {
+			return false, err
+		}
+	}
+	if !managed {
+		return false, nil
+	}
+	if client == ClientCodex {
+		value, exists, envErr := m.environment.Lookup(codex.PlaceholderEnvironment)
+		if envErr != nil {
+			return false, envErr
+		}
+		if !exists || value != codex.PlaceholderValue {
+			return false, nil
+		}
+	}
+	modified, err := transformContent(client, original, baseURL, newDisplayModel)
+	if err != nil {
+		return false, err
+	}
+	if err := atomicWrite(target, modified, mode); err != nil {
+		return false, err
+	}
+	verified, err := checkContent(client, modified, baseURL, newDisplayModel)
+	if err != nil || !verified {
+		rollbackErr := restoreFile(target, original, true, mode)
+		if err == nil {
+			err = errors.New("display model verification failed")
+		}
+		if rollbackErr != nil {
+			return false, &PartialFailureError{Operation: "sync display model", Cause: err, Rollback: rollbackErr}
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func (m *Manager) Restore(client Client, baseURL string, displayModel ...string) (Result, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	manifestPath := m.latestManifest(client)
 	if manifestPath == "" {
-		return Result{Status: m.checkUnlocked(client, baseURL)}, ErrNoRestore
+		return Result{Status: m.checkUnlocked(client, baseURL, displayModel...)}, ErrNoRestore
 	}
 	manifest, err := readManifest(manifestPath)
 	if err != nil {
@@ -345,7 +431,7 @@ func (m *Manager) Restore(client Client, baseURL string) (Result, error) {
 	if err := writeManifest(manifestPath, manifest); err != nil {
 		return rollback(err)
 	}
-	status := m.checkUnlocked(client, baseURL)
+	status := m.checkUnlocked(client, baseURL, displayModel...)
 	return Result{Status: status, BackupDir: backupDir, Changed: true}, nil
 }
 
@@ -428,26 +514,26 @@ func (m *Manager) latestManifest(client Client) string {
 	return ""
 }
 
-func transformContent(client Client, data []byte, baseURL string) ([]byte, error) {
+func transformContent(client Client, data []byte, baseURL string, displayModel ...string) ([]byte, error) {
 	switch client {
 	case ClientCodex:
-		return codex.Transform(data, baseURL)
+		return codex.Transform(data, baseURL, displayModel...)
 	case ClientClaude:
-		return claude.Transform(data, baseURL)
+		return claude.Transform(data, baseURL, displayModel...)
 	case ClientGrok:
-		return grok.Transform(data, baseURL)
+		return grok.Transform(data, baseURL, displayModel...)
 	}
 	return nil, errors.New("unknown client")
 }
 
-func checkContent(client Client, data []byte, baseURL string) (bool, error) {
+func checkContent(client Client, data []byte, baseURL string, displayModel ...string) (bool, error) {
 	switch client {
 	case ClientCodex:
-		return codex.Check(data, baseURL)
+		return codex.Check(data, baseURL, displayModel...)
 	case ClientClaude:
-		return claude.Check(data, baseURL)
+		return claude.Check(data, baseURL, displayModel...)
 	case ClientGrok:
-		return grok.Check(data, baseURL)
+		return grok.Check(data, baseURL, displayModel...)
 	}
 	return false, errors.New("unknown client")
 }

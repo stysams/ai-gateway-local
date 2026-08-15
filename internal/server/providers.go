@@ -37,31 +37,53 @@ func refFor(id string) string { return providerRefPrefix + id }
 // stored in config or returned by any read endpoint (docs/v1-scheme.md
 // §11.3).
 type ProviderRequest struct {
-	ID           string               `json:"id"`
-	Name         string               `json:"name"`
-	Adapter      string               `json:"adapter"`
-	BaseURL      string               `json:"base_url"`
-	DefaultModel string               `json:"default_model"`
-	APIKey       *string              `json:"api_key"`
-	Capabilities *CapabilitiesPayload `json:"capabilities"`
+	ID           string                 `json:"id"`
+	Name         string                 `json:"name"`
+	Adapter      string                 `json:"adapter"`
+	BaseURL      string                 `json:"base_url"`
+	ModelsURL    string                 `json:"models_url"`
+	DefaultModel string                 `json:"default_model"`
+	Enabled      *bool                  `json:"enabled"`
+	Models       []ProviderModelPayload `json:"models"`
+	APIKey       *string                `json:"api_key"`
+	Capabilities *CapabilitiesPayload   `json:"capabilities"`
+}
+
+// ProviderModelPayload is the editable, persisted model metadata for one
+// provider. Zero token limits mean the upstream did not publish a value.
+type ProviderModelPayload struct {
+	ID              string `json:"id"`
+	Name            string `json:"name,omitempty"`
+	ContextWindow   int    `json:"context_window"`
+	MaxOutputTokens int    `json:"max_output_tokens"`
+	Enabled         *bool  `json:"enabled,omitempty"`
 }
 
 // CapabilitiesPayload is the wire form of provider capability flags.
 type CapabilitiesPayload struct {
-	ImageInput bool `json:"image_input"`
-	Reasoning  bool `json:"reasoning"`
+	ImageInput        bool `json:"image_input"`
+	Reasoning         bool `json:"reasoning"`
+	ContextManagement bool `json:"context_management"`
 }
 
 // ProviderResponse is the provider payload returned by the management API.
 // It never carries secret material (docs/v1-scheme.md §11.3).
 type ProviderResponse struct {
-	ID           string              `json:"id"`
-	Name         string              `json:"name"`
-	Adapter      string              `json:"adapter"`
-	BaseURL      string              `json:"base_url"`
-	DefaultModel string              `json:"default_model"`
-	HasSecret    bool                `json:"has_secret"`
-	Capabilities CapabilitiesPayload `json:"capabilities"`
+	ID           string                 `json:"id"`
+	Name         string                 `json:"name"`
+	Adapter      string                 `json:"adapter"`
+	BaseURL      string                 `json:"base_url"`
+	ModelsURL    string                 `json:"models_url,omitempty"`
+	DefaultModel string                 `json:"default_model"`
+	Enabled      bool                   `json:"enabled"`
+	Models       []ProviderModelPayload `json:"models"`
+	HasSecret    bool                   `json:"has_secret"`
+	Capabilities CapabilitiesPayload    `json:"capabilities"`
+}
+
+type ProviderAvailabilityRequest struct {
+	Enabled *bool           `json:"enabled"`
+	Models  map[string]bool `json:"models"`
 }
 
 // PartialFailureError reports a transaction whose config write failed AND
@@ -118,18 +140,44 @@ func providerFromRequest(id string, req ProviderRequest) (config.Provider, error
 		Name:         req.Name,
 		Adapter:      req.Adapter,
 		BaseURL:      req.BaseURL,
+		ModelsURL:    req.ModelsURL,
 		DefaultModel: req.DefaultModel,
+		Models:       providerModelsFromPayload(req.Models),
+		Enabled:      req.Enabled,
 	}
 	if req.Capabilities != nil {
 		p.Capabilities = config.Capabilities{
-			ImageInput: req.Capabilities.ImageInput,
-			Reasoning:  req.Capabilities.Reasoning,
+			ImageInput:        req.Capabilities.ImageInput,
+			Reasoning:         req.Capabilities.Reasoning,
+			ContextManagement: req.Capabilities.ContextManagement,
 		}
 	}
 	if err := config.ValidateProvider(id, p); err != nil {
 		return p, err
 	}
 	return p, nil
+}
+
+func providerModelsFromPayload(models []ProviderModelPayload) []config.ProviderModel {
+	out := make([]config.ProviderModel, 0, len(models))
+	for _, model := range models {
+		out = append(out, config.ProviderModel{
+			ID: strings.TrimSpace(model.ID), Name: strings.TrimSpace(model.Name),
+			ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens, Enabled: model.Enabled,
+		})
+	}
+	return out
+}
+
+func providerModelsPayload(models []config.ProviderModel) []ProviderModelPayload {
+	out := make([]ProviderModelPayload, 0, len(models))
+	for _, model := range models {
+		out = append(out, ProviderModelPayload{
+			ID: model.ID, Name: model.Name, ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens,
+			Enabled: config.BoolPtr(model.EnabledValue()),
+		})
+	}
+	return out
 }
 
 // upsertProvider runs the provider write transaction
@@ -243,11 +291,15 @@ func (s *Server) providerResponse(ctx context.Context, id string, p config.Provi
 		Name:         p.Name,
 		Adapter:      p.Adapter,
 		BaseURL:      p.BaseURL,
+		ModelsURL:    p.ModelsURL,
 		DefaultModel: p.DefaultModel,
+		Enabled:      p.EnabledValue(),
+		Models:       providerModelsPayload(p.Models),
 		HasSecret:    s.hasSecret(ctx, p.SecretRef),
 		Capabilities: CapabilitiesPayload{
-			ImageInput: p.Capabilities.ImageInput,
-			Reasoning:  p.Capabilities.Reasoning,
+			ImageInput:        p.Capabilities.ImageInput,
+			Reasoning:         p.Capabilities.Reasoning,
+			ContextManagement: p.Capabilities.ContextManagement,
 		},
 	}
 }
@@ -334,6 +386,9 @@ func (s *Server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusConflict, "provider_exists", fmt.Sprintf("provider %q already exists; use PUT to update it", id), nil)
 		return
 	}
+	if p.Enabled == nil {
+		p.Enabled = config.BoolPtr(true)
+	}
 
 	if req.APIKey != nil && *req.APIKey != "" {
 		p.SecretRef = refFor(id)
@@ -380,6 +435,9 @@ func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// No new key: keep the previous ref so the existing secret survives.
 		p.SecretRef = old.SecretRef
+	}
+	if req.Enabled == nil {
+		p.Enabled = old.Enabled
 	}
 	resp, err := s.upsertProvider(r.Context(), id, p, keyBytes(req.APIKey))
 	if err != nil {
@@ -445,6 +503,57 @@ func (s *Server) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
 		body["warning"] = warning
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+func (s *Server) handleUpdateProviderAvailability(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req ProviderAvailabilityRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	s.txMu.Lock()
+	defer s.txMu.Unlock()
+	cfg := s.cfg.Snapshot()
+	if cfg == nil {
+		writeAPIError(w, http.StatusInternalServerError, "config_not_loaded", "config not loaded", nil)
+		return
+	}
+	p, ok := cfg.Providers[id]
+	if !ok {
+		writeAPIError(w, http.StatusNotFound, "provider_not_found", fmt.Sprintf("provider %q does not exist", id), nil)
+		return
+	}
+	if req.Enabled != nil {
+		p.Enabled = req.Enabled
+	}
+	for i := range p.Models {
+		if enabled, exists := req.Models[p.Models[i].ID]; exists {
+			p.Models[i].Enabled = config.BoolPtr(enabled)
+		}
+	}
+	for modelID, enabled := range req.Models {
+		found := false
+		for _, model := range p.Models {
+			if model.ID == modelID {
+				found = true
+				break
+			}
+		}
+		if !found && strings.TrimSpace(modelID) != "" {
+			p.Models = append(p.Models, config.ProviderModel{ID: strings.TrimSpace(modelID), Enabled: config.BoolPtr(enabled)})
+		}
+	}
+	cfg.Providers[id] = p
+	if err := cfg.Validate(); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "config_invalid", err.Error(), map[string]string{"field": validationField(err)})
+		return
+	}
+	if err := s.cfg.Write(cfg); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "config_write_failed", err.Error(), nil)
+		return
+	}
+	s.invalidateModels(id)
+	writeJSON(w, http.StatusOK, s.providerResponse(r.Context(), id, p))
 }
 
 // keyBytes converts an optional api_key payload into a writable byte slice,

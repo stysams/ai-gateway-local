@@ -1,4 +1,4 @@
-import type { ClientID, Config, LogSummary, PointClient, PointStatus, Provider, Route, Status, UsageReport } from "./types";
+import type { ClientID, Config, DiscoveredProviderModel, LogSummary, PointClient, PointStatus, Provider, Route, Status, UsageReport } from "./types";
 
 export class APIError extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); }
@@ -29,7 +29,11 @@ export const api = {
   providers: () => request<Provider[]>("/api/v1/providers"),
   saveProvider: (value: Record<string, unknown>, editing?: string) => request<Provider>(editing ? `/api/v1/providers/${editing}` : "/api/v1/providers", { method: editing ? "PUT" : "POST", body: JSON.stringify(value) }),
   deleteProvider: (id: string) => request<{ deleted: boolean; warning?: string }>(`/api/v1/providers/${id}`, { method: "DELETE" }),
-  probeProvider: (id: string) => request<{ ok: boolean; status: number; latency_ms: number; models?: number; error?: string }>(`/api/v1/providers/${id}/probe`, { method: "POST" }),
+  probeProvider: (id: string) => request<{ ok: boolean; status: number; latency_ms: number; models?: number; error?: string; response?: string }>(`/api/v1/providers/${id}/probe`, { method: "POST" }),
+  discoverProviderModels: (value: { provider_id: string; adapter: string; base_url: string; models_url?: string; api_key?: string }) =>
+    request<{ object: "list"; provider: string; data: DiscoveredProviderModel[] }>("/api/v1/provider-models/discover", { method: "POST", body: JSON.stringify(value) }),
+  updateProviderAvailability: (id: string, value: { enabled?: boolean; models?: Record<string, boolean> }) =>
+    request<Provider>(`/api/v1/providers/${id}/availability`, { method: "PUT", body: JSON.stringify(value) }),
   updateRoute: (client: ClientID, route: Route) => request<Route & { client: ClientID }>(`/api/v1/routes/${client}`, { method: "PUT", body: JSON.stringify(route) }),
   client: (client: PointClient) => request<PointStatus>(`/api/v1/clients/${client}`),
   point: (client: PointClient) => request<PointStatus>(`/api/v1/clients/${client}/point`, { method: "POST" }),

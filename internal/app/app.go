@@ -127,7 +127,7 @@ func runServe(args []string) int {
 		}
 		port = *portFlag
 	}
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	addr := fmt.Sprintf("%s:%d", cfg.Listen.HostValue(), port)
 
 	lock, err := process.AcquireLock(process.LockPath(dataDir))
 	if err != nil {

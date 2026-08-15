@@ -35,10 +35,20 @@ type Config struct {
 // Listen configures the loopback listener. The hostname is fixed to
 // 127.0.0.1 and never stored in config.
 type Listen struct {
+	// Host defaults to loopback. Set to 0.0.0.0 when other clients on the
+	// local network must reach the gateway.
+	Host string `yaml:"host,omitempty"`
 	// Port uses a pointer so an explicitly invalid value (e.g. 0 or 80) is
 	// rejected by validation instead of being silently replaced by the
 	// default; a missing field falls back to DefaultPort.
 	Port *int `yaml:"port,omitempty"`
+}
+
+func (l Listen) HostValue() string {
+	if l.Host == "" {
+		return "127.0.0.1"
+	}
+	return l.Host
 }
 
 // PortValue returns the effective port, applying DefaultPort when absent.
@@ -81,18 +91,40 @@ type Autostart struct {
 
 // Provider is a single upstream provider definition.
 type Provider struct {
-	Name         string       `yaml:"name"`
-	Adapter      string       `yaml:"adapter"`
-	BaseURL      string       `yaml:"base_url"`
-	DefaultModel string       `yaml:"default_model"`
-	SecretRef    string       `yaml:"secret_ref,omitempty"`
-	Capabilities Capabilities `yaml:"capabilities,omitempty"`
+	Name         string          `yaml:"name"`
+	Adapter      string          `yaml:"adapter"`
+	BaseURL      string          `yaml:"base_url"`
+	ModelsURL    string          `yaml:"models_url,omitempty"`
+	DefaultModel string          `yaml:"default_model"`
+	Models       []ProviderModel `yaml:"models,omitempty"`
+	Enabled      *bool           `yaml:"enabled,omitempty"`
+	SecretRef    string          `yaml:"secret_ref,omitempty"`
+	Capabilities Capabilities    `yaml:"capabilities,omitempty"`
+}
+
+func (p Provider) EnabledValue() bool {
+	return p.Enabled == nil || *p.Enabled
+}
+
+// ProviderModel is one model exposed by a provider. Token limits are zero
+// when the upstream model-list response did not publish them.
+type ProviderModel struct {
+	ID              string `yaml:"id"`
+	Name            string `yaml:"name,omitempty"`
+	ContextWindow   int    `yaml:"context_window,omitempty"`
+	MaxOutputTokens int    `yaml:"max_output_tokens,omitempty"`
+	Enabled         *bool  `yaml:"enabled,omitempty"`
+}
+
+func (m ProviderModel) EnabledValue() bool {
+	return m.Enabled == nil || *m.Enabled
 }
 
 // Capabilities describes provider feature flags.
 type Capabilities struct {
-	ImageInput bool `yaml:"image_input,omitempty"`
-	Reasoning  bool `yaml:"reasoning,omitempty"`
+	ImageInput        bool `yaml:"image_input,omitempty"`
+	Reasoning         bool `yaml:"reasoning,omitempty"`
+	ContextManagement bool `yaml:"context_management,omitempty"`
 }
 
 // Routes is the fixed set of four first-class client routes.
@@ -184,6 +216,19 @@ func (c *Config) clone() *Config {
 	if c.Providers != nil {
 		out.Providers = make(map[string]Provider, len(c.Providers))
 		for k, v := range c.Providers {
+			if v.Models != nil {
+				v.Models = append([]ProviderModel(nil), v.Models...)
+				for i := range v.Models {
+					if v.Models[i].Enabled != nil {
+						b := *v.Models[i].Enabled
+						v.Models[i].Enabled = &b
+					}
+				}
+			}
+			if v.Enabled != nil {
+				b := *v.Enabled
+				v.Enabled = &b
+			}
 			out.Providers[k] = v
 		}
 	}

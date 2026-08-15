@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 
 	"ai-gateway/internal/config"
@@ -17,7 +18,8 @@ type ConfigPayload struct {
 }
 
 type ConfigListenPayload struct {
-	Port int `json:"port"`
+	Host string `json:"host,omitempty"`
+	Port int    `json:"port"`
 }
 type ConfigLoggingPayload struct {
 	Enabled bool   `json:"enabled"`
@@ -31,12 +33,15 @@ type ConfigAutostartPayload struct {
 	Enabled bool `json:"enabled"`
 }
 type ConfigProviderPayload struct {
-	Name         string              `json:"name"`
-	Adapter      string              `json:"adapter"`
-	BaseURL      string              `json:"base_url"`
-	DefaultModel string              `json:"default_model"`
-	SecretRef    string              `json:"secret_ref,omitempty"`
-	Capabilities CapabilitiesPayload `json:"capabilities"`
+	Name         string                 `json:"name"`
+	Adapter      string                 `json:"adapter"`
+	BaseURL      string                 `json:"base_url"`
+	ModelsURL    string                 `json:"models_url,omitempty"`
+	DefaultModel string                 `json:"default_model"`
+	Enabled      *bool                  `json:"enabled,omitempty"`
+	Models       []ProviderModelPayload `json:"models"`
+	SecretRef    string                 `json:"secret_ref,omitempty"`
+	Capabilities CapabilitiesPayload    `json:"capabilities"`
 }
 type ConfigRoutesPayload struct {
 	Codex   RouteStatus `json:"codex"`
@@ -60,11 +65,14 @@ func configPayload(cfg *config.Config) ConfigPayload {
 	}
 	for id, p := range cfg.Providers {
 		out.Providers[id] = ConfigProviderPayload{
-			Name: p.Name, Adapter: p.Adapter, BaseURL: p.BaseURL,
+			Name: p.Name, Adapter: p.Adapter, BaseURL: p.BaseURL, ModelsURL: p.ModelsURL,
 			DefaultModel: p.DefaultModel, SecretRef: p.SecretRef,
+			Enabled:      config.BoolPtr(p.EnabledValue()),
+			Models:       providerModelsPayload(p.Models),
 			Capabilities: CapabilitiesPayload{ImageInput: p.Capabilities.ImageInput, Reasoning: p.Capabilities.Reasoning},
 		}
 	}
+	out.Listen.Host = cfg.Listen.HostValue()
 	return out
 }
 
@@ -76,14 +84,16 @@ func (p ConfigPayload) toConfig() *config.Config {
 	providers := make(map[string]config.Provider, len(p.Providers))
 	for id, provider := range p.Providers {
 		providers[id] = config.Provider{
-			Name: provider.Name, Adapter: provider.Adapter, BaseURL: provider.BaseURL,
+			Name: provider.Name, Adapter: provider.Adapter, BaseURL: provider.BaseURL, ModelsURL: provider.ModelsURL,
 			DefaultModel: provider.DefaultModel, SecretRef: provider.SecretRef,
+			Enabled:      provider.Enabled,
+			Models:       providerModelsFromPayload(provider.Models),
 			Capabilities: config.Capabilities{ImageInput: provider.Capabilities.ImageInput, Reasoning: provider.Capabilities.Reasoning},
 		}
 	}
 	return &config.Config{
 		Version:   p.Version,
-		Listen:    config.Listen{Port: config.IntPtr(p.Listen.Port)},
+		Listen:    config.Listen{Host: p.Listen.Host, Port: config.IntPtr(p.Listen.Port)},
 		Logging:   config.Logging{Enabled: config.BoolPtr(p.Logging.Enabled), Dir: p.Logging.Dir},
 		UI:        config.UI{Language: p.UI.Language, LoggingNoticeAccepted: p.UI.LoggingNoticeAccepted},
 		Autostart: config.Autostart{Enabled: p.Autostart.Enabled},
@@ -129,7 +139,17 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "config_invalid", err.Error(), map[string]string{"field": validationField(err)})
 		return
 	}
+	baseURL := s.ClientBaseURL(current)
+	applied, err := s.applyDisplayModelChanges(baseURL, displayModelChanges(current, next))
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "client_sync_failed", err.Error(), nil)
+		return
+	}
 	if err := s.cfg.Write(next); err != nil {
+		if rollbackErr := s.rollbackDisplayModelChanges(baseURL, applied); rollbackErr != nil {
+			writeAPIError(w, http.StatusInternalServerError, "partial_failure", fmt.Sprintf("write config: %v; rollback client display models: %v", err, rollbackErr), nil)
+			return
+		}
 		writeAPIError(w, http.StatusInternalServerError, "config_write_failed", err.Error(), nil)
 		return
 	}

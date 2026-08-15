@@ -81,20 +81,56 @@ func Resolve(client ClientID, requestedModel string, cfg *config.Config) (Resolu
 	if r.Provider == "" {
 		return Resolution{}, fmt.Errorf("route for client %q is not configured", client)
 	}
-	if _, ok := cfg.Providers[r.Provider]; !ok {
+	routeProvider, ok := cfg.Providers[r.Provider]
+	if !ok {
 		return Resolution{}, fmt.Errorf("route for client %q references unknown provider %q", client, r.Provider)
+	}
+	if !routeProvider.EnabledValue() {
+		return Resolution{}, fmt.Errorf("provider %q is disabled", r.Provider)
 	}
 
 	if requestedModel == "" || requestedModel == ReservedModel {
+		if !modelEnabled(routeProvider, r.Model) {
+			return Resolution{}, fmt.Errorf("model %q is disabled", r.Model)
+		}
 		return Resolution{Provider: r.Provider, Model: r.Model}, nil
 	}
 	if prefix, rest, ok := strings.Cut(requestedModel, "/"); ok {
 		if _, exists := cfg.Providers[prefix]; exists {
+			if !cfg.Providers[prefix].EnabledValue() {
+				return Resolution{}, fmt.Errorf("provider %q is disabled", prefix)
+			}
 			if rest == "" {
 				return Resolution{}, fmt.Errorf("model %q: provider prefix %q must be followed by a model name", requestedModel, prefix)
+			}
+			provider := cfg.Providers[prefix]
+			if !modelEnabled(provider, rest) {
+				return Resolution{}, fmt.Errorf("model %q is disabled for provider %q", rest, prefix)
 			}
 			return Resolution{Provider: prefix, Model: rest}, nil
 		}
 	}
+	if !modelEnabled(routeProvider, requestedModel) {
+		return Resolution{}, fmt.Errorf("model %q is disabled for provider %q", requestedModel, r.Provider)
+	}
 	return Resolution{Provider: r.Provider, Model: requestedModel}, nil
+}
+
+func modelEnabled(provider config.Provider, requested string) bool {
+	if requested == provider.DefaultModel {
+		for _, model := range provider.Models {
+			if model.ID == requested {
+				return model.EnabledValue()
+			}
+		}
+		return true
+	}
+	for _, model := range provider.Models {
+		if model.ID == requested {
+			return model.EnabledValue()
+		}
+	}
+	// A manually requested model remains a passthrough when the provider did
+	// not publish an explicit entry for it.
+	return true
 }

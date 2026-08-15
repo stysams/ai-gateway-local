@@ -80,6 +80,26 @@ func DropReasoning(body []byte) ([]byte, error) {
 	return json.Marshal(root)
 }
 
+// DropContextManagement removes the Anthropic context-management extension
+// when the selected upstream does not implement it. The field is deliberately
+// handled independently from the IR because it is a provider capability, not
+// a conversation semantic that can be converted across protocols.
+func DropContextManagement(body []byte) ([]byte, bool, error) {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(body, &root); err != nil {
+		return nil, false, err
+	}
+	if _, ok := root["context_management"]; !ok {
+		return body, false, nil
+	}
+	delete(root, "context_management")
+	encoded, err := json.Marshal(root)
+	if err != nil {
+		return nil, false, err
+	}
+	return encoded, true, nil
+}
+
 func presentJSON(raw json.RawMessage) bool {
 	value := strings.TrimSpace(string(raw))
 	return value != "" && value != "null"

@@ -2,7 +2,8 @@
 
 Local AI proxy gateway for Codex, Claude Code, Grok Build, and any OpenAI- or
 Anthropic-compatible app. The agent stays in those clients. This process keeps
-keys, routes, and protocol translation on `127.0.0.1`.
+keys, routes, and protocol translation on a configurable local listener
+(loopback by default).
 
 OpenCodex hijacks and extends Codex. This project is a local gateway that
 clients point at themselves.
@@ -26,7 +27,8 @@ Scope delivered:
   implementations (Windows `LockFileEx`, Unix `flock`) and the diagnostic
   `gateway.pid.json`.
 - CLI: `serve`, `stop`, `status`, `version` with the unified exit-code table.
-- HTTP on `127.0.0.1` only; port conflicts fail loudly, never silently switch
+- HTTP on `127.0.0.1` by default, with an explicit `0.0.0.0` local-network mode;
+  port conflicts fail loudly and never silently switch ports
   ports; graceful shutdown (signals, console close, management API).
 - Endpoints: `GET /healthz`, `GET /readyz`, `GET /api/v1/status`,
   `POST /api/v1/shutdown`.
@@ -80,7 +82,8 @@ Scope delivered:
   (zeroed after use, never logged; store failures map to 500, not 502) and
   full inbound auth/header dropping.
 - `GET /v1/models` and `/c/{client}/v1/models` returning
-  `gateway-default` plus `<provider-id>/<default-model>`.
+  `gateway-default` plus each persisted or discovered
+  `<provider-id>/<model-id>`.
 - Desensitized fixtures under `testdata/protocols/chat/` and fake-upstream
   integration tests covering every C-package branch (four-client
   isolation, prefix override/passthrough, unknown-field preservation,
@@ -148,9 +151,13 @@ next request, and doctor reports log writability, size, parseability, and
 interrupted files.
 
 **Task package G (complete management API) is implemented.** Config reads and
-validated atomic updates preserve unknown top-level YAML fields. Provider CRUD,
-real upstream probes and model discovery use adapter-specific authentication;
-route updates cover all four clients and apply on the next data-plane request.
+validated atomic updates preserve unknown top-level YAML fields. A provider is
+a multi-model container: its editable model catalog persists model identifiers,
+display names, context windows, and maximum output-token metadata. Provider
+CRUD, real upstream probes, and draft model discovery use adapter-specific
+authentication; upstream metadata is used only when published and unknown
+limits remain unknown. Route updates cover all four clients and apply on the
+next data-plane request.
 Log toggling, filtered log queries, and usage queries complete the headless
 management surface.
 
@@ -158,7 +165,10 @@ management surface.
 Codex, Claude Code, and Grok Build adapters preserve unrelated configuration,
 create SHA-256 backup manifests, atomically point at client-specific loopback
 paths, detect drift, and restore exact original bytes and the prior Codex
-environment value. Client status, point, restore, and doctor APIs are covered by
+environment value. Pointed clients use the provider-neutral `gateway-default`
+model; the gateway model endpoints expose every enabled provider and model,
+and route changes apply at request time without rewriting the pointed client or
+replacing the original restore point. Client status, point, restore, and doctor APIs are covered by
 unit and HTTP integration tests. See [docs/install.md](docs/install.md) for the
 operator flow and the required Windows client compatibility check.
 
@@ -166,7 +176,10 @@ operator flow and the required Windows client compatibility check.
 pins Wails `v3.0.0-beta.8` and embeds a React, TypeScript, and Vite frontend with
 an npm lockfile. It starts the loopback gateway when needed and offers Overview,
 Providers, Routes, Clients, Logs, Usage, and Settings views through management
-HTTP APIs only. The interface includes first-run body-log risk acceptance,
+HTTP APIs only. The provider editor can fetch an upstream model list before
+saving, choose a default model, and manually override token-limit metadata.
+Routes use the selected provider's catalog when available. The interface
+includes first-run body-log risk acceptance,
 Chinese and English, light and dark themes, keyboard operation, responsive
 layouts, and automated 1440×900 and 390×844 browser tests.
 

@@ -30,9 +30,9 @@ func TestRequestLogsQueriesUsageAndSecretSafety(t *testing.T) {
 	cfg := dataPlaneConfig(up.URL, up.URL, true)
 	s, addr := startWithStore(t, cfg, store)
 
-	resp, body := chatPost(t, addr, "/c/codex/v1/chat/completions",
+	resp, body := chatPost(t, addr, "/c/codex/v1/chat/completions?debug=true&api_key=query-secret",
 		[]byte(`{"model":"gateway-default","messages":[{"role":"user","content":"private prompt text"}]}`),
-		map[string]string{"Authorization": "Bearer inbound-secret", "Cookie": "session=secret"})
+		map[string]string{"Authorization": "Bearer inbound-secret", "Cookie": "session=secret", "X-Api-Key": "inbound-api-key", "X-Debug-Trace": "trace-value"})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
 	}
@@ -58,12 +58,12 @@ func TestRequestLogsQueriesUsageAndSecretSafety(t *testing.T) {
 		t.Fatalf("detail: %d %s", detailResp.StatusCode, detail)
 	}
 	text := string(detail)
-	for _, required := range []string{`"type":"request"`, `"type":"route"`, `"type":"upstream_request"`, `"type":"upstream_event"`, `"type":"client_event"`, `"type":"result"`, "private prompt text"} {
+	for _, required := range []string{`"type":"request"`, `"type":"route"`, `"type":"upstream_request"`, `"type":"upstream_event"`, `"type":"client_event"`, `"type":"result"`, `"path":"/c/codex/v1/chat/completions"`, `"request_uri":"/c/codex/v1/chat/completions?debug=true"`, `"X-Debug-Trace":["trace-value"]`, `"Accept":["application/json"]`, `"User-Agent":["ai-gateway"]`, `"omitted_sensitive_header_count":3`, `"omitted_sensitive_header_count":1`, `"omitted_sensitive_query_count":1`, "private prompt text"} {
 		if !strings.Contains(text, required) {
 			t.Errorf("detail missing %q: %s", required, detail)
 		}
 	}
-	for _, forbidden := range []string{upstreamSecret, "inbound-secret", "session=secret", "Authorization", "x-api-key", "Cookie"} {
+	for _, forbidden := range []string{upstreamSecret, "inbound-secret", "inbound-api-key", "session=secret", "query-secret", "Authorization", "x-api-key", "Cookie"} {
 		if strings.Contains(text, forbidden) {
 			t.Errorf("detail leaked %q: %s", forbidden, detail)
 		}

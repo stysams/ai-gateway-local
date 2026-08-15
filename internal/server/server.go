@@ -1,7 +1,6 @@
 // Package server hosts the headless gateway's HTTP surface: health checks,
-// the management API prefix and, in later task packages, the /v1 data plane.
-// It listens exclusively on 127.0.0.1 and never picks a different port when
-// the configured one is taken.
+// the management API prefix and the /v1 data plane. It supports loopback and
+// an explicit all-local-interfaces bind without silently changing ports.
 package server
 
 import (
@@ -88,9 +87,10 @@ func New(cfg *config.Manager, secrets secret.Store, version string, pid int) *Se
 	return s
 }
 
-// loopbackHost is the only listener host ai-gateway supports. The hostname
-// never enters config; it is always 127.0.0.1 (docs/v1-scheme.md §5.2).
+// Supported listener hosts. 0.0.0.0 lets other local clients reach the
+// gateway; callers must opt into it through config.
 const loopbackHost = "127.0.0.1"
+const allInterfacesHost = "0.0.0.0"
 
 // Listen binds 127.0.0.1:port without serving yet. The host part of addr is
 // enforced to be exactly 127.0.0.1 (docs/v1-scheme.md §1.2): the gateway
@@ -102,8 +102,12 @@ func (s *Server) Listen(addr string) error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", addr, err)
 	}
-	if host != loopbackHost {
-		return fmt.Errorf("listen on %s: refused: ai-gateway only listens on %s", addr, loopbackHost)
+	allowAllInterfaces := false
+	if cfg := s.cfg.Snapshot(); cfg != nil {
+		allowAllInterfaces = cfg.Listen.HostValue() == allInterfacesHost
+	}
+	if host != loopbackHost && !(host == allInterfacesHost && allowAllInterfaces) {
+		return fmt.Errorf("listen on %s: refused: supported hosts are %s and %s", addr, loopbackHost, allInterfacesHost)
 	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {

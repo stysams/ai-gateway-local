@@ -16,13 +16,32 @@ export interface Provider {
   name: string;
   adapter: string;
   base_url: string;
+  models_url?: string;
   default_model: string;
+  enabled?: boolean;
+  models: ProviderModel[];
   has_secret: boolean;
-  capabilities: { image_input: boolean; reasoning: boolean };
+  capabilities: { image_input: boolean; reasoning: boolean; context_management: boolean };
+}
+export interface ProviderModel {
+  id: string;
+  name?: string;
+  context_window: number;
+  max_output_tokens: number;
+  enabled?: boolean;
+}
+export interface DiscoveredProviderModel {
+  id: string;
+  provider_id: string;
+  raw_id: string;
+  display_name?: string;
+  owned_by?: string;
+  context_window?: number;
+  max_output_tokens?: number;
 }
 export interface Config {
   version: number;
-  listen: { port: number };
+  listen: { host?: string; port: number };
   logging: { enabled: boolean; dir: string };
   ui: { language: string; logging_notice_accepted: boolean };
   autostart: { enabled: boolean };

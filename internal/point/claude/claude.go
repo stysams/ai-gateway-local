@@ -17,7 +17,7 @@ var targetEnvironment = map[string]string{
 	"ANTHROPIC_DEFAULT_HAIKU_MODEL":  "gateway-default",
 }
 
-func Transform(original []byte, baseURL string) ([]byte, error) {
+func Transform(original []byte, baseURL string, displayModel ...string) ([]byte, error) {
 	doc, err := parse(original)
 	if err != nil {
 		return nil, err
@@ -26,7 +26,7 @@ func Transform(original []byte, baseURL string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	for name, value := range targets(baseURL) {
+	for name, value := range targets(baseURL, displayModel...) {
 		env[name] = value
 	}
 	out, err := json.MarshalIndent(doc, "", "  ")
@@ -36,7 +36,7 @@ func Transform(original []byte, baseURL string) ([]byte, error) {
 	return append(out, '\n'), nil
 }
 
-func Check(data []byte, baseURL string) (bool, error) {
+func Check(data []byte, baseURL string, displayModel ...string) (bool, error) {
 	doc, err := parse(data)
 	if err != nil {
 		return false, err
@@ -45,7 +45,7 @@ func Check(data []byte, baseURL string) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	for name, value := range targets(baseURL) {
+	for name, value := range targets(baseURL, displayModel...) {
 		if env[name] != value {
 			return false, nil
 		}
@@ -53,12 +53,17 @@ func Check(data []byte, baseURL string) (bool, error) {
 	return true, nil
 }
 
-func targets(baseURL string) map[string]string {
+func targets(baseURL string, displayModel ...string) map[string]string {
 	out := make(map[string]string, len(targetEnvironment))
 	for k, v := range targetEnvironment {
 		out[k] = v
 	}
 	out["ANTHROPIC_BASE_URL"] = baseURL + "/c/claude"
+	if len(displayModel) > 0 && displayModel[0] != "" {
+		for _, key := range []string{"ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"} {
+			out[key] = displayModel[0]
+		}
+	}
 	return out
 }
 

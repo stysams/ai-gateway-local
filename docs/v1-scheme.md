@@ -239,6 +239,11 @@ providers:
     adapter: openai-chat
     base_url: https://openrouter.ai/api/v1
     default_model: anthropic/claude-sonnet-4
+    models:
+      - id: anthropic/claude-sonnet-4
+        name: Claude Sonnet 4
+        context_window: 200000
+        max_output_tokens: 64000
     secret_ref: provider.openrouter
     capabilities:
       image_input: true
@@ -293,9 +298,13 @@ routes:
 - `adapter`：只允许 `openai-chat`、`openai-responses`、`anthropic`。
 - `base_url`：必须是绝对 HTTP 或 HTTPS URL，不得包含查询字符串或片段。
 - `default_model`：非空。
+- `models`：可选模型目录；每项包含非空且在同一 provider 内唯一的 `id`，以及可选 `name`、`context_window` 和 `max_output_tokens`。
+- `context_window` 和 `max_output_tokens`：分别是非负整数；`0` 表示上游未提供且用户尚未填写，不得按模型名称推测。协议不假定两个字段之间存在固定大小关系。
+- 当 `models` 非空时，`default_model` 必须引用目录中的模型。旧配置没有 `models` 时继续兼容。
 - `secret_ref`：可选；需要认证的供应商必须设置。
 - `capabilities.image_input`：布尔值，默认 `false`。
 - `capabilities.reasoning`：布尔值，默认 `false`。
+- `capabilities.context_management`：布尔值，默认 `false`。为兼容未实现 Anthropic 上下文管理扩展的第三方供应商，未启用时网关会移除请求中的 `context_management` 并记录 `context_management_dropped` 警告。
 - 删除仍被路由引用的 provider 必须返回冲突错误，不得级联修改路由。
 
 #### `routes`
@@ -430,7 +439,10 @@ generic
 
 `gateway-default` 是网关保留的模型名，含义是“使用该客户端当前路由中的默认模型”。
 
-三个一等客户端执行 point 后，必须把其默认模型设为 `gateway-default`。这是托盘切换路由后无需再次修改客户端文件的前提。
+三个一等客户端执行 point 后，必须把其默认模型设为供应商无关的
+`gateway-default`。客户端通过各自的 `/c/{client}/v1/models` 获取全部已启用
+供应商和模型，网关在请求到达时按客户端路由解析上游。管理面切换客户端路由时
+只影响下一次请求，不得改写已指向的客户端配置，也不得替换最初 point 创建的恢复点。
 
 ### 7.4 路由算法
 
@@ -450,7 +462,7 @@ generic
 `GET /v1/models` 和客户端前缀版本必须至少返回：
 
 - `gateway-default`。
-- 每个 provider 的默认模型，id 为 `<provider-id>/<default-model>`。
+- 每个 provider 持久化模型目录中的模型，id 为 `<provider-id>/<model-id>`；旧配置没有目录时至少返回 `<provider-id>/<default-model>`。
 
 若管理面成功从某个 provider 拉取模型列表，返回值中的模型 id 必须加 `<provider-id>/` 前缀。不同 provider 的同名模型不得互相覆盖。
 
@@ -745,6 +757,7 @@ PUT    /api/v1/providers/{id}
 DELETE /api/v1/providers/{id}
 POST   /api/v1/providers/{id}/probe
 GET    /api/v1/providers/{id}/models
+POST   /api/v1/provider-models/discover
 ```
 
 创建和更新请求可以包含写入后即丢弃的 `api_key` 字段。响应只返回：
@@ -756,6 +769,14 @@ GET    /api/v1/providers/{id}/models
   "adapter": "openai-chat",
   "base_url": "https://openrouter.ai/api/v1",
   "default_model": "anthropic/claude-sonnet-4",
+  "models": [
+    {
+      "id": "anthropic/claude-sonnet-4",
+      "name": "Claude Sonnet 4",
+      "context_window": 200000,
+      "max_output_tokens": 64000
+    }
+  ],
   "has_secret": true,
   "capabilities": {
     "image_input": true,
@@ -765,6 +786,14 @@ GET    /api/v1/providers/{id}/models
 ```
 
 `probe` 必须进行最小真实上游请求或模型列表请求，并返回耗时、状态和可读错误；不得自动保存任何配置修改。
+
+`POST /api/v1/provider-models/discover` 接收尚未保存的 `provider_id`、
+`adapter`、`base_url` 和可选 `api_key`，供管理端在创建 provider 时获取模型。
+编辑已有 provider 且 `api_key` 为空时使用已保存密钥。发现结果不得保存 provider、
+密钥或污染数据面模型缓存。上游明确发布的 `context_length`、
+`max_completion_tokens` 等元数据映射到模型目录；缺失字段返回零值，禁止推测。
+用户保存时可以覆盖这些值。上下文和输出令牌数目前仅是管理元数据，不代表数据面
+已实施请求裁剪或上限校验。
 
 ### 11.4 路由
 
@@ -921,6 +950,7 @@ env_key = "AI_GATEWAY_PLACEHOLDER_KEY"
 - 禁止覆盖保留 id `openai`、`ollama` 或 `lmstudio`。
 - `wire_api` 必须是 `responses`；当前 Codex 自定义 provider 不支持其他值。
 - 用户环境变量 `AI_GATEWAY_PLACEHOLDER_KEY` 必须是任意非空占位值。
+- `model` 固定为 `gateway-default`；客户端通过 `/c/codex/v1/models` 获取全部已启用供应商和模型。
 - 若环境变量原本存在，restore 必须恢复原值。
 - `doctor` 必须检查 provider 块、base URL、wire API、模型和环境变量。
 
@@ -949,6 +979,7 @@ env_key = "AI_GATEWAY_PLACEHOLDER_KEY"
 规则：
 
 - `ANTHROPIC_BASE_URL` 不带 `/v1`。
+- 四个模型环境变量固定为 `gateway-default`；客户端通过 `/c/claude/v1/models` 获取全部已启用供应商和模型。
 - 只改用户级配置，禁止改项目内 `.claude/settings.json`。
 - 指向说明必须明确：自定义非 Anthropic base URL 会禁用 Remote Control。
 - 指向说明必须明确：MCP tool search 在非第一方 host 下默认关闭或降级，行为取决于当前 Claude Code 版本和管理设置。
@@ -971,7 +1002,7 @@ default = "ai-gateway"
 [model."ai-gateway"]
 model = "gateway-default"
 base_url = "http://127.0.0.1:12600/c/grok/v1"
-name = "ai-gateway"
+name = "gateway-default"
 api_backend = "responses"
 api_key = "sk-ai-gateway-local"
 ```
@@ -979,6 +1010,7 @@ api_key = "sk-ai-gateway-local"
 规则：
 
 - `api_backend` 第一阶段固定为 `responses`。
+- `model` 和 `name` 固定为 `gateway-default`；客户端通过 `/c/grok/v1/models` 获取全部已启用供应商和模型。
 - 不修改项目级 `.grok/config.toml`。
 - 保留现有其他模型、MCP、插件、权限和 UI 配置。
 - `doctor` 应当提示用户可以运行 `grok inspect` 验证配置来源。
@@ -1037,13 +1069,13 @@ result
 
 要求：
 
-- `request` 记录入站协议、客户端和原始 JSON 正文。
+- `request` 记录入站协议、客户端、方法、完整地址、路径、查询参数、HTTP 版本、主机、远端地址、内容长度、传输编码、非敏感请求头、尾部字段和原始 JSON 正文。
 - `route` 记录最终 provider、model 和 adapter。
-- `upstream_request` 记录去除认证头后的 URL、方法和正文。
+- `upstream_request` 记录去除认证头后的 URL、方法、实际非敏感请求头和正文。
 - 流式时逐条追加 `upstream_event` 与 `client_event`。
 - `warning` 记录 reasoning 或扩展字段降级。
 - `result` 记录状态、耗时、用量、错误和完成时间。
-- 不记录 Authorization、x-api-key、Cookie 或系统 secret。
+- 不记录 Authorization、x-api-key、Cookie、密码、令牌、会话标识或系统 secret；事件使用 `omitted_sensitive_header_count` 和 `omitted_sensitive_query_count` 表示被省略的敏感字段数量。
 - 文件写入必须串行且可在异常结束时保留已有事件。
 
 ### 13.3 用量

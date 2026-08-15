@@ -188,6 +188,58 @@ func TestPointAndRestoreWhenOriginalFileDoesNotExist(t *testing.T) {
 	}
 }
 
+func TestPointMigratesLegacyDisplayModelWithoutReplacingOriginalBackup(t *testing.T) {
+	const displayModel = "openrouter/anthropic/claude-sonnet-4"
+	for _, client := range []Client{ClientCodex, ClientClaude, ClientGrok} {
+		t.Run(string(client), func(t *testing.T) {
+			home := t.TempDir()
+			target := clientTarget(home, client, nil)
+			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			original := []byte("custom = true\n")
+			if client == ClientClaude {
+				original = []byte("{\"custom\":true}\n")
+			}
+			if err := os.WriteFile(target, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			env := NewMemoryEnvironment()
+			m := testManager(t, home, env, map[string]string{}, nil)
+			legacy, err := m.Point(client, testBaseURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifestsBefore, _ := filepath.Glob(filepath.Join(m.dataRoot, "backups", string(client), "*", "manifest.json"))
+			migrated, err := m.Point(client, testBaseURL, displayModel)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifestsAfter, _ := filepath.Glob(filepath.Join(m.dataRoot, "backups", string(client), "*", "manifest.json"))
+			if !migrated.Changed || migrated.BackupDir != "" || len(manifestsAfter) != len(manifestsBefore) {
+				t.Fatalf("legacy migration replaced the restore point: legacy=%+v migrated=%+v before=%d after=%d", legacy, migrated, len(manifestsBefore), len(manifestsAfter))
+			}
+			data, err := os.ReadFile(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), displayModel) {
+				t.Fatalf("display model was not migrated:\n%s", data)
+			}
+			if _, err := m.Restore(client, testBaseURL, displayModel); err != nil {
+				t.Fatal(err)
+			}
+			restored, err := os.ReadFile(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(restored) != string(original) {
+				t.Fatalf("restore after migration = %q, want %q", restored, original)
+			}
+		})
+	}
+}
+
 func TestPointFailureAfterFileWriteRollsBack(t *testing.T) {
 	home := t.TempDir()
 	target := clientTarget(home, ClientCodex, nil)

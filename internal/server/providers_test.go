@@ -540,14 +540,14 @@ func TestProviderCapabilitiesRoundtrip(t *testing.T) {
 		"adapter":       "openai-chat",
 		"base_url":      "https://x.ai",
 		"default_model": "m",
-		"capabilities":  map[string]any{"image_input": true, "reasoning": true},
+		"capabilities":  map[string]any{"image_input": true, "reasoning": true, "context_management": true},
 	}
 	resp, data := httpJSON(t, addr, http.MethodPost, "/api/v1/providers", req)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
 	}
 	p := decodeProvider(t, data)
-	if !p.Capabilities.ImageInput || !p.Capabilities.Reasoning {
+	if !p.Capabilities.ImageInput || !p.Capabilities.Reasoning || !p.Capabilities.ContextManagement {
 		t.Errorf("capabilities = %+v, want both true", p.Capabilities)
 	}
 }

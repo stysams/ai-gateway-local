@@ -6,7 +6,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-func Transform(original []byte, baseURL string) ([]byte, error) {
+func Transform(original []byte, baseURL string, displayModel ...string) ([]byte, error) {
 	doc, err := parse(original)
 	if err != nil {
 		return nil, err
@@ -20,9 +20,15 @@ func Transform(original []byte, baseURL string) ([]byte, error) {
 		return nil, err
 	}
 	models["default"] = "ai-gateway"
+	model := "gateway-default"
+	name := "ai-gateway"
+	if len(displayModel) > 0 && displayModel[0] != "" {
+		model = displayModel[0]
+		name = displayModel[0]
+	}
 	modelSet["ai-gateway"] = map[string]any{
-		"model": "gateway-default", "base_url": baseURL + "/c/grok/v1",
-		"name": "ai-gateway", "api_backend": "responses", "api_key": "sk-ai-gateway-local",
+		"model": model, "base_url": baseURL + "/c/grok/v1",
+		"name": name, "api_backend": "responses", "api_key": "sk-ai-gateway-local",
 	}
 	out, err := toml.Marshal(doc)
 	if err != nil {
@@ -31,7 +37,7 @@ func Transform(original []byte, baseURL string) ([]byte, error) {
 	return out, nil
 }
 
-func Check(data []byte, baseURL string) (bool, error) {
+func Check(data []byte, baseURL string, displayModel ...string) (bool, error) {
 	doc, err := parse(data)
 	if err != nil {
 		return false, err
@@ -48,8 +54,14 @@ func Check(data []byte, baseURL string) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	return p["model"] == "gateway-default" && p["base_url"] == baseURL+"/c/grok/v1" &&
-		p["name"] == "ai-gateway" && p["api_backend"] == "responses" && p["api_key"] == "sk-ai-gateway-local", nil
+	model := "gateway-default"
+	name := "ai-gateway"
+	if len(displayModel) > 0 && displayModel[0] != "" {
+		model = displayModel[0]
+		name = displayModel[0]
+	}
+	return p["model"] == model && p["base_url"] == baseURL+"/c/grok/v1" &&
+		p["name"] == name && p["api_backend"] == "responses" && p["api_key"] == "sk-ai-gateway-local", nil
 }
 
 func parse(data []byte) (map[string]any, error) {

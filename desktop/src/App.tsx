@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity, Boxes, Cable, Check, ChevronRight, CircleAlert, Database, FileClock, Gauge,
+  Activity, Boxes, Cable, Check, ChevronRight, CircleAlert, Copy, Database, FileClock, Gauge,
   Languages, Moon, Network, Plus, Power, RefreshCw, RotateCcw, Save, Server, Settings, Sun,
   TerminalSquare, Trash2, X,
 } from "lucide-react";
 import { api } from "./api";
 import { translator, type Language, type MessageKey } from "./i18n";
-import type { ClientID, Config, LogSummary, PointClient, PointStatus, Provider, Status, UsageGroup, UsageReport } from "./types";
+import type { ClientID, Config, LogSummary, PointClient, PointStatus, Provider, ProviderModel, Status, UsageGroup, UsageReport } from "./types";
 import { validateProvider, type ProviderFormValue } from "./validation";
 
 type Page = "overview" | "providers" | "routes" | "clients" | "logs" | "usage" | "settings";
@@ -21,7 +21,7 @@ const navigation: { id: Page; icon: typeof Activity }[] = [
   { id: "clients", icon: Cable }, { id: "logs", icon: FileClock }, { id: "usage", icon: Gauge }, { id: "settings", icon: Settings },
 ];
 
-const emptyProvider: ProviderFormValue = { id: "", name: "", adapter: "openai-chat", base_url: "", default_model: "", api_key: "" };
+const emptyProvider: ProviderFormValue = { id: "", name: "", adapter: "openai-chat", base_url: "", models_url: "", default_model: "", models: [], api_key: "" };
 
 export function App() {
   const [page, setPage] = useState<Page>("overview");
@@ -98,10 +98,10 @@ export function App() {
         {busy && !status ? <div className="loading"><RefreshCw className="spin" size={18} />{t("loading")}</div> : (
           <div className="content">
             {page === "overview" && <Overview status={status} usage={usage} t={t} />}
-            {page === "providers" && <Providers providers={providers} t={t} run={run} />}
+            {page === "providers" && <Providers providers={providers} t={t} run={run} notify={pushToast} />}
             {page === "routes" && status && <Routes status={status} providers={providers} t={t} run={run} />}
             {page === "clients" && <Clients clients={clients} t={t} run={run} />}
-            {page === "logs" && config && <Logs items={logs} enabled={config.logging.enabled} t={t} run={run} />}
+            {page === "logs" && config && <Logs items={logs} enabled={config.logging.enabled} t={t} run={run} notify={pushToast} />}
             {page === "usage" && <Usage usage={usage} t={t} />}
             {page === "settings" && config && <SettingsPage config={config} language={language} theme={theme} setLanguage={setLanguage} setTheme={setTheme} t={t} run={run} />}
           </div>
@@ -158,33 +158,89 @@ function Metric({ label, value, note, icon: Icon }: { label: string; value: stri
   return <div className="metric"><div className="metric-label"><Icon size={16} />{label}</div><strong>{value}</strong><span>{note}</span></div>;
 }
 
-function Providers({ providers, t, run }: { providers: Provider[]; t: (key: MessageKey) => string; run: (op: () => Promise<unknown>, message?: string) => Promise<void> }) {
-  const [open, setOpen] = useState(false); const [editing, setEditing] = useState<string>(); const [form, setForm] = useState(emptyProvider); const [errors, setErrors] = useState<Record<string, string>>({});
-  const edit = (p: Provider) => { setEditing(p.id); setForm({ id: p.id, name: p.name, adapter: p.adapter, base_url: p.base_url, default_model: p.default_model, api_key: "" }); setOpen(true); };
+function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (key: MessageKey) => string; run: (op: () => Promise<unknown>, message?: string) => Promise<void>; notify: (kind: ToastKind, message: string) => void }) {
+  const [open, setOpen] = useState(false); const [editing, setEditing] = useState<string>(); const [form, setForm] = useState(emptyProvider); const [errors, setErrors] = useState<Record<string, string>>({}); const [fetching, setFetching] = useState(false);
+  const [probe, setProbe] = useState<{ provider: string; result: { ok: boolean; status: number; latency_ms: number; models?: number; error?: string; response?: string } } | null>(null);
+  const edit = (p: Provider) => {
+    const models = p.models?.length ? p.models : [{ id: p.default_model, name: "", context_window: 0, max_output_tokens: 0 }];
+    setEditing(p.id); setForm({ id: p.id, name: p.name, adapter: p.adapter, base_url: p.base_url, models_url: p.models_url || "", default_model: p.default_model, models, api_key: "" }); setErrors({}); setOpen(true);
+  };
+  const updateModel = (index: number, patch: Partial<ProviderModel>) => setForm((current) => ({ ...current, models: current.models.map((model, modelIndex) => modelIndex === index ? { ...model, ...patch } : model) }));
+  const removeModel = (index: number) => setForm((current) => {
+    const removed = current.models[index]; const models = current.models.filter((_, modelIndex) => modelIndex !== index);
+    const default_model = current.default_model === removed.id ? (models[0]?.id || "") : current.default_model;
+    return { ...current, models, default_model };
+  });
+  const addModel = () => setForm((current) => ({ ...current, models: [...current.models, { id: "", name: "", context_window: 0, max_output_tokens: 0 }] }));
+  const fetchModels = async () => {
+    const discoveryErrors = validateProvider({ ...form, name: "discovery", default_model: "discovery", models: [] }, false);
+    const nextErrors = Object.fromEntries(Object.entries(discoveryErrors).filter(([field]) => ["id", "adapter", "base_url", "models_url"].includes(field)));
+    if (Object.keys(nextErrors).length) { setErrors(nextErrors); notify("error", t("fetchModelsHint")); return; }
+    setFetching(true);
+    try {
+      const result = await api.discoverProviderModels({ provider_id: form.id, adapter: form.adapter, base_url: form.base_url, models_url: form.models_url || undefined, api_key: form.api_key || undefined });
+      setForm((current) => {
+        const existing = new Map(current.models.filter((model) => model.id.trim()).map((model) => [model.id, model]));
+        const fetched = result.data.map((model) => {
+          const saved = existing.get(model.raw_id); existing.delete(model.raw_id);
+          return { id: model.raw_id, name: saved?.name || model.display_name || "", context_window: saved?.context_window || model.context_window || 0, max_output_tokens: saved?.max_output_tokens || model.max_output_tokens || 0, enabled: saved?.enabled };
+        });
+        const models = [...fetched, ...existing.values()];
+        if (current.default_model && !models.some((model) => model.id === current.default_model)) models.push({ id: current.default_model, name: "", context_window: 0, max_output_tokens: 0 });
+        return { ...current, models, default_model: current.default_model || models[0]?.id || "" };
+      });
+      setErrors({}); notify("success", `${result.data.length}${t("modelsFound")}`);
+    } catch (reason) { notify("error", reason instanceof Error ? reason.message : String(reason)); }
+    finally { setFetching(false); }
+  };
   const submit = async (event: React.FormEvent) => {
     event.preventDefault(); const nextErrors = validateProvider(form, Boolean(editing)); setErrors(nextErrors); if (Object.keys(nextErrors).length) return;
-    await run(() => api.saveProvider({ ...(editing ? {} : { id: form.id }), name: form.name, adapter: form.adapter, base_url: form.base_url, default_model: form.default_model, api_key: form.api_key || undefined, capabilities: { image_input: true, reasoning: true } }, editing), t("success"));
-    setOpen(false); setEditing(undefined); setForm(emptyProvider);
+    await run(() => api.saveProvider({ ...(editing ? {} : { id: form.id }), name: form.name, adapter: form.adapter, base_url: form.base_url, models_url: form.models_url?.trim() || undefined, default_model: form.default_model, models: form.models.map((model) => ({ ...model, id: model.id.trim(), name: model.name?.trim() || undefined })), api_key: form.api_key || undefined, capabilities: { image_input: true, reasoning: true, context_management: false } }, editing), t("success"));
+  setOpen(false); setEditing(undefined); setForm(emptyProvider);
   };
-  return <section><SectionHeader title={t("providers")} description={`${providers.length}${t("configured")}`} action={<button className="primary" onClick={() => { setOpen(true); setEditing(undefined); setForm(emptyProvider); }}><Plus size={16} />{t("addProvider")}</button>} />
+  const probeProvider = async (provider: Provider) => {
+    try {
+      const result = await api.probeProvider(provider.id);
+      setProbe({ provider: provider.name, result });
+      if (!result.ok) notify("error", result.error || t("probeFailed"));
+    } catch (reason) { notify("error", reason instanceof Error ? reason.message : String(reason)); }
+  };
+  return <section><SectionHeader title={t("providers")} description={`${providers.length}${t("configured")}`} action={<button className="primary" onClick={() => { setOpen(true); setEditing(undefined); setForm(emptyProvider); setErrors({}); }}><Plus size={16} />{t("addProvider")}</button>} />
     {open && <form className="form-panel" onSubmit={submit} noValidate><div className="form-grid">
       <Field label={t("identifier")} error={errors.id}><input value={form.id} disabled={Boolean(editing)} onChange={(e) => setForm({ ...form, id: e.target.value })} /></Field>
       <Field label={t("name")} error={errors.name}><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
       <Field label={t("adapter")} error={errors.adapter}><select value={form.adapter} onChange={(e) => setForm({ ...form, adapter: e.target.value })}><option>openai-chat</option><option>openai-responses</option><option>anthropic</option></select></Field>
-      <Field label={t("model")} error={errors.default_model}><input value={form.default_model} onChange={(e) => setForm({ ...form, default_model: e.target.value })} /></Field>
       <Field label={t("baseURL")} error={errors.base_url} wide><input type="url" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} /></Field>
+      <Field label={t("modelsURL")} error={errors.models_url} wide><input type="url" value={form.models_url} placeholder={t("modelsURLPlaceholder")} onChange={(e) => setForm({ ...form, models_url: e.target.value })} /></Field>
       <Field label={t("apiKey")} wide><input type="password" autoComplete="new-password" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} placeholder={editing ? t("keepKey") : "sk-…"} /></Field>
-    </div><div className="form-actions"><button type="button" className="secondary" onClick={() => setOpen(false)}>{t("cancel")}</button><button className="primary" type="submit"><Save size={16} />{t("save")}</button></div></form>}
-    {providers.length === 0 ? <Empty text={t("noProviders")} /> : <div className="table-wrap"><table><thead><tr><th>{t("provider")}</th><th>{t("adapter")}</th><th>{t("model")}</th><th>{t("status")}</th><th className="actions">{t("actions")}</th></tr></thead><tbody>{providers.map((p) => <tr key={p.id}><td><strong>{p.name}</strong><small>{p.id} · {p.base_url}</small></td><td className="mono">{p.adapter}</td><td className="mono">{p.default_model}</td><td><State value={p.has_secret ? "key ready" : "keyless"} /></td><td className="actions"><button className="text-button" onClick={() => void run(async () => { const result = await api.probeProvider(p.id); if (!result.ok) throw new Error(result.error || "Probe failed"); }, t("success"))}>{t("probe")}</button><button className="icon-button compact" onClick={() => edit(p)} title={t("edit")}><Settings size={15} /></button><button className="icon-button compact danger" onClick={() => { if (confirm(t("confirmDelete"))) void run(() => api.deleteProvider(p.id)); }} title={t("remove")}><Trash2 size={15} /></button></td></tr>)}</tbody></table></div>}
+    </div><div className="model-catalog"><div className="model-catalog-header"><div><h3>{t("modelCatalog")}</h3><p>{t("modelCatalogDescription")}</p></div><button type="button" className="secondary" onClick={() => void fetchModels()} disabled={fetching}><RefreshCw size={15} className={fetching ? "spin" : ""} />{fetching ? t("fetchingModels") : t("fetchModels")}</button></div>
+      {errors.default_model && <small className="field-error catalog-error">{errors.default_model.replaceAll("_", " ")}</small>}
+      {form.models.length === 0 ? <div className="model-empty">{t("noModels")}</div> : <div className="model-editor" role="table" aria-label={t("modelCatalog")}><div className="model-editor-head" role="row"><span>{t("defaultModel")}</span><span>{t("modelID")}</span><span>{t("displayName")}</span><span>{t("contextWindow")}</span><span>{t("maxOutputTokens")}</span><span /></div>{form.models.map((model, index) => <div className="model-editor-row" role="row" key={`${model.id}-${index}`}><label className="default-radio" title={t("defaultModel")}><input type="radio" name="default-model" checked={Boolean(model.id) && form.default_model === model.id} onChange={() => setForm({ ...form, default_model: model.id })} /><span>{t("defaultModel")}</span></label><label><span>{t("modelID")}</span><input className="mono" value={model.id} onChange={(e) => { const previous = model.id; updateModel(index, { id: e.target.value }); if (form.default_model === previous) setForm((current) => ({ ...current, default_model: e.target.value, models: current.models.map((item, itemIndex) => itemIndex === index ? { ...item, id: e.target.value } : item) })); }} aria-invalid={Boolean(errors[`models.${index}.id`])} />{errors[`models.${index}.id`] && <small className="field-error">{errors[`models.${index}.id`].replaceAll("_", " ")}</small>}</label><label><span>{t("displayName")}</span><input value={model.name || ""} onChange={(e) => updateModel(index, { name: e.target.value })} /></label><label><span>{t("contextWindow")}</span><input className="mono" type="number" min="0" placeholder={t("upstreamUnknown")} value={model.context_window || ""} onChange={(e) => updateModel(index, { context_window: Number(e.target.value) || 0 })} aria-invalid={Boolean(errors[`models.${index}.context_window`])} /></label><label><span>{t("maxOutputTokens")}</span><input className="mono" type="number" min="0" placeholder={t("upstreamUnknown")} value={model.max_output_tokens || ""} onChange={(e) => updateModel(index, { max_output_tokens: Number(e.target.value) || 0 })} aria-invalid={Boolean(errors[`models.${index}.max_output_tokens`])} /></label><button type="button" className="icon-button compact danger" onClick={() => removeModel(index)} title={t("removeModel")} aria-label={`${t("removeModel")} ${model.id || index + 1}`}><Trash2 size={15} /></button></div>)}</div>}
+      <button type="button" className="text-button add-model" onClick={addModel}><Plus size={15} />{t("addModel")}</button></div>
+    <div className="form-actions"><button type="button" className="secondary" onClick={() => setOpen(false)}>{t("cancel")}</button><button className="primary" type="submit"><Save size={16} />{t("save")}</button></div></form>}
+    {providers.length === 0 ? <Empty text={t("noProviders")} /> : <div className="table-wrap"><table><thead><tr><th>{t("provider")}</th><th>{t("adapter")}</th><th>{t("model")}</th><th>{t("modelCount")}</th><th>{t("status")}</th><th className="actions">{t("actions")}</th></tr></thead><tbody>{providers.map((p) => <tr key={p.id}><td><strong>{p.name}</strong><small>{p.id} · {p.base_url}</small></td><td className="mono">{p.adapter}</td><td className="mono">{p.default_model}</td><td className="mono">{p.models?.length || 0}</td><td><State value={p.enabled === false ? "disabled" : p.has_secret ? "key ready" : "keyless"} /></td><td className="actions"><button className="text-button" onClick={() => void probeProvider(p)}>{t("probe")}</button><button className="icon-button compact" onClick={() => edit(p)} title={t("edit")}><Settings size={15} /></button><button className="icon-button compact danger" onClick={() => { if (confirm(t("confirmDelete"))) void run(() => api.deleteProvider(p.id)); }} title={t("remove")}><Trash2 size={15} /></button></td></tr>)}</tbody></table></div>}
+    {probe && <div className="modal-backdrop" onMouseDown={() => setProbe(null)}><div className="modal probe-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><div className="drawer-title"><div><p className="eyebrow">{t("probeResponse")}</p><h2>{probe.provider}</h2></div><button className="icon-button" onClick={() => setProbe(null)} aria-label={t("close")}><X size={17} /></button></div><div className="probe-meta"><State value={probe.result.ok ? "ok" : "failed"} /><span>{probe.result.status || "-"} · {probe.result.latency_ms} ms · {probe.result.models || 0} {t("models")}</span></div>{probe.result.error && <p className="field-error">{probe.result.error}</p>}<pre>{formatProbeResponse(probe.result.response) || t("noProbeResponse")}</pre></div></div>}
   </section>;
+}
+
+function formatProbeResponse(value?: string): string {
+  if (!value) return "";
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return value.trim();
+  }
 }
 
 function Field({ label, error, wide, children }: { label: string; error?: string; wide?: boolean; children: React.ReactNode }) { return <label className={wide ? "field wide" : "field"}><span>{label}</span>{children}{error && <small className="field-error">{error.replaceAll("_", " ")}</small>}</label>; }
 
 function Routes({ status, providers, t, run }: { status: Status; providers: Provider[]; t: (key: MessageKey) => string; run: (op: () => Promise<unknown>, message?: string) => Promise<void> }) {
   const [draft, setDraft] = useState(status.routes);
+  const toggleProvider = (provider: Provider, enabled: boolean) => run(() => api.updateProviderAvailability(provider.id, { enabled }), t("success"));
+  const toggleModel = (provider: Provider, model: ProviderModel, enabled: boolean) => run(() => api.updateProviderAvailability(provider.id, { models: { [model.id]: enabled } }), t("success"));
   return <section><SectionHeader title={t("routes")} description={t("routesDescription")} />
-    <div className="route-list">{allClients.map((client) => <div className="route-row" key={client}><div><strong className="mono">{client}</strong><small>/c/{client}/v1</small></div><label><span>{t("provider")}</span><select value={draft[client].provider} onChange={(e) => setDraft({ ...draft, [client]: { ...draft[client], provider: e.target.value } })}>{providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label><label><span>{t("model")}</span><input value={draft[client].model} onChange={(e) => setDraft({ ...draft, [client]: { ...draft[client], model: e.target.value } })} /></label><button className="secondary" onClick={() => void run(() => api.updateRoute(client, draft[client]), t("success"))}><Check size={16} />{t("apply")}</button></div>)}</div>
+    <div className="route-tree" aria-label={t("routeCatalog")}><div className="tree-heading"><strong>{t("provider")}</strong><span>{t("model")}</span><span>{t("status")}</span></div>{providers.map((provider) => { const treeModels = provider.models?.length ? provider.models : [{ id: provider.default_model, name: "", context_window: 0, max_output_tokens: 0 }]; return <div className="tree-provider" key={provider.id}><div className="tree-provider-row"><label className="switch"><input type="checkbox" checked={provider.enabled !== false} onChange={(event) => toggleProvider(provider, event.target.checked)} aria-label={`${t("provider")} ${provider.name}`} /><span /><b>{provider.name}</b></label><span className="mono muted">{provider.id}</span><State value={provider.enabled === false ? "disabled" : "enabled"} /></div><div className="tree-models">{treeModels.map((model) => <div className="tree-model-row" key={model.id}><span className="tree-branch" aria-hidden="true"><ChevronRight size={14} /></span><span className="mono">{model.name ? `${model.name} · ${model.id}` : model.id}</span><label className="switch"><input type="checkbox" checked={provider.enabled !== false && model.enabled !== false} disabled={provider.enabled === false} onChange={(event) => toggleModel(provider, model, event.target.checked)} aria-label={`${model.id} ${t("enabled")}`} /><span /><b>{model.enabled === false ? t("disabled") : t("enabled")}</b></label></div>)}</div></div>; })}</div>
+    <div className="route-clients"><h3>{t("clientRoutes")}</h3><div className="route-list">{allClients.map((client) => { const provider = providers.find((item) => item.id === draft[client].provider); const models = (provider?.models || []).filter((model) => model.enabled !== false); const currentKnown = models.some((model) => model.id === draft[client].model); return <div className="route-row" key={client}><div><strong className="mono">{client}</strong><small>/c/{client}/v1</small></div><label><span>{t("provider")}</span><select value={draft[client].provider} onChange={(e) => { const nextProvider = providers.find((item) => item.id === e.target.value); setDraft({ ...draft, [client]: { provider: e.target.value, model: nextProvider?.default_model || draft[client].model } }); }}>{providers.filter((item) => item.enabled !== false).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label><label><span>{t("model")}</span>{models.length > 0 ? <select className="mono" value={draft[client].model} onChange={(e) => setDraft({ ...draft, [client]: { ...draft[client], model: e.target.value } })}>{!currentKnown && <option value={draft[client].model}>{draft[client].model}</option>}{models.map((model) => <option key={model.id} value={model.id}>{model.name ? `${model.name} · ${model.id}` : model.id}</option>)}</select> : <input value={draft[client].model} onChange={(e) => setDraft({ ...draft, [client]: { ...draft[client], model: e.target.value } })} />}</label><button className="secondary" onClick={() => void run(() => api.updateRoute(client, draft[client]), t("success"))}><Check size={16} />{t("apply")}</button></div>; })}</div></div>
   </section>;
 }
 
@@ -192,12 +248,38 @@ function Clients({ clients, t, run }: { clients: Record<string, PointStatus>; t:
   return <section><SectionHeader title={t("clients")} description={t("clientsDescription")} /><div className="client-grid">{pointClients.map((client) => { const value = clients[client]; return <article className="client-item" key={client}><div className="client-title"><div className="client-icon"><TerminalSquare size={18} /></div><div><h3>{client}</h3><State value={value?.point_state || "unknown"} /></div></div><dl><dt>{t("target")}</dt><dd className="mono">{value?.target || "—"}</dd></dl>{value?.message && <p className="muted">{value.message}</p>}<div className="client-actions"><button className="primary" disabled={value?.point_state === "pointed" || value?.point_state === "client_not_installed"} onClick={() => { if (confirm(t("confirmPoint"))) void run(() => api.point(client), t("success")); }}><Cable size={16} />{t("point")}</button><button className="secondary" disabled={!value?.backup_available} onClick={() => { if (confirm(t("confirmRestore"))) void run(() => api.restore(client), t("success")); }}><RotateCcw size={16} />{t("restore")}</button></div></article>; })}</div></section>;
 }
 
-function Logs({ items, enabled, t, run }: { items: LogSummary[]; enabled: boolean; t: (key: MessageKey) => string; run: (op: () => Promise<unknown>, message?: string) => Promise<void> }) {
+async function copyText(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value; textarea.setAttribute("readonly", ""); textarea.style.position = "fixed"; textarea.style.opacity = "0";
+  document.body.appendChild(textarea); textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("Clipboard is unavailable");
+}
+
+function Logs({ items, enabled, t, run, notify }: { items: LogSummary[]; enabled: boolean; t: (key: MessageKey) => string; run: (op: () => Promise<unknown>, message?: string) => Promise<void>; notify: (kind: ToastKind, message: string) => void }) {
   const [detail, setDetail] = useState<{ id: string; events: unknown[] } | null>(null);
+  const [copied, setCopied] = useState(false);
+  const copyLog = async (id: string, events?: unknown[]) => {
+    try {
+      const value = events ? { request_id: id, events } : await api.logDetail(id);
+      await copyText(JSON.stringify(value, null, 2));
+      notify("success", t("copied"));
+      return true;
+    } catch { notify("error", t("copyFailed")); return false; }
+  };
+  const copyDetail = async () => {
+    if (!detail || !await copyLog(detail.id, detail.events)) return;
+    setCopied(true); window.setTimeout(() => setCopied(false), 1800);
+  };
   return <section><SectionHeader title={t("requestLog")} description={enabled ? t("enabled") : t("disabled")} action={<label className="switch"><input type="checkbox" checked={enabled} onChange={(e) => void run(() => api.setLogging(e.target.checked))} /><span /><b>{t("logging")}</b></label>} />
     {!enabled && <div className="empty-state inline"><CircleAlert size={18} /><span>{t("disabled")}</span></div>}
-    {items.length === 0 ? <Empty text={t("noLogs")} /> : <div className="table-wrap"><table><thead><tr><th>{t("status")}</th><th>{t("provider")}</th><th>{t("model")}</th><th>{t("clients")}</th><th>{t("requests")}</th><th /></tr></thead><tbody>{items.map((item) => <tr key={item.request_id}><td><State value={item.status} /></td><td>{item.provider || "—"}</td><td className="mono">{item.model || "—"}</td><td className="mono">{item.client || "generic"}</td><td><strong className="mono">{new Date(item.started_at).toLocaleTimeString()}</strong><small>{item.duration_ms || 0} ms · {item.status_code || "—"}</small></td><td className="actions"><button className="text-button" onClick={() => void run(async () => { const value = await api.logDetail(item.request_id); setDetail({ id: value.request_id, events: value.events }); })}>{t("details")}</button></td></tr>)}</tbody></table></div>}
-    {detail && <div className="drawer-backdrop" onMouseDown={() => setDetail(null)}><aside className="drawer" onMouseDown={(e) => e.stopPropagation()} aria-label={t("details")}><div className="drawer-title"><div><p className="eyebrow">REQUEST</p><h2 className="mono">{detail.id}</h2></div><button className="icon-button" onClick={() => setDetail(null)}><X size={17} /></button></div><pre>{JSON.stringify(detail.events, null, 2)}</pre></aside></div>}
+    {items.length === 0 ? <Empty text={t("noLogs")} /> : <div className="table-wrap"><table className="log-table"><thead><tr><th>{t("status")}</th><th>{t("provider")}</th><th>{t("model")}</th><th>{t("clients")}</th><th>{t("requests")}</th><th /></tr></thead><tbody>{items.map((item) => <tr key={item.request_id}><td><State value={item.status} /></td><td>{item.provider || "—"}</td><td className="mono">{item.model || "—"}</td><td className="mono">{item.client || "generic"}</td><td><strong className="mono">{new Date(item.started_at).toLocaleTimeString()}</strong><small>{item.duration_ms || 0} ms · {item.status_code || "—"}</small></td><td className="actions"><button className="icon-button compact" onClick={() => void copyLog(item.request_id)} title={t("copyRequestLog")} aria-label={`${t("copyRequestLog")} ${item.request_id}`}><Copy size={15} /></button><button className="text-button" onClick={() => void run(async () => { const value = await api.logDetail(item.request_id); setDetail({ id: value.request_id, events: value.events }); })}>{t("details")}</button></td></tr>)}</tbody></table></div>}
+    {detail && <div className="drawer-backdrop" onMouseDown={() => setDetail(null)}><aside className="drawer" onMouseDown={(e) => e.stopPropagation()} aria-label={t("details")}><div className="drawer-title"><div><p className="eyebrow">REQUEST</p><h2 className="mono">{detail.id}</h2></div><div className="drawer-title-actions"><button className="secondary copy-button" onClick={() => void copyDetail()}><Copy size={15} />{copied ? t("copied") : t("copyRequestLog")}</button><button className="icon-button" onClick={() => setDetail(null)} aria-label={t("close")}><X size={17} /></button></div></div><pre>{JSON.stringify({ request_id: detail.id, events: detail.events }, null, 2)}</pre></aside></div>}
   </section>;
 }
 
@@ -209,9 +291,9 @@ function Usage({ usage, t }: { usage: UsageReport | null; t: (key: MessageKey) =
 function UsageTable({ title, groups, t }: { title: string; groups: Record<string, UsageGroup>; t: (key: MessageKey) => string }) { return <div className="usage-block"><h3>{title}</h3><div className="table-wrap"><table><thead><tr><th>{title}</th><th className="number">{t("requests")}</th><th className="number">{t("tokens")}</th><th>{t("status")}</th></tr></thead><tbody>{Object.entries(groups).map(([key, group]) => <tr key={key}><td className="mono">{key}</td><td className="number mono">{group.requests}</td><td className="number mono">{group.usage?.total_tokens?.toLocaleString() || "—"}</td><td>{group.incomplete ? <State value="incomplete" /> : <State value="ok" />}</td></tr>)}</tbody></table></div></div>; }
 
 function SettingsPage({ config, language, theme, setLanguage, setTheme, t, run }: { config: Config; language: Language; theme: Theme; setLanguage: (v: Language) => void; setTheme: (v: Theme) => void; t: (key: MessageKey) => string; run: (op: () => Promise<unknown>, message?: string) => Promise<void> }) {
-  const [port, setPort] = useState(config.listen.port); const [logDir, setLogDir] = useState(config.logging.dir);
-  const save = () => run(() => api.updateConfig({ ...config, listen: { port }, logging: { ...config.logging, dir: logDir }, ui: { ...config.ui, language } }), t("success"));
-  return <section><SectionHeader title={t("settings")} /><div className="settings-list"><div className="setting-row"><div><Languages size={17} /><span><strong>{t("language")}</strong><small>UI / config.yaml</small></span></div><select value={language} onChange={(e) => setLanguage(e.target.value as Language)}><option value="zh-CN">简体中文</option><option value="en-US">English</option></select></div><div className="setting-row"><div><Sun size={17} /><span><strong>{t("theme")}</strong><small>{t("localPreference")}</small></span></div><div className="segmented">{(["light", "dark", "system"] as Theme[]).map((value) => <button className={theme === value ? "selected" : ""} key={value} onClick={() => setTheme(value)}>{value === "dark" && <Moon size={14} />}{value === "light" && <Sun size={14} />}{value === "system" && <TerminalSquare size={14} />}{t(value)}</button>)}</div></div><div className="setting-row"><div><Power size={17} /><span><strong>{t("autostart")}</strong><small>{t("currentUserSession")}</small></span></div><label className="switch"><input type="checkbox" aria-label={t("autostart")} checked={config.autostart.enabled} onChange={(e) => void run(() => api.setAutostart(e.target.checked), t("success"))} /><span /></label></div><div className="setting-row"><div><Network size={17} /><span><strong>{t("port")}</strong><small>127.0.0.1 · {t("loopbackOnly")}</small></span></div><input className="short-input mono" type="number" min="1024" max="65535" value={port} onChange={(e) => setPort(Number(e.target.value))} /></div><div className="setting-row"><div><FileClock size={17} /><span><strong>{t("logDir")}</strong><small>{t("relativeDataRoot")}</small></span></div><input value={logDir} onChange={(e) => setLogDir(e.target.value)} /></div></div><div className="settings-footer"><button className="primary" onClick={() => void save()} disabled={port < 1024 || port > 65535 || !logDir.trim()}><Save size={16} />{t("saveSettings")}</button></div></section>;
+  const [host, setHost] = useState(config.listen.host || "127.0.0.1"); const [port, setPort] = useState(config.listen.port); const [logDir, setLogDir] = useState(config.logging.dir);
+  const save = () => run(() => api.updateConfig({ ...config, listen: { host, port }, logging: { ...config.logging, dir: logDir }, ui: { ...config.ui, language } }), t("success"));
+  return <section><SectionHeader title={t("settings")} /><div className="settings-list"><div className="setting-row"><div><Languages size={17} /><span><strong>{t("language")}</strong><small>UI / config.yaml</small></span></div><select value={language} onChange={(e) => setLanguage(e.target.value as Language)}><option value="zh-CN">简体中文</option><option value="en-US">English</option></select></div><div className="setting-row"><div><Sun size={17} /><span><strong>{t("theme")}</strong><small>{t("localPreference")}</small></span></div><div className="segmented">{(["light", "dark", "system"] as Theme[]).map((value) => <button className={theme === value ? "selected" : ""} key={value} onClick={() => setTheme(value)}>{value === "dark" && <Moon size={14} />}{value === "light" && <Sun size={14} />}{value === "system" && <TerminalSquare size={14} />}{t(value)}</button>)}</div></div><div className="setting-row"><div><Power size={17} /><span><strong>{t("autostart")}</strong><small>{t("currentUserSession")}</small></span></div><label className="switch"><input type="checkbox" aria-label={t("autostart")} checked={config.autostart.enabled} onChange={(e) => void run(() => api.setAutostart(e.target.checked), t("success"))} /><span /></label></div><div className="setting-row"><div><Network size={17} /><span><strong>{t("listenHost")}</strong><small>{t("listenHostDescription")}</small></span></div><select value={host} onChange={(e) => setHost(e.target.value)}><option value="127.0.0.1">127.0.0.1</option><option value="0.0.0.0">0.0.0.0</option></select></div><div className="setting-row"><div><Network size={17} /><span><strong>{t("port")}</strong><small>{t("listenPortDescription")}</small></span></div><input className="short-input mono" type="number" min="1024" max="65535" value={port} onChange={(e) => setPort(Number(e.target.value))} /></div><div className="setting-row"><div><FileClock size={17} /><span><strong>{t("logDir")}</strong><small>{t("relativeDataRoot")}</small></span></div><input value={logDir} onChange={(e) => setLogDir(e.target.value)} /></div></div><div className="settings-footer"><button className="primary" onClick={() => void save()} disabled={port < 1024 || port > 65535 || !logDir.trim()}><Save size={16} />{t("saveSettings")}</button></div></section>;
 }
 
 function Empty({ text }: { text: string }) { return <div className="empty-state"><Boxes size={20} /><span>{text}</span></div>; }

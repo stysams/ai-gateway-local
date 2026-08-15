@@ -25,4 +25,10 @@ describe("management API client", () => {
     await api.setAutostart(true);
     expect(fetcher).toHaveBeenCalledWith("http://127.0.0.1:12600/api/v1/autostart", expect.objectContaining({ method: "PUT", body: "{\"enabled\":true}" }));
   });
+
+  it("discovers models from an unsaved provider draft", async () => {
+    const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ object: "list", provider: "openrouter", data: [] }));
+    await api.discoverProviderModels({ provider_id: "openrouter", adapter: "openai-chat", base_url: "https://openrouter.ai/api/v1", api_key: "secret" });
+    expect(fetcher).toHaveBeenCalledWith("http://127.0.0.1:12600/api/v1/provider-models/discover", expect.objectContaining({ method: "POST", body: JSON.stringify({ provider_id: "openrouter", adapter: "openai-chat", base_url: "https://openrouter.ai/api/v1", api_key: "secret" }) }));
+  });
 });

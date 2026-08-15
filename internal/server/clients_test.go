@@ -59,6 +59,14 @@ func TestClientPointAndRestoreAPI(t *testing.T) {
 			if !pointed.Changed || pointed.BackupDir == "" {
 				t.Fatalf("point result = %+v", pointed)
 			}
+			pointedConfig, err := os.ReadFile(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(pointedConfig), "gateway-default") || strings.Contains(string(pointedConfig), "openrouter/anthropic/claude-sonnet-4") {
+				t.Fatalf("%s config is not provider-neutral:\n%s", tt.client, pointedConfig)
+			}
+			providerNeutralConfig := string(pointedConfig)
 
 			resp, body = clientJSON(t, ts, http.MethodPost, path+"/point")
 			assertPointState(t, resp, body, http.StatusOK, point.StatePointed)
@@ -68,6 +76,18 @@ func TestClientPointAndRestoreAPI(t *testing.T) {
 			}
 			if idempotent.Changed {
 				t.Fatal("second point unexpectedly changed client config")
+			}
+
+			resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPut, "/api/v1/routes/"+string(tt.client), RouteRequest{Provider: "ollama", Model: "qwen3"})
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("route update = %d, body = %s", resp.StatusCode, body)
+			}
+			pointedConfig, err = os.ReadFile(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(pointedConfig) != providerNeutralConfig {
+				t.Fatalf("%s route update rewrote provider-neutral client config:\n%s", tt.client, pointedConfig)
 			}
 
 			resp, body = clientJSON(t, ts, http.MethodGet, "/api/v1/status")
@@ -108,6 +128,55 @@ func TestClientAPIErrorCodes(t *testing.T) {
 	resp, body = clientJSON(t, s, http.MethodPost, "/api/v1/clients/codex/restore")
 	if resp.StatusCode != http.StatusConflict || !strings.Contains(string(body), `"code":"no_restore_available"`) {
 		t.Fatalf("missing restore = %d, body = %s", resp.StatusCode, body)
+	}
+}
+
+func TestConfigAPIRouteUpdateKeepsPointedClientProviderNeutral(t *testing.T) {
+	dataRoot := t.TempDir()
+	home := filepath.Join(dataRoot, "home")
+	target := filepath.Join(home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("custom = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := newTestServer(t)
+	s.points = point.NewWithOptions(dataRoot, point.Options{
+		HomeDir:       home,
+		LookupEnv:     func(string) (string, bool) { return "", false },
+		CommandExists: func(string) bool { return false },
+		Environment:   point.NewMemoryEnvironment(),
+	})
+	ts := httptest.NewServer(s.routes())
+	defer ts.Close()
+
+	resp, body := clientJSON(t, ts, http.MethodPost, "/api/v1/clients/codex/point")
+	assertPointState(t, resp, body, http.StatusOK, point.StatePointed)
+	before, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, body = clientJSON(t, ts, http.MethodGet, "/api/v1/config")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET config = %d, body = %s", resp.StatusCode, body)
+	}
+	var payload ConfigPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload.Routes.Codex = RouteStatus{Provider: "ollama", Model: "qwen3"}
+	resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPut, "/api/v1/config", payload)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT config = %d, body = %s", resp.StatusCode, body)
+	}
+	updated, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(updated) != string(before) || !strings.Contains(string(updated), "gateway-default") {
+		t.Fatalf("Codex provider-neutral config changed after route update:\n%s", updated)
 	}
 }
 
