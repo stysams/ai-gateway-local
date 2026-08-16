@@ -39,7 +39,11 @@ export const api = {
   point: (client: PointClient) => request<PointStatus>(`/api/v1/clients/${client}/point`, { method: "POST" }),
   setCodexRemoteCompaction: (enabled: boolean) => request<PointStatus>("/api/v1/clients/codex/remote-compaction", { method: "PUT", body: JSON.stringify({ enabled }) }),
   restore: (client: PointClient) => request<PointStatus>(`/api/v1/clients/${client}/restore`, { method: "POST" }),
-  logs: () => request<{ items: LogSummary[]; next_cursor?: string }>("/api/v1/logs?limit=50"),
+  logs: (cursor?: string) => {
+    const query = new URLSearchParams({ limit: "20" });
+    if (cursor) query.set("cursor", cursor);
+    return request<{ items: LogSummary[]; next_cursor?: string }>(`/api/v1/logs?${query}`);
+  },
   logDetail: (id: string) => request<{ request_id: string; events: unknown[] }>(`/api/v1/logs/${id}`),
   usage: () => request<UsageReport>("/api/v1/usage"),
   setLogging: (enabled: boolean) => request<{ enabled: boolean; body: boolean }>("/api/v1/logging", { method: "PUT", body: JSON.stringify({ enabled }) }),

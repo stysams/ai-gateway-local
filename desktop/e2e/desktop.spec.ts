@@ -48,6 +48,10 @@ test("client routes list every enabled model as provider/model id", async ({ pag
   await expect(modelSelect.locator("option", { hasText: "openrouter/gpt-5" })).toHaveCount(1);
   await expect(modelSelect.locator("option", { hasText: "openrouter/anthropic/claude-sonnet-4" })).toHaveCount(1);
   await expect(modelSelect.locator("option", { hasText: "deepseek/deepseek-chat" })).toHaveCount(1);
+  const clientRoutesTop = await page.getByText("Client routes", { exact: true }).evaluate((element) => element.getBoundingClientRect().top);
+  const catalogTop = await page.getByText("Provider and model catalog", { exact: true }).evaluate((element) => element.getBoundingClientRect().top);
+  expect(clientRoutesTop).toBeLessThan(catalogTop);
+  await page.getByRole("button", { name: "OpenRouter Show models" }).click();
   await expect(page.locator(".tree-model-row .mono", { hasText: "openrouter/gpt-5" })).toBeVisible();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   expect(overflow).toBe(false);
@@ -64,6 +68,19 @@ test("clients page exposes a Codex remote compaction switch", async ({ page }, t
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   expect(overflow).toBe(false);
   await page.screenshot({ path: testInfo.outputPath("codex-remote-compaction.png"), fullPage: true });
+});
+
+test("request logs retain route context at every breakpoint", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Logs" }).click();
+  const firstRequest = page.locator(".log-table tbody tr").first();
+  await expect(firstRequest).toContainText("Success");
+  await expect(firstRequest).toContainText("openrouter");
+  await expect(firstRequest).toContainText("gpt-5");
+  await expect(firstRequest).toContainText("codex");
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+  expect(overflow).toBe(false);
+  await page.screenshot({ path: testInfo.outputPath("request-logs.png"), fullPage: true });
 });
 
 test("all primary views fit and remain keyboard reachable", async ({ page }, testInfo) => {

@@ -21,7 +21,8 @@ beforeEach(() => {
     if (url.endsWith("/api/v1/providers")) return Response.json(providers);
     if (url.endsWith("/api/v1/provider-models/discover") && init?.method === "POST") return Response.json({ object: "list", provider: "new-provider", data: [{ id: "new-provider/model-a", provider_id: "new-provider", raw_id: "model-a", display_name: "Model A", context_window: 131072, max_output_tokens: 16384 }, { id: "new-provider/model-b", provider_id: "new-provider", raw_id: "model-b" }] });
     if (url.endsWith("/api/v1/providers") && init?.method === "POST") return Response.json(providers[0]);
-    if (url.includes("/api/v1/logs?")) return Response.json({ items: [{ request_id: "req-copy", started_at: "2026-08-15T08:00:00Z", client: "codex", provider: "ollama", model: "qwen3", status: "success", status_code: 200, duration_ms: 42 }] });
+    if (url.includes("/api/v1/logs?") && url.includes("cursor=next-page")) return Response.json({ items: [{ request_id: "req-next", started_at: "2026-08-15T07:59:00Z", client: "claude", provider: "openrouter", model: "gpt-5", status: "success", status_code: 200, duration_ms: 84 }] });
+    if (url.includes("/api/v1/logs?")) return Response.json({ items: [{ request_id: "req-copy", started_at: "2026-08-15T08:00:00Z", client: "codex", provider: "ollama", model: "qwen3", status: "success", status_code: 200, duration_ms: 42 }], next_cursor: "next-page" });
     if (url.endsWith("/api/v1/logs/req-copy")) return Response.json({ request_id: "req-copy", events: [{ type: "request", headers: { "X-Debug-Trace": ["trace-value"] }, body: { model: "qwen3" } }] });
     if (url.endsWith("/api/v1/usage")) return Response.json({ total: { requests: 0, success: 0, failed: 0, cancelled: 0, usage: null, incomplete: true }, by_provider: {}, by_model: {}, by_client: {}, by_date: {} });
     for (const client of ["codex", "claude", "grok"]) if (url.endsWith(`/api/v1/clients/${client}`)) return Response.json(pointStatus(client));
@@ -42,6 +43,9 @@ describe("desktop workflow", () => {
     const routes = screen.getByRole("button", { name: "Routes" }); routes.focus(); await user.keyboard("{Enter}");
     expect(await screen.findByText(/Changes apply to the next request/)).toBeVisible();
     expect(screen.getByText(/not the only model it can use/)).toBeVisible();
+    const clientRoutes = screen.getByText("Client routes");
+    const routeCatalog = screen.getByText("Provider and model catalog");
+    expect(clientRoutes.compareDocumentPosition(routeCatalog) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const modelSelect = screen.getByRole("combobox", { name: "codex Default selected model" });
     expect(within(modelSelect).getByRole("option", { name: "ollama/qwen3" })).toBeVisible();
     expect(within(modelSelect).getByRole("option", { name: "openrouter/gpt-5" })).toBeVisible();
@@ -105,6 +109,14 @@ describe("desktop workflow", () => {
     await user.click(screen.getByRole("button", { name: "Copy request log req-copy" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
     expect(JSON.parse(writeText.mock.calls[0][0])).toEqual({ request_id: "req-copy", events: [{ type: "request", headers: { "X-Debug-Trace": ["trace-value"] }, body: { model: "qwen3" } }] });
+  });
+
+  it("loads the next request-log page with the server cursor", async () => {
+    const user = userEvent.setup(); render(<App />); await ready(); await user.click(screen.getByRole("button", { name: "Logs" }));
+    await user.click(screen.getByRole("button", { name: "Load more" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("cursor=next-page"), expect.anything()));
+    expect(await screen.findByText("openrouter")).toBeVisible();
+    expect(screen.getByText("gpt-5")).toBeVisible();
   });
 
   it("enables current-user login start from settings", async () => {
