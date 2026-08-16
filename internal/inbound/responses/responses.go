@@ -243,7 +243,10 @@ func parseInput(raw json.RawMessage) ([]ir.Message, error) {
 				} else {
 					for _, p := range parts {
 						switch p.Type {
-						case "input_text":
+						case "input_text", "output_text":
+							// output_text is the official Responses replay
+							// form of a previous assistant turn
+							// (docs/v1-scheme.md §8.1, §20 2026-08-16).
 							blocks = append(blocks, ir.Block{Type: ir.BlockText, Text: p.Text})
 						case "input_image", "image_url":
 							image, err := ir.ParseImageURL(p.ImageURL)

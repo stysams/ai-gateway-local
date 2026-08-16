@@ -133,6 +133,42 @@ func TestCrossResponsesToChatNonStream(t *testing.T) {
 	}
 }
 
+func TestCrossResponsesToChatReplaysAssistantOutputText(t *testing.T) {
+	up := newFakeUpstream(t, nil)
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	p := cfg.Providers["openrouter"]
+	p.Adapter = "openai-chat"
+	cfg.Providers["openrouter"] = p
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	body := []byte(`{"model":"opencode/deepseek-v4-flash","input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"你师祖"}]},
+		{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"闲聊"}],"encrypted_content":null},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"我是 Codex"}]}
+	]}`)
+	resp, data := chatPost(t, addr, "/c/codex/v1/responses", body, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, %s", resp.StatusCode, data)
+	}
+	req := up.last()
+	var messages []struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(req.Fields["messages"], &messages); err != nil {
+		t.Fatal(err)
+	}
+	var assistant string
+	for _, msg := range messages {
+		if msg.Role == "assistant" && msg.Content == "我是 Codex" {
+			assistant = msg.Content
+		}
+	}
+	if assistant == "" {
+		t.Fatalf("upstream messages missing replayed assistant text: %+v", messages)
+	}
+}
+
 // chatToMessagesNonStream 已在 TestChatToMessagesCrossProtocolDispatch 覆盖。
 
 // messagesToChatNonStream: messages 客户端 → chat 上游。

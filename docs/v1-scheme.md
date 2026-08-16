@@ -527,7 +527,9 @@ type Block struct {
 
 必须支持的块类型：
 
-- 文本。
+- 文本。Responses 入站 `input[]` 里的 `input_text` 与上一轮助手
+  `output_text` 都是文本；后者是官方会话回放外形，跨协议必须按文本转换，
+  不得 422（证据见 §20）。
 - 图片 URL。
 - 图片 base64。
 - reasoning 或 thinking。
@@ -2003,6 +2005,31 @@ bundled 模板时拒绝指向。完整目录同时由 sidecar 与 `/c/codex/v1/m
 - 因此网关把该开关存进 `config.yaml` 的 `clients.codex.remote_compaction`，
   指向或同步时改写 `[model_providers.ai-gateway].name`，并实现
   `/v1/responses/compact` 的同协议转发。其它适配器返回 422。
+
+### 2026-08-16 复核：Responses 历史回放使用 output_text
+
+实验对象：Codex Desktop，入站 `POST /c/codex/v1/responses`，模型
+`opencode/deepseek-v4-flash`，出站 adapter `openai-chat`。
+
+证据文件：`%USERPROFILE%\.ai-gateway\logs\2026-08-16\req_b56f77099fd27714cff4bcee.jsonl`。
+
+同一请求的 `input[]` 有 20 项：19 条 `message`（其中 1 条 `role: assistant`）
+和 1 条 `reasoning`（`encrypted_content` 为 null，只有 `summary`）。内容块统计：
+`input_text` 38 个，`output_text` 1 个。该 `output_text` 在助手消息上，正文是
+上一轮 Responses 模型的回复。
+
+客户端报错：
+
+```text
+unexpected status 422 Unprocessable Entity: content cannot be converted without loss: content type "output_text"
+```
+
+这是网关跨协议解析拒绝 `output_text`，请求 6ms 失败且零上游接触。
+官方 Responses 会话回放会把上一轮 `response.output` 原样放进下一轮 `input`，
+助手文本块的 `type` 是 `output_text`，不是 `input_text`。两者都只有 `text`
+字段，转成 IR 文本块没有语义损失。
+
+结论：跨协议必须把 `output_text` 当作文本。其它未知 content type 仍返回 422。
 
 ### 2026-08-16 复核：Codex Desktop Responses 工具外形
 

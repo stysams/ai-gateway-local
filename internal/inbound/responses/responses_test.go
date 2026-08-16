@@ -41,6 +41,33 @@ func TestParseRequestItems(t *testing.T) {
 	}
 }
 
+func TestParseRequestAssistantOutputText(t *testing.T) {
+	body := []byte(`{
+		"model": "opencode/deepseek-v4-flash",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "你师祖"}]},
+			{"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "闲聊"}], "encrypted_content": null},
+			{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "我是 Codex"}]}
+		]
+	}`)
+	req, err := ParseRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Messages) != 3 {
+		t.Fatalf("messages = %+v", req.Messages)
+	}
+	if req.Messages[0].Role != ir.RoleUser || req.Messages[0].Content[0].Text != "你师祖" {
+		t.Fatalf("user = %+v", req.Messages[0])
+	}
+	if req.Messages[1].Role != ir.RoleAssistant || req.Messages[1].Content[0].Type != ir.BlockReasoning {
+		t.Fatalf("reasoning = %+v", req.Messages[1])
+	}
+	if req.Messages[2].Role != ir.RoleAssistant || req.Messages[2].Content[0].Type != ir.BlockText || req.Messages[2].Content[0].Text != "我是 Codex" {
+		t.Fatalf("assistant = %+v", req.Messages[2])
+	}
+}
+
 func TestParseRequestCodexDesktopTools(t *testing.T) {
 	body := []byte(`{
 		"model": "aa/claude-opus-4-6",
