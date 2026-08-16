@@ -224,6 +224,12 @@ go vet ./...
 .\scripts\build-cross.ps1 -Version 0.1.0-test -Commit unknown
 ```
 
+A code change that ships in `ai-gateway.exe` or `ai-gateway-desktop.exe` is
+not finished until `scripts\build-release.ps1` has rebuilt the Windows zip.
+Commit first so `-Commit` is a real hash. Same `0.1.0-rc1` zip may be
+overwritten unless a new version was requested. Documentation-only edits do
+not need a package.
+
 ## Usage
 
 ```text

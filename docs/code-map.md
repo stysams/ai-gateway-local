@@ -378,7 +378,7 @@ Codex 的占位环境变量在 `point/environment_windows.go`。非 Windows 上�
 |---|---|
 | `scripts/verify.ps1` | §16.3 统一校验；不能跑的步骤必须打印 `SKIPPED` |
 | `scripts/build-desktop.ps1` | 只打桌面 |
-| `scripts/build-release.ps1` | Windows 发布 zip（先 `npm ci` + `npm run build`） |
+| `scripts/build-release.ps1` | Windows 发布 zip（先 `npm ci` + `npm run build`）。改完会进入发布二进制的代码后必须跑；见 `docs/progress.md` 发布约定 |
 | `scripts/build-cross.ps1` | macOS / Linux 无头交叉构建 |
 
 ---

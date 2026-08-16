@@ -249,10 +249,11 @@ npm --prefix desktop run test:e2e -- --project=desktop-light
 
 发布约定（本仓库已经这样做）：
 
-1. 工作区干净后再打包，先提交再打，二进制 `-Commit` 必须是真实提交。
-2. 同一候选版本的内容更新可以覆盖同名 `0.1.0-rc1` 压缩包，不要擅自改版本号，除非用户明确要求。
-3. 打包前确认没有网关或桌面进程占用 `dist/`。
-4. 打完用包内 `ai-gateway.exe version` 核对版本、提交、Go、平台；核对压缩包含两个二进制、`LICENSE`、`README.md`、`docs/install.md`。
+1. **改完代码必须重新打包。** 凡任务改动了会进入 `ai-gateway.exe` 或 `ai-gateway-desktop.exe` 的内容（Go 源码、`desktop/` 前端、嵌入的 `cmd/desktop/assets/`），任务在打出新的 Windows 发布 zip 之前不算结束。不要等用户再说「重新打包」。只改文档、日记或规格叙述、且不会改变这两个二进制时，不必打包。
+2. 工作区干净后再打包，先提交再打，二进制 `-Commit` 必须是真实提交。
+3. 同一候选版本的内容更新可以覆盖同名 `0.1.0-rc1` 压缩包，不要擅自改版本号，除非用户明确要求。
+4. 打包前确认没有网关或桌面进程占用 `dist/`。
+5. 打完用包内 `ai-gateway.exe version` 核对版本、提交、Go、平台；核对压缩包含两个二进制、`LICENSE`、`README.md`、`docs/install.md`。告知用户必须替换并重启已在运行的网关，新包才会生效。
 
 当前包：`dist/ai-gateway-0.1.0-rc1-windows-amd64.zip`  
 提交：`d97ca983b73ee4ba593fb3431c026d2e02c343e9`  

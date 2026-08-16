@@ -85,6 +85,29 @@ Note: `npm run build` overwrites `cmd/desktop/assets/`, which is committed and
 `go:embed`-ed by `cmd/desktop/main.go`. Frontend changes are only visible in a
 built desktop binary after that step.
 
+## Release packaging after code changes
+
+A task that changes anything shipped in `ai-gateway.exe` or
+`ai-gateway-desktop.exe` (Go sources, `desktop/` frontend, or embedded
+`cmd/desktop/assets/`) is not finished until a new Windows release zip exists.
+Do not wait for the user to ask to repackage. Documentation-only edits that
+cannot change those binaries do not require a package.
+
+Required sequence (`docs/progress.md` packaging rules):
+
+1. Tests for the changed packages pass.
+2. Commit so the working tree is clean. The binary `-Commit` must be that
+   real commit, never `unknown` and never a dirty HEAD.
+3. Confirm no `ai-gateway` / `ai-gateway-desktop` process is locking `dist/`.
+4. Run `.\scripts\build-release.ps1 -Version 0.1.0-rc1 -Commit <full hash>`.
+   Overwrite the same `0.1.0-rc1` zip unless the user asked for a new version.
+5. Check the staged `ai-gateway.exe version` (version, commit, Go, platform)
+   and that the zip contains both binaries, `LICENSE`, `README.md`, and
+   `docs/install.md`.
+
+Tell the user they must replace and restart any already-running gateway
+before the new package takes effect.
+
 Runtime data root: `%USERPROFILE%\.ai-gateway` (Windows) / `~/.ai-gateway`,
 overridable with `AI_GATEWAY_DATA_DIR` — tests rely on that override.
 
