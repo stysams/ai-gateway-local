@@ -83,6 +83,30 @@ func TestResolveDefaultModel(t *testing.T) {
 	}
 }
 
+func TestResolveClaudePickerAlias(t *testing.T) {
+	cfg := testConfig()
+	cases := []struct {
+		requested string
+		provider  string
+		model     string
+	}{
+		{ClaudePickerDefault, "openrouter", "anthropic/claude-sonnet-4"},
+		{"claude-gw-ollama--qwen3", "ollama", "qwen3"},
+		{"claude-gw2-openrouter--anthropic~sclaude-sonnet-4", "openrouter", "anthropic/claude-sonnet-4"},
+		{"claude-gw2-openrouter--openai~sgpt-5", "openrouter", "openai/gpt-5"},
+	}
+	for _, tc := range cases {
+		res, err := Resolve(Claude, tc.requested, cfg)
+		if err != nil {
+			t.Fatalf("Resolve(%q): %v", tc.requested, err)
+		}
+		if res.Provider != tc.provider || res.Model != tc.model {
+			t.Errorf("Resolve(%q) = %+v, want provider=%s model=%s",
+				tc.requested, res, tc.provider, tc.model)
+		}
+	}
+}
+
 func TestResolveProviderPrefixOverride(t *testing.T) {
 	cfg := testConfig()
 	// openrouter/anthropic/claude-sonnet-4 → provider openrouter, model

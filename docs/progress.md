@@ -85,9 +85,12 @@
 2. **客户端路由是启动默认模型，不是唯一可用模型。** 指向后首选槽位写 `gateway-default`。切换路由不得改写已指向客户端的配置文件，也不得替换最初还原点。
 3. **已启用模型按 `供应商/模型ID` 出现在客户端里。**
    - 共同入口：`GET /v1/models` 与 `GET /c/{client}/v1/models`。
-   - `display_name` 必须等于 `id`（`gateway-default` 或 `<provider-id>/<model-id>`）。
+   - 除 `/c/claude/v1/models` 外，`display_name` 必须等于 `id`（`gateway-default` 或 `<provider-id>/<model-id>`）。
    - Grok Build 额外写入 `[model."ai-gateway:<provider-id>/<model-id>"]`，`name` 同样写成该 id。
-   - Codex 写入 `model_catalog_json` → `ai-gateway-catalog.json`（克隆 bundled 模板）。Claude Code 打开网关模型发现。
+   - Codex 写入 `model_catalog_json` → `ai-gateway-catalog.json`（克隆 bundled 模板）。
+   - Claude Code 打开网关模型发现。`/c/claude/v1/models` 的 `id` 是可逆
+     `claude-gw*` 选择器别名，`display_name` 仍是真实可选 id，使 `/model`
+     列出全部已启用模型。
 4. **桌面「客户端路由」是单一默认模型选择器**，选项为全部已启用的 `供应商/模型ID`。托盘菜单同一套目录。
 5. **Claude Code `messages` 数组里的 `role: system` 已兼容**，与顶层 `system` 合并为内部系统提示。
 6. **探测响应**可在桌面以格式化 JSON 查看；失败正文不回传，避免错误响应泄露钥匙。
@@ -106,12 +109,18 @@
 12. **Chat 出站工具结果必须紧跟 `tool_calls`。** Responses 回放常把
     reasoning 和后续助手正文插在调用与结果之间；丢掉 reasoning 后不得
     留下空助手消息，出站必须先配对再放其余正文。
+13. **Claude Code `/model` 列出全部已启用模型。** `/c/claude/v1/models` 把
+    `id` 写成可逆 `claude-gw*` 选择器别名，以通过客户端
+    `/(claude|anthropic)/i` 过滤器；`display_name` 仍是真实可选 id。
+    `route.Resolve` 先解码再走 §7.4。别名不得写进启动环境变量、Codex/Grok
+    目录或发给上游。
 
 相关证据在规格 §20「2026-08-15 复核：客户端可选模型目录」、
 「2026-08-16 复核：Codex 远程压缩触发条件」、
 「2026-08-16 复核：Responses 历史回放使用 output_text」、
 「2026-08-16 复核：Chat 出站工具参数必须是 JSON 字符串」和
-「2026-08-16 复核：Chat 出站工具结果必须紧跟 tool_calls」。不要重新发明 Codex 目录方案。
+「2026-08-16 复核：Chat 出站工具结果必须紧跟 tool_calls」和
+「2026-08-16 复核：Claude Code `/model` 使用可逆选择器别名」。不要重新发明 Codex 目录方案。
 
 ---
 
@@ -120,7 +129,7 @@
 | 客户端 | 配置里写什么 | 用户怎么选其它模型 | 禁止事项 |
 |---|---|---|---|
 | Codex | 首选 `model = "gateway-default"`；根键 `model_catalog_json` 指向同目录 `ai-gateway-catalog.json` | `/model`、`codex debug models`、`codex -m <provider-id>/<model-id>`，或 `/c/codex/v1/models` | 目录条目必须从本机 `codex debug models --bundled` 克隆，保留 `base_instructions`，删除 `model_messages`。禁止手写短提示词。找不到模板则拒绝指向。 |
-| Claude Code | 四个模型环境变量都是 `gateway-default`；`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` | 启动时拉 `/v1/models?limit=1000`；或 `claude --model <provider-id>/<model-id>` | 客户端只保留 id 匹配 `/(claude\|anthropic)/i` 的条目。不要改写模型 id 去迎合它。 |
+| Claude Code | 四个模型环境变量都是 `gateway-default`；`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` | 启动时拉 `/c/claude/v1/models?limit=1000`；`/model` 按 `display_name` 列出全部已启用 `供应商/模型 ID`；或 `claude --model <provider-id>/<model-id>` | `/c/claude/v1/models` 的 `id` 必须是可逆 `claude-gw*` 别名。禁止把别名写进启动环境变量、Codex/Grok 目录或发给上游。 |
 | Grok Build | `[models] default = "ai-gateway"`；每个已启用模型一条 `ai-gateway:` 前缀表 | 配置目录与内置模型并存 | restore 只删网关写过的条目，必须保留用户自己的模型。 |
 
 切换路由只改网关配置。客户端文件里只要还是 `gateway-default`，就不要去改它。
@@ -188,7 +197,7 @@ Grok 目录增删发生在 point 与设置同步（可用性、目录变化）�
 - 不要开始第二期。
 - 不要升级 Wails。
 - 不要手写短 `base_instructions` 或把官方提示词检入仓库。Codex 目录必须从本机 bundled 模板克隆。
-- 不要改写模型 id 去迁就 Claude Code 的过滤器。
+- 不要把选择器别名发给上游，也不要把别名写进 Codex / Grok 目录或四个 Claude 启动环境变量。`/c/claude/v1/models` 的可逆 `claude-gw*` 别名是已冻结的例外。
 - 不要做日志轮转、脱敏、大小上限、多租户、远程鉴权、自动更新。
 - 不要在桌面进程里嵌 `/v1/*`。
 - 不要把 macOS / Linux 抬到与 Windows 相同的第一期验收等级。
@@ -225,7 +234,7 @@ docs/progress.md     本文
 1. Content-Type 必须是 JSON，否则 415；体超过 128 MiB 则 413。
 2. 只为路由解析 `model` 和 `stream`。
 3. `startTrace` 打开 JSONL，设置 `X-Request-Id`。
-4. `route.Resolve`：路由默认 → 空或 `gateway-default` → 命中已配置 provider 前缀则覆盖 → 否则整段模型名交给当前路由的 provider。含 `/` 的模型名不得报“未知供应商”。
+4. `route.Resolve`：先解码 Claude 选择器别名 → 路由默认 → 空或 `gateway-default` → 命中已配置 provider 前缀则覆盖 → 否则整段模型名交给当前路由的 provider。含 `/` 的模型名不得报“未知供应商”。
 5. 能力门：不支持图片则 422 且零上游；无 `context_management` 则剥离；reasoning 不可表达则删除并记警告。
 6. 同协议只改写后原样转发；跨协议经 `ir.Sequencer` 再编码回入站协议。
 

@@ -906,10 +906,11 @@ func encodeNonStream(proto ir.Protocol, w io.Writer, model string, resp *ir.Resp
 
 // modelItem is one entry of GET /v1/models.
 //
-// display_name is required by §7.5 and always equals id so client pickers
-// show the selectable form: gateway-default or <provider-id>/<model-id>.
-// Claude Code's gateway model discovery reads it; Grok Build writes the same
-// string into each catalog entry's name.
+// display_name is the selectable id (gateway-default or
+// <provider-id>/<model-id>) so client pickers show that form. On
+// /c/claude/v1/models the wire id is a picker alias that passes Claude
+// Code's discovery filter; display_name stays the real selectable id
+// (docs/v1-scheme.md §7.5). Everywhere else id equals display_name.
 type modelItem struct {
 	ID          string `json:"id"`
 	Object      string `json:"object"`
@@ -919,7 +920,7 @@ type modelItem struct {
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	s.serveModels(w, r)
+	s.serveModels(w, r, route.Generic)
 }
 
 func (s *Server) handleModelsClient(w http.ResponseWriter, r *http.Request) {
@@ -929,17 +930,32 @@ func (s *Server) handleModelsClient(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("unknown client %q", r.PathValue("client")), "client_not_found")
 		return
 	}
-	_ = client // 模型列表全局一致
-	s.serveModels(w, r)
+	s.serveModels(w, r, client)
 }
 
-func (s *Server) serveModels(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) serveModels(w http.ResponseWriter, _ *http.Request, client route.ClientID) {
 	cfg := s.cfg.Snapshot()
 	if cfg == nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "config not loaded", "")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": s.modelCatalog(cfg)})
+	data := s.modelCatalog(cfg)
+	if client == route.Claude {
+		data = claudePickerCatalog(data)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+}
+
+// claudePickerCatalog rewrites only the wire id so Claude Code's
+// /(claude|anthropic)/i discovery filter keeps every enabled model.
+// display_name stays the real selectable id. Decode happens in route.Resolve.
+func claudePickerCatalog(items []modelItem) []modelItem {
+	out := make([]modelItem, len(items))
+	for i, item := range items {
+		out[i] = item
+		out[i].ID = route.ClaudePickerID(item.ID)
+	}
+	return out
 }
 
 // modelCatalog is the single source of the enabled model list: the reserved

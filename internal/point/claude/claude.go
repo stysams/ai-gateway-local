@@ -21,11 +21,11 @@ var modelKeys = []string{
 }
 
 // discoveryKey makes Claude Code query the gateway for selectable models at
-// startup. Claude Code keeps only ids matching /(claude|anthropic)/i, so its
-// picker cannot show the whole enabled catalog — that is client behaviour and
-// must not be worked around by rewriting model ids. The complete catalog stays
-// reachable through /c/claude/v1/models and `claude --model <id>`.
-// See docs/v1-scheme.md §12.4 and the 2026-08-15 evidence in §20.
+// startup. Claude Code keeps only ids matching /(claude|anthropic)/i, so
+// /c/claude/v1/models exposes reversible claude-gw* picker aliases and
+// keeps display_name as the real selectable id. The four startup env slots
+// stay gateway-default; route.Resolve decodes an alias before §7.4.
+// See docs/v1-scheme.md §12.4 and the 2026-08-16 evidence in §20.
 const discoveryKey = "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
 
 // Transform merges the gateway's env slots into Claude Code's user settings,

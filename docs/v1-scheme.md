@@ -449,8 +449,8 @@ generic
 
 客户端配置文件中落地完整目录只在客户端原生支持、且不破坏系统提示词时进行。
 依据 §20 的 2026-08-16 复核，Codex 通过克隆 bundled 模板写入 `model_catalog_json`
-sidecar；Grok Build 在配置里追加条目。Claude Code 仍只写首选模型，因为它会按
-`/(claude|anthropic)/i` 丢掉大部分 id。
+sidecar；Grok Build 在配置里追加条目。Claude Code 仍只写首选模型；它的完整
+可选目录由 `/c/claude/v1/models` 以可逆选择器别名提供，见 §7.5。
 
 管理面切换客户端路由时只影响下一次请求。切换路由不得替换最初 point 创建的恢复点。
 若某客户端配置中写的是 `gateway-default`，切换路由不得改写该客户端配置文件。
@@ -459,6 +459,7 @@ sidecar；Grok Build 在配置里追加条目。Claude Code 仍只写首选模�
 
 输入为客户端、请求中的模型字符串和配置快照。必须按以下顺序解析：
 
+0. 若请求模型是 Claude Code 选择器别名（§7.5），先解码为 `gateway-default` 或 `<provider-id>/<model-id>`。不是合法别名则原样保留。
 1. 读取该客户端的当前路由，得到 `route.provider` 和 `route.model`。
 2. 若请求模型为空或等于 `gateway-default`，使用当前路由的 provider 和 model。
 3. 否则，若请求模型形如 `<prefix>/<rest>`，且 `<prefix>` 正好命中一个已配置 provider id，则本次请求使用该 provider，模型为 `<rest>`。
@@ -479,11 +480,29 @@ sidecar；Grok Build 在配置里追加条目。Claude Code 仍只写首选模�
 
 模型列表拉取失败不得影响数据面启动。
 
-每项必须带 `display_name`，取值必须等于该项的 `id`（`gateway-default` 或
-`<provider-id>/<model-id>`）。客户端选择器按 `供应商/模型 ID` 展示全部已启用
-模型。模型目录中的 `name` 只用于网关管理面，不得改写客户端选择器标签。
-Claude Code 的网关模型发现读取 `display_name`，Grok Build 的选择器 `name`
-字段同样写成该 id（证据见 §20）。
+每项必须带 `display_name`。除 `/c/claude/v1/models` 外，`display_name` 必须等于
+该项的 `id`（`gateway-default` 或 `<provider-id>/<model-id>`）。客户端选择器按
+`供应商/模型 ID` 展示全部已启用模型。模型目录中的 `name` 只用于网关管理面，
+不得改写客户端选择器标签。Grok Build 的选择器 `name` 字段同样写成该 id。
+
+`/c/claude/v1/models` 是唯一例外。Claude Code 的网关模型发现只保留 id 匹配
+`/(claude|anthropic)/i` 的条目（官方契约，证据见 §20）。因此该路径的 `id`
+必须改写成可逆选择器别名，`display_name` 仍必须等于真实可选 id
+（`gateway-default` 或 `<provider-id>/<model-id>`），以便选择器按
+`供应商/模型 ID` 显示。别名语法借鉴 OpenCodex 的可读别名，前缀改为本网关
+自有前缀，避免与 OpenCodex 碰撞：
+
+| 真实可选 id | 选择器 `id` |
+|---|---|
+| `gateway-default` | `claude-gw-default` |
+| `<provider>/<model>`（`model` 不含 `/` 或 `~`） | `claude-gw-<provider>--<model>` |
+| `<provider>/<model>`（`model` 含 `/` 或 `~`） | `claude-gw2-<provider>--<escaped>` |
+| provider 含 `--`、无法按 `--` 切开 | `claude-gw3-<escaped-full-id>` |
+
+转义只用于 v2 / v3：`~` → `~t`，`/` → `~s`。解码时 v1 按字面还原，v2 / v3
+展开转义。解析只在第一个 `--` 处切开。`GET /v1/models`、`/c/codex/v1/models`、
+`/c/grok/v1/models` 和 `/c/generic/v1/models` 不得返回这些别名。发往上游的
+模型名必须是解码后的真实模型，禁止把别名交给上游。
 
 被禁用的 provider 和被禁用的模型不得出现在列表中。
 
@@ -1054,11 +1073,11 @@ Codex 只在该字段严格等于 `OpenAI` 时才会向网关发送
 - 四个模型环境变量固定为 `gateway-default`，即 §7.3 的启动首选模型。
 - `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` 置为 `1`，让 Claude Code 启动时请求
   `/c/claude/v1/models?limit=1000` 并把结果加入模型选择器。
-- 必须在指向说明中写明该发现机制的客户端侧限制：Claude Code 只保留 id 匹配
-  `/(claude|anthropic)/i` 的条目，其余一律丢弃，因此选择器不会显示全部已启用模型。
-  这是客户端行为，不得通过改写模型 id 去迎合它。证据见 §20。
-- 完整目录仍由 `/c/claude/v1/models` 提供；`claude --model <provider-id>/<model-id>`
-  可以直接使用任意已启用模型，实测上游收到的模型名逐字一致。
+- `/c/claude/v1/models` 必须返回 §7.5 的可逆选择器别名，使 `/model` 列出全部
+  已启用模型；`display_name` 仍是真实可选 id。四个启动环境变量保持
+  `gateway-default`，禁止把别名写入 `settings.json` 的启动槽。
+- `claude --model <provider-id>/<model-id>` 与选择器别名都必须可用。上游收到的
+  模型名必须是解码后的真实模型，不得把别名交给上游。证据见 §20。
 - 只改用户级配置，禁止改项目内 `.claude/settings.json`。
 - 指向说明必须明确：自定义非 Anthropic base URL 会禁用 Remote Control。
 - 指向说明必须明确：MCP tool search 在非第一方 host 下默认关闭或降级，行为取决于当前 Claude Code 版本和管理设置。
@@ -1994,9 +2013,44 @@ bundled 模板时拒绝指向。完整目录同时由 sidecar 与 `/c/codex/v1/m
 - 客户端路由从「客户端唯一可用模型」改为「客户端启动首选模型」，语义见 §7.3。
 - 完整的已启用 `<provider-id>/<model-id>` 目录一律由 `/c/{client}/v1/models` 提供，
   这是三个客户端唯一共同可用的入口。
-- 只有 Grok Build 在配置文件里落地完整目录；Codex 与 Claude Code 只写首选模型。
-- `/v1/models` 每项增加 `display_name`，取值等于该项 `id`，供 Claude Code
-  发现与 Grok 选择器按 `供应商/模型 ID` 显示。
+- 只有 Grok Build 在配置文件里落地完整目录；Codex 通过 sidecar 落地；Claude Code
+  只写首选模型，完整目录走 `/c/claude/v1/models` 的可逆选择器别名（见下一条
+  2026-08-16 复核）。
+- `/v1/models` 以及 Codex / Grok / generic 前缀版本每项的 `display_name` 必须
+  等于该项 `id`。`/c/claude/v1/models` 的 `id` 是选择器别名，`display_name`
+  仍等于真实可选 id。
+
+### 2026-08-16 复核：Claude Code `/model` 使用可逆选择器别名
+
+本次重开 2026-08-15「不得改写模型 id」的结论。新证据如下。
+
+1. 官方契约未变。2026-08-16 读取的 Claude Code *Gateway protocol reference*
+   （`code.claude.com/docs/en/llm-gateway-protocol`，Model discovery）仍写明：
+   `GET /v1/models?limit=1000` 只读取 `data[].id` 与可选 `data[].display_name`；
+   仅当 `id` 含 `claude` 或 `anthropic`（大小写不敏感，v2.1.223 起改为子串匹配）
+   时保留条目。`availableModels` 是允许名单限制，不能用来新增任意模型。
+2. 社区已有稳定绕行。OpenCodex（`lidge-jun/opencodex`，文档
+   `opencodex.me/guides/claude-code/`，源码 `src/claude/alias.ts`）把路由模型
+   暴露为可逆别名 `claude-ocx-<provider>--<model>` / `claude-ocx2-…`
+   （`/` → `~s`，`~` → `~t`），`display_name` 写真实名称；入站先解码再路由。
+   选择结果会写入 Claude Code 的 `settings.json` `model` 字段，因此别名必须
+   跨版本稳定、可逆。
+3. 本网关采纳同一套语法，前缀改为 `claude-gw-` / `claude-gw2-` / `claude-gw3-`，
+   保留 `claude-gw-default` 表示 `gateway-default`。不兼容 OpenCodex 的
+   `claude-ocx*` 前缀，避免两个产品互相解码。
+4. 别名只出现在 `/c/claude/v1/models` 的 `id`。`display_name`、Codex sidecar、
+   Grok 配置、桌面/托盘选择器、以及发往上游的模型名，一律仍是
+   `gateway-default` 或 `<provider-id>/<model-id>`。
+5. `claude --model <provider-id>/<model-id>` 与选择器别名都必须继续工作。
+   `route.Resolve` 在 §7.4 原有步骤之前解码。
+
+禁止事项（新冻结）：
+
+- 禁止把别名写进 Claude Code 的四个启动环境变量。
+- 禁止把别名写进 Codex / Grok 目录或 `/v1/models`（无前缀）以及
+  `/c/{codex,grok,generic}/v1/models`。
+- 禁止把别名作为上游模型名发出。
+- 禁止为了让测试通过而弱化「别名必须可逆」或「display_name 必须是真实 id」。
 
 ### 2026-08-16 复核：Codex 远程压缩触发条件
 

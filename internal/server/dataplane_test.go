@@ -761,6 +761,92 @@ func TestModelsList(t *testing.T) {
 	}
 }
 
+func TestClaudeModelsListUsesPickerAliases(t *testing.T) {
+	up := newFakeUpstream(t, nil)
+	_, addr := startDataPlane(t, up.URL, up.URL, false, nil)
+	resp, data := chatGet(t, addr, "/c/claude/v1/models")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, %s", resp.StatusCode, data)
+	}
+	var list struct {
+		Data []struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &list); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := []struct{ id, display string }{
+		{"claude-gw-default", "gateway-default"},
+		{"claude-gw-ollama--qwen3", "ollama/qwen3"},
+		{"claude-gw2-openrouter--anthropic~sclaude-sonnet-4", "openrouter/anthropic/claude-sonnet-4"},
+	}
+	if len(list.Data) != len(want) {
+		t.Fatalf("len=%d body=%s", len(list.Data), data)
+	}
+	for i, w := range want {
+		if list.Data[i].ID != w.id {
+			t.Errorf("data[%d].id = %q, want %q", i, list.Data[i].ID, w.id)
+		}
+		if list.Data[i].DisplayName != w.display {
+			t.Errorf("data[%d].display_name = %q, want %q", i, list.Data[i].DisplayName, w.display)
+		}
+	}
+	if strings.Contains(string(data), `"id":"gateway-default"`) {
+		t.Fatal("claude catalog leaked the unaliased reserved id")
+	}
+	if strings.Contains(string(data), `"id":"ollama/qwen3"`) {
+		t.Fatal("claude catalog leaked an unaliased provider/model id")
+	}
+}
+
+func TestClaudePickerAliasRoutesToUpstream(t *testing.T) {
+	up1 := newFakeUpstream(t, nil)
+	up2 := newFakeUpstream(t, nil)
+	_, addr := startDataPlane(t, up1.URL, up2.URL, false, nil)
+
+	resp, data := chatPost(t, addr, "/c/claude/v1/chat/completions",
+		[]byte(`{"model":"claude-gw-ollama--qwen3","messages":[]}`), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("ollama alias: status %d, %s", resp.StatusCode, data)
+	}
+	if got := up2.last().Model; got != "qwen3" {
+		t.Errorf("ollama alias upstream model = %q, want qwen3", got)
+	}
+	if len(up1.requests()) != 0 {
+		t.Fatalf("ollama alias leaked to openrouter: %+v", up1.requests())
+	}
+
+	resp, data = chatPost(t, addr, "/c/claude/v1/chat/completions",
+		[]byte(`{"model":"claude-gw2-openrouter--anthropic~sclaude-sonnet-4","messages":[]}`), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("openrouter alias: status %d, %s", resp.StatusCode, data)
+	}
+	if got := up1.last().Model; got != "anthropic/claude-sonnet-4" {
+		t.Errorf("openrouter alias upstream model = %q, want anthropic/claude-sonnet-4", got)
+	}
+
+	resp, data = chatPost(t, addr, "/c/claude/v1/chat/completions",
+		[]byte(`{"model":"claude-gw-default","messages":[]}`), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("default alias: status %d, %s", resp.StatusCode, data)
+	}
+	if got := up1.last().Model; got != "anthropic/claude-sonnet-4" {
+		t.Errorf("default alias upstream model = %q, want route model", got)
+	}
+
+	// 真实 id 仍然可直接请求，不强制走别名。
+	resp, data = chatPost(t, addr, "/c/claude/v1/chat/completions",
+		[]byte(`{"model":"openrouter/anthropic/claude-sonnet-4","messages":[]}`), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("raw id: status %d, %s", resp.StatusCode, data)
+	}
+	if got := up1.last().Model; got != "anthropic/claude-sonnet-4" {
+		t.Errorf("raw id upstream model = %q", got)
+	}
+}
+
 func TestModelsListIncludesPersistedProviderCatalog(t *testing.T) {
 	up := newFakeUpstream(t, nil)
 	cfg := dataPlaneConfig(up.URL, up.URL, false)

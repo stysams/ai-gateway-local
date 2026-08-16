@@ -85,8 +85,10 @@ Scope delivered:
   full inbound auth/header dropping.
 - `GET /v1/models` and `/c/{client}/v1/models` returning
   `gateway-default` plus each persisted or discovered
-  `<provider-id>/<model-id>`, every entry carrying a `display_name` that
-  falls back to the model id.
+  `<provider-id>/<model-id>`. `display_name` equals that selectable id,
+  except `/c/claude/v1/models`, whose wire `id` is a reversible
+  `claude-gw*` picker alias so Claude Code's `/model` command lists every
+  enabled model.
 - Desensitized fixtures under `testdata/protocols/chat/` and fake-upstream
   integration tests covering every C-package branch (four-client
   isolation, prefix override/passthrough, unknown-field preservation,

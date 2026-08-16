@@ -69,6 +69,8 @@ type Resolution struct {
 
 // Resolve implements the routing algorithm (docs/v1-scheme.md §7.4):
 //
+//  0. decode a Claude Code picker alias into gateway-default or
+//     <provider-id>/<model-id> (identity when the string is not an alias),
 //  1. read the client's current route,
 //  2. an empty or gateway-default model uses the route's provider/model,
 //  3. a <prefix>/<rest> model whose prefix matches a configured provider id
@@ -77,6 +79,7 @@ type Resolution struct {
 //     — a model containing '/' must never be rejected as "unknown
 //     provider".
 func Resolve(client ClientID, requestedModel string, cfg *config.Config) (Resolution, error) {
+	requestedModel = DecodeClaudePickerID(requestedModel)
 	r := RouteFor(cfg, client)
 	if r.Provider == "" {
 		return Resolution{}, fmt.Errorf("route for client %q is not configured", client)

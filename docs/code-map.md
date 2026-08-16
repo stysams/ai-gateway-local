@@ -20,6 +20,7 @@
 | 数据面整条管道 | `internal/server/dataplane.go` `serveDataPlane` | `handlers.go` 里的 `/v1/*` 注册 |
 | §7.4 模型解析 | `internal/route/route.go` `Resolve` | `internal/route/availability_test.go` |
 | `/v1/models` 与客户端目录 | `dataplane.go` `modelCatalog` | `internal/server/clients.go` `clientSettings` |
+| Claude Code `/model` 选择器别名 | `internal/route/claudealias.go` | `dataplane.go` `serveModels` / `claudePickerCatalog`；`route.Resolve` 先解码 |
 | 同协议转发 | `dataplane.go` `serveSameProtocol` | `inbound/*/Parse` + `Rewrite` |
 | 跨协议转换 | `dataplane.go` `serveCrossProtocol` | `internal/ir/ir.go`，再进 inbound / outbound |
 | 入站协议外形 | `internal/inbound/{chat,responses,messages}` | `Parse` / `ParseRequest` / `Encode*` / `WriteError` |
@@ -154,6 +155,7 @@ CLI 子命令都在 `internal/app/app.go`：`serve`、`stop`、`status`、`docto
 | `POST /v1/responses/compact` | Responses compact | `handleResponsesCompact` |
 | `POST /v1/messages` | Messages | `handleMessages` |
 | `GET /v1/models` | 模型列表 | `handleModels` → `modelCatalog` |
+| `GET /c/claude/v1/models` | Claude `/model` 目录 | `handleModelsClient` → `claudePickerCatalog` |
 
 带 `/c/{client}` 的对应函数在同文件，先 `route.ParseClientID` 再进 `serveDataPlane`。
 
@@ -170,7 +172,7 @@ HTTP 请求
   Content-Type JSON？否则 415；体 > 128MiB 则 413
   parseForRouting          只取 model、stream
   startTrace               JSONL + X-Request-Id     → trace.go
-  route.Resolve            客户端 + 模型 + 配置快照  → route.go
+  route.Resolve            先解码 Claude 选择器别名，再走 §7.4  → route.go
   能力门
       图片不支持 → 422，上游零请求
       context_management 未声明 → 剥离，记警告
@@ -434,7 +436,7 @@ Codex 的占位环境变量在 `point/environment_windows.go`。非 Windows 上�
 `internal/route/route.go` → `route_test.go` + `availability_test.go` → `dataplane_test.go` 里四客户端隔离和前缀覆盖。
 
 **改客户端里能看到哪些模型、显示成什么**  
-`dataplane.go` `modelCatalog`（`display_name` 必须等于 `id`）→ `clients.go` `clientSettings` → Grok 适配器 `point/grok` 的 `name`，Codex 适配器 `point/codex/catalog.go`。桌面选择器另改 `desktop/src/catalog.ts`。不要改模型 id 去迎合 Claude 的过滤器。
+`dataplane.go` `modelCatalog`（除 `/c/claude/v1/models` 外 `display_name` 必须等于 `id`）→ `clients.go` `clientSettings` → Grok 适配器 `point/grok` 的 `name`，Codex 适配器 `point/codex/catalog.go`。桌面选择器另改 `desktop/src/catalog.ts`。Claude Code 的 `/model` 走 `route.ClaudePickerID`：只改 `/c/claude/v1/models` 的 `id`，`display_name` 与上游模型名保持真实可选 id。
 
 **加一种管理 API**  
 `handlers.go` 注册 → 新文件或现有 `*api.go` → `apierror.go` 信封 → 桌面若要用再加 `desktop/src/api.ts`。桌面不得直接写 `config.yaml`。
