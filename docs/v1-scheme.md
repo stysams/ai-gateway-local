@@ -534,6 +534,15 @@ type Block struct {
 - 工具调用，包含稳定 id、名称和 JSON 参数。
 - 工具结果，包含对应工具调用 id、文本或结构化内容、错误状态。
 
+工具定义：
+
+- Responses `type: function` 转为 IR 函数工具。
+- Responses `type: custom` 转为 IR 自定义工具。JSON-only 协议用
+  `{"input":"<raw text>"}` 包装自由格式入参；回写 Responses 时再拆回
+  `custom_tool_call.input`。
+- Responses `type: namespace` 展开为其中的函数 / 自定义工具。
+- Responses `role: developer` 与 `role: system` 并入 IR 系统块。
+
 IR 不是公开 API，不要求长期向后兼容；但同一切片内所有 adapter 必须只通过 IR 做跨协议转换。
 
 ### 8.2 响应事件 IR
@@ -580,7 +589,15 @@ error
 
 - 请求含图片而 provider 的 `capabilities.image_input` 为 `false` 时，网关必须在调用上游之前返回 422。
 - 请求含 reasoning，而目标协议或 provider 无法表达时，可以丢弃，但必须在该请求日志中写入 `reasoning_dropped` 警告。
-- 工具定义或工具结果无法可靠转换时必须返回 422，禁止静默删除。
+- 客户端执行的工具必须转换，不得静默删除：`function`、`custom`、`namespace`
+  内的函数 / 自定义工具属于此类。`custom` 的 grammar / text `format`
+  无法带到 JSON schema 时，工具本身仍转换，并写入 `tool_dropped`
+  （`type: custom_format`）。
+- 由上游代执行的托管工具（`web_search`、`web_search_preview`、
+  `file_search`、`code_interpreter`、`computer`、`computer_use`、
+  `computer_use_preview`、`image_generation`、`mcp`）在跨协议时可以丢弃，
+  但必须在该请求日志中写入 `tool_dropped`，禁止静默删除。
+- 无法归入以上两类的工具类型或无法转换的工具结果必须返回 422。
 - 未识别的供应商扩展字段在跨协议时可以丢弃，但必须记录字段名，不得记录钥匙。
 
 ---
@@ -1126,7 +1143,7 @@ result
 - `route` 记录最终 provider、model 和 adapter。
 - `upstream_request` 记录去除认证头后的 URL、方法、实际非敏感请求头和正文。
 - 流式时逐条追加 `upstream_event` 与 `client_event`。
-- `warning` 记录 reasoning 或扩展字段降级。
+- `warning` 记录 reasoning、托管工具、自定义工具 format 或扩展字段降级。
 - `result` 记录状态、耗时、用量、错误和完成时间。
 - 不记录 Authorization、x-api-key、Cookie、密码、令牌、会话标识或系统 secret；事件使用 `omitted_sensitive_header_count` 和 `omitted_sensitive_query_count` 表示被省略的敏感字段数量。
 - 文件写入必须串行且可在异常结束时保留已有事件。
@@ -1956,6 +1973,37 @@ bundled 模板时拒绝指向。完整目录同时由 sidecar 与 `/c/codex/v1/m
 - 只有 Grok Build 在配置文件里落地完整目录；Codex 与 Claude Code 只写首选模型。
 - `/v1/models` 每项增加 `display_name`，取值等于该项 `id`，供 Claude Code
   发现与 Grok 选择器按 `供应商/模型 ID` 显示。
+
+### 2026-08-16 复核：Codex Desktop Responses 工具外形
+
+实验对象：Codex Desktop `0.148.0-alpha.9`（`User-Agent: Codex Desktop/0.148.0-alpha.9`，
+构建 `26.810.52044`），Windows，指向本机网关 `/c/codex/v1/responses`，
+模型 `aa/claude-opus-4-6`（Anthropic adapter，跨协议）。
+
+证据文件：`%USERPROFILE%\.ai-gateway\logs\2026-08-16\req_3c7bd33cab2cacc7b16d186f.jsonl`。
+
+同一请求的 `tools` 同时包含：
+
+| `type` | 名称 | 说明 |
+|---|---|---|
+| `custom` | `exec` | 自由格式工具，带 Lark `format.grammar`，入参是原始 JavaScript，不是 JSON |
+| `function` | `wait`、`request_user_input` | 顶层 `name` / `parameters`，不是 Chat Completions 的嵌套 `function` |
+| `namespace` | `collaboration` | 内含 `spawn_agent` 等函数工具 |
+| `web_search` | （无 name） | 上游代执行的托管搜索 |
+
+`input[]` 里还有 `role: developer` 的消息。客户端报错：
+
+```text
+unexpected status 422 Unprocessable Entity: content cannot be converted without loss: only function tools are supported
+```
+
+这是网关跨协议解析拒绝非 `function` 工具，不是上游 422。同协议
+Responses→Responses 仍按原文转发这些字段。
+
+结论：§8.4 必须区分「客户端执行的工具」和「托管工具」。前者转换（`custom`
+用 `{input:string}` 包装，回写时拆成 `custom_tool_call`；`namespace` 展开），
+后者丢弃并记 `tool_dropped`。`developer` 并入系统块。无法转换的其它工具类型
+仍返回 422。
 
 ---
 

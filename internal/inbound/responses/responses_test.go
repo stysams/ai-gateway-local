@@ -41,6 +41,121 @@ func TestParseRequestItems(t *testing.T) {
 	}
 }
 
+func TestParseRequestCodexDesktopTools(t *testing.T) {
+	body := []byte(`{
+		"model": "aa/claude-opus-4-6",
+		"instructions": "You are Codex",
+		"input": [
+			{"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "app context"}]},
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "你是谁"}]}
+		],
+		"tools": [
+			{"type": "custom", "name": "exec", "description": "Run JS", "format": {"type": "grammar", "syntax": "lark", "definition": "start: SOURCE"}},
+			{"type": "function", "name": "wait", "description": "wait", "parameters": {"type": "object", "properties": {"cell_id": {"type": "string"}}, "required": ["cell_id"]}},
+			{"type": "namespace", "name": "collaboration", "tools": [
+				{"type": "function", "name": "spawn_agent", "description": "spawn", "parameters": {"type": "object", "properties": {}}}
+			]},
+			{"type": "web_search", "external_web_access": true}
+		]
+	}`)
+	req, err := ParseRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.System) != 2 || req.System[0].Text != "You are Codex" || req.System[1].Text != "app context" {
+		t.Fatalf("system = %+v", req.System)
+	}
+	if len(req.Messages) != 1 || req.Messages[0].Role != ir.RoleUser || req.Messages[0].Content[0].Text != "你是谁" {
+		t.Fatalf("messages = %+v", req.Messages)
+	}
+	if len(req.Tools) != 3 {
+		t.Fatalf("tools = %+v", req.Tools)
+	}
+	if !req.Tools[0].Custom || req.Tools[0].Name != "exec" || !ir.ValidJSONObject(req.Tools[0].Parameters) {
+		t.Fatalf("exec = %+v", req.Tools[0])
+	}
+	if req.Tools[1].Custom || req.Tools[1].Name != "wait" {
+		t.Fatalf("wait = %+v", req.Tools[1])
+	}
+	if req.Tools[2].Name != "spawn_agent" {
+		t.Fatalf("namespace flatten = %+v", req.Tools[2])
+	}
+	if len(req.DroppedTools) != 2 {
+		t.Fatalf("dropped = %+v", req.DroppedTools)
+	}
+	if req.DroppedTools[0].Type != "custom_format" || req.DroppedTools[0].Name != "exec" {
+		t.Fatalf("format drop = %+v", req.DroppedTools[0])
+	}
+	if req.DroppedTools[1].Type != "web_search" {
+		t.Fatalf("hosted drop = %+v", req.DroppedTools[1])
+	}
+}
+
+func TestParseRequestCustomToolCallRoundTrip(t *testing.T) {
+	body := []byte(`{
+		"model": "m",
+		"input": [
+			{"type": "custom_tool_call", "call_id": "call_exec", "name": "exec", "input": "await tools.exec_command({cmd: 'hi'})"},
+			{"type": "custom_tool_call_output", "call_id": "call_exec", "output": "ok"}
+		]
+	}`)
+	req, err := ParseRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Messages) != 2 {
+		t.Fatalf("messages = %+v", req.Messages)
+	}
+	call := req.Messages[0].Content[0].ToolCall
+	if call == nil || !call.Custom || call.Name != "exec" {
+		t.Fatalf("call = %+v", call)
+	}
+	if ir.UnwrapFreeformInput(call.Arguments) != "await tools.exec_command({cmd: 'hi'})" {
+		t.Fatalf("arguments = %s", call.Arguments)
+	}
+	if req.Messages[1].Content[0].ToolResult.Content != "ok" {
+		t.Fatalf("output = %+v", req.Messages[1])
+	}
+}
+
+func TestParseRequestUnknownToolType(t *testing.T) {
+	_, err := ParseRequest([]byte(`{"model":"m","tools":[{"type":"local_shell"}]}`))
+	if err == nil || !strings.Contains(err.Error(), `tool type "local_shell"`) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestEncodeStreamCustomToolCall(t *testing.T) {
+	var buf bytes.Buffer
+	err := EncodeStream(&buf, func() {}, "m", eventSource([]ir.Event{
+		{Type: ir.EventStarted},
+		{Type: ir.EventToolCallStarted, ToolCallID: "call_exec", ToolName: "exec", ToolCustom: true},
+		{Type: ir.EventToolCallArgumentsDlt, ToolCallID: "call_exec", ArgumentsDelta: `{"in`, ToolCustom: true},
+		{Type: ir.EventToolCallCompleted, ToolCallID: "call_exec", ToolName: "exec", Arguments: `{"input":"await tools.exec_command({cmd: 'hi'})"}`, ToolCustom: true},
+		{Type: ir.EventCompleted},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		`"type":"custom_tool_call"`,
+		`"call_id":"call_exec"`,
+		"event: response.custom_tool_call_input.done",
+		`"input":"await tools.exec_command({cmd: 'hi'})"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stream missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, `"type":"function_call"`) || strings.Contains(out, "function_call_arguments") {
+		t.Errorf("custom tool encoded as function call:\n%s", out)
+	}
+	if strings.Contains(out, `"delta":"{\"in`) {
+		t.Errorf("JSON wrapper delta leaked:\n%s", out)
+	}
+}
+
 func TestParseRequestStringInput(t *testing.T) {
 	req, err := ParseRequest([]byte(`{"model":"m","input":"just text"}`))
 	if err != nil {

@@ -175,8 +175,16 @@ func ParseRequest(body []byte) (*ir.Request, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Messages = messages
-	req.Tools, err = parseTools(raw.Tools)
+	var kept []ir.Message
+	for _, message := range messages {
+		if message.Role == ir.RoleSystem {
+			req.System = append(req.System, message.Content...)
+			continue
+		}
+		kept = append(kept, message)
+	}
+	req.Messages = kept
+	req.Tools, req.DroppedTools, err = parseTools(raw.Tools)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +216,8 @@ func parseInput(raw json.RawMessage) ([]ir.Message, error) {
 			CallID    string          `json:"call_id"`
 			Name      string          `json:"name"`
 			Arguments string          `json:"arguments"`
-			Output    string          `json:"output"`
+			Input     json.RawMessage `json:"input"`
+			Output    json.RawMessage `json:"output"`
 			Content   json.RawMessage `json:"content"`
 		}
 		if err := json.Unmarshal(itemRaw, &item); err != nil {
@@ -249,9 +258,9 @@ func parseInput(raw json.RawMessage) ([]ir.Message, error) {
 					}
 				}
 			}
-			role := ir.Role(item.Role)
-			if role == "" {
-				role = ir.RoleUser
+			role, err := normalizeInputRole(item.Role)
+			if err != nil {
+				return nil, err
 			}
 			messages = append(messages, ir.Message{Role: role, Content: blocks})
 		case "function_call":
@@ -269,15 +278,31 @@ func parseInput(raw json.RawMessage) ([]ir.Message, error) {
 					},
 				}},
 			})
-		case "function_call_output":
+		case "custom_tool_call":
+			if item.CallID == "" || item.Name == "" {
+				return nil, fmt.Errorf("invalid custom_tool_call item: missing call_id or name")
+			}
+			messages = append(messages, ir.Message{
+				Role: ir.RoleAssistant,
+				Content: []ir.Block{{
+					Type: ir.BlockToolCall,
+					ToolCall: &ir.ToolCall{
+						ID:        item.CallID,
+						Name:      item.Name,
+						Arguments: ir.WrapFreeformInput(rawJSONText(item.Input)),
+						Custom:    true,
+					},
+				}},
+			})
+		case "function_call_output", "custom_tool_call_output":
 			if item.CallID == "" {
-				return nil, fmt.Errorf("invalid function_call_output item: missing call_id")
+				return nil, fmt.Errorf("invalid %s item: missing call_id", item.Type)
 			}
 			messages = append(messages, ir.Message{
 				Role: ir.RoleTool,
 				Content: []ir.Block{{
 					Type:       ir.BlockToolResult,
-					ToolResult: &ir.ToolResult{ID: item.CallID, Content: item.Output},
+					ToolResult: &ir.ToolResult{ID: item.CallID, Content: rawJSONText(item.Output)},
 				}},
 			})
 		case "reasoning":
@@ -315,25 +340,119 @@ func parseInput(raw json.RawMessage) ([]ir.Message, error) {
 	return messages, nil
 }
 
-// parseTools converts Responses function tools into IR tools.
-func parseTools(rawTools []json.RawMessage) ([]ir.Tool, error) {
+// parseTools converts Responses function, custom, and namespace tools into
+// IR tools. Hosted provider-executed tools are recorded as DroppedTool
+// instead of failing the request (docs/v1-scheme.md §8.4).
+func parseTools(rawTools []json.RawMessage) ([]ir.Tool, []ir.DroppedTool, error) {
 	var tools []ir.Tool
+	var dropped []ir.DroppedTool
 	for _, raw := range rawTools {
-		var t struct {
-			Type        string          `json:"type"`
-			Name        string          `json:"name"`
-			Description string          `json:"description"`
-			Parameters  json.RawMessage `json:"parameters"`
+		more, drop, err := parseOneTool(raw)
+		if err != nil {
+			return nil, nil, err
 		}
-		if err := json.Unmarshal(raw, &t); err != nil {
-			return nil, fmt.Errorf("invalid tool definition: %w", err)
-		}
-		if t.Type != "function" || t.Name == "" {
-			return nil, fmt.Errorf("%w: only function tools are supported", ir.ErrUnsupportedContent)
-		}
-		tools = append(tools, ir.Tool{Name: t.Name, Description: t.Description, Parameters: t.Parameters})
+		tools = append(tools, more...)
+		dropped = append(dropped, drop...)
 	}
-	return tools, nil
+	return tools, dropped, nil
+}
+
+func parseOneTool(raw json.RawMessage) ([]ir.Tool, []ir.DroppedTool, error) {
+	var t struct {
+		Type        string            `json:"type"`
+		Name        string            `json:"name"`
+		Description string            `json:"description"`
+		Parameters  json.RawMessage   `json:"parameters"`
+		Format      json.RawMessage   `json:"format"`
+		Tools       []json.RawMessage `json:"tools"`
+	}
+	if err := json.Unmarshal(raw, &t); err != nil {
+		return nil, nil, fmt.Errorf("invalid tool definition: %w", err)
+	}
+	switch t.Type {
+	case "function":
+		if t.Name == "" {
+			return nil, nil, fmt.Errorf("%w: function tool is missing name", ir.ErrUnsupportedContent)
+		}
+		return []ir.Tool{{
+			Name:        t.Name,
+			Description: t.Description,
+			Parameters:  ir.SchemaOrEmpty(t.Parameters),
+		}}, nil, nil
+	case "custom":
+		if t.Name == "" {
+			return nil, nil, fmt.Errorf("%w: custom tool is missing name", ir.ErrUnsupportedContent)
+		}
+		var dropped []ir.DroppedTool
+		if presentJSON(t.Format) {
+			dropped = append(dropped, ir.DroppedTool{
+				Type:   "custom_format",
+				Name:   t.Name,
+				Reason: "custom tool grammar or text format cannot be expressed as a JSON schema",
+			})
+		}
+		return []ir.Tool{{
+			Name:        t.Name,
+			Description: t.Description,
+			Parameters:  ir.SchemaOrFreeform(t.Parameters),
+			Custom:      true,
+		}}, dropped, nil
+	case "namespace":
+		var tools []ir.Tool
+		var dropped []ir.DroppedTool
+		for _, nested := range t.Tools {
+			more, drop, err := parseOneTool(nested)
+			if err != nil {
+				return nil, nil, fmt.Errorf("namespace %q: %w", t.Name, err)
+			}
+			tools = append(tools, more...)
+			dropped = append(dropped, drop...)
+		}
+		return tools, dropped, nil
+	default:
+		if hostedToolType(t.Type) {
+			return nil, []ir.DroppedTool{{
+				Type:   t.Type,
+				Name:   t.Name,
+				Reason: "hosted tool cannot be converted across protocols",
+			}}, nil
+		}
+		return nil, nil, fmt.Errorf("%w: tool type %q is not convertible", ir.ErrUnsupportedContent, t.Type)
+	}
+}
+
+func hostedToolType(typ string) bool {
+	switch typ {
+	case "web_search", "web_search_preview", "file_search", "code_interpreter",
+		"computer", "computer_use", "computer_use_preview", "image_generation", "mcp":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeInputRole(role string) (ir.Role, error) {
+	switch role {
+	case "", "user":
+		return ir.RoleUser, nil
+	case "assistant":
+		return ir.RoleAssistant, nil
+	case "system", "developer":
+		return ir.RoleSystem, nil
+	default:
+		return "", fmt.Errorf("invalid message role %q", role)
+	}
+}
+
+func rawJSONText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+	return string(raw)
 }
 
 // normalizeToolChoice accepts the Responses forms (already the IR
@@ -395,6 +514,17 @@ func EncodeNonStream(w io.Writer, model string, resp *ir.Response) error {
 		})
 	}
 	for _, tc := range resp.ToolCalls {
+		if tc.Custom {
+			output = append(output, map[string]any{
+				"id":      "ctc_" + tc.ID,
+				"type":    "custom_tool_call",
+				"call_id": tc.ID,
+				"name":    tc.Name,
+				"input":   ir.UnwrapFreeformInput(tc.Arguments),
+				"status":  "completed",
+			})
+			continue
+		}
 		output = append(output, map[string]any{
 			"id":        "fc_" + tc.ID,
 			"type":      "function_call",
@@ -494,17 +624,23 @@ func EncodeStream(w io.Writer, flush func(), model string, next func() (ir.Event
 			flush()
 		case ir.EventToolCallStarted:
 			itemIndex++
+			item := functionCallItem(ev, "", "in_progress")
+			if ev.ToolCustom {
+				item = customToolCallItem(ev, "", "in_progress")
+			}
 			if err := writeSSE(w, "response.output_item.added", map[string]any{
 				"output_index": itemIndex - 1,
-				"item": map[string]any{
-					"id": "fc_" + ev.ToolCallID, "type": "function_call", "call_id": ev.ToolCallID,
-					"name": ev.ToolName, "arguments": "", "status": "in_progress",
-				},
+				"item":         item,
 			}); err != nil {
 				return err
 			}
 			flush()
 		case ir.EventToolCallArgumentsDlt:
+			if ev.ToolCustom {
+				// JSON-wrapped freeform deltas are not the custom-tool text
+				// stream; the completed event carries the unwrapped input.
+				continue
+			}
 			if err := writeSSE(w, "response.function_call_arguments.delta", map[string]any{
 				"item_id": "fc_" + ev.ToolCallID, "output_index": 0, "delta": ev.ArgumentsDelta,
 			}); err != nil {
@@ -512,6 +648,23 @@ func EncodeStream(w io.Writer, flush func(), model string, next func() (ir.Event
 			}
 			flush()
 		case ir.EventToolCallCompleted:
+			if ev.ToolCustom {
+				input := ir.UnwrapFreeformInput(json.RawMessage(ev.Arguments))
+				if err := writeSSE(w, "response.custom_tool_call_input.done", map[string]any{
+					"item_id": "ctc_" + ev.ToolCallID, "output_index": 0, "input": input,
+				}); err != nil {
+					return err
+				}
+				flush()
+				if err := writeSSE(w, "response.output_item.done", map[string]any{
+					"output_index": 0,
+					"item":         customToolCallItem(ev, input, "completed"),
+				}); err != nil {
+					return err
+				}
+				flush()
+				continue
+			}
 			if err := writeSSE(w, "response.function_call_arguments.done", map[string]any{
 				"item_id": "fc_" + ev.ToolCallID, "output_index": 0,
 				"arguments": ev.Arguments,
@@ -521,10 +674,7 @@ func EncodeStream(w io.Writer, flush func(), model string, next func() (ir.Event
 			flush()
 			if err := writeSSE(w, "response.output_item.done", map[string]any{
 				"output_index": 0,
-				"item": map[string]any{
-					"id": "fc_" + ev.ToolCallID, "type": "function_call", "call_id": ev.ToolCallID,
-					"name": ev.ToolName, "arguments": ev.Arguments, "status": "completed",
-				},
+				"item":         functionCallItem(ev, ev.Arguments, "completed"),
 			}); err != nil {
 				return err
 			}
@@ -560,6 +710,20 @@ func EncodeStream(w io.Writer, flush func(), model string, next func() (ir.Event
 		}
 	}
 	return nil
+}
+
+func functionCallItem(ev ir.Event, arguments, status string) map[string]any {
+	return map[string]any{
+		"id": "fc_" + ev.ToolCallID, "type": "function_call", "call_id": ev.ToolCallID,
+		"name": ev.ToolName, "arguments": arguments, "status": status,
+	}
+}
+
+func customToolCallItem(ev ir.Event, input, status string) map[string]any {
+	return map[string]any{
+		"id": "ctc_" + ev.ToolCallID, "type": "custom_tool_call", "call_id": ev.ToolCallID,
+		"name": ev.ToolName, "input": input, "status": status,
+	}
 }
 
 func writeSSE(w io.Writer, typ string, payload any) error {

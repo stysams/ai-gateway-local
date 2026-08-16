@@ -73,6 +73,10 @@ type Request struct {
 	Tools      []Tool
 	ToolChoice json.RawMessage
 	Reasoning  ReasoningConfig
+	// DroppedTools are hosted or otherwise non-convertible tool
+	// definitions removed during inbound parse. The data plane logs them
+	// as tool_dropped; they must not be silently discarded.
+	DroppedTools []DroppedTool
 	// Extensions carries fields the IR does not model. They are preserved
 	// on same-protocol paths and dropped (with their names recorded) on
 	// cross-protocol paths.
@@ -173,11 +177,22 @@ type Reasoning struct {
 	Encrypted string
 }
 
-// Tool is a function tool definition.
+// Tool is a function or custom/freeform tool definition.
 type Tool struct {
 	Name        string
 	Description string
 	Parameters  json.RawMessage
+	// Custom is true for Responses custom/freeform tools. JSON-only
+	// protocols wrap the raw input in FreeformInputSchema.
+	Custom bool
+}
+
+// DroppedTool records a tool definition that was removed or downgraded
+// before the upstream request (docs/v1-scheme.md §8.4).
+type DroppedTool struct {
+	Type   string
+	Name   string
+	Reason string
 }
 
 // ToolCall is a model tool invocation with a stable id and complete JSON
@@ -186,6 +201,7 @@ type ToolCall struct {
 	ID        string
 	Name      string
 	Arguments json.RawMessage
+	Custom    bool
 }
 
 // ToolResult is the client's answer to a tool call.
@@ -246,6 +262,8 @@ type Event struct {
 	ToolName       string
 	ArgumentsDelta string
 	Arguments      string
+	// ToolCustom is set when the call targets a Responses custom tool.
+	ToolCustom bool
 
 	Usage Usage
 

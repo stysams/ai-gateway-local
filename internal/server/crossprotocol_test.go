@@ -213,6 +213,132 @@ func TestCrossClaudeMessagesSystemRoleToChatStream(t *testing.T) {
 	}
 }
 
+// Codex Desktop 的 custom / namespace / web_search 工具跨到 Messages。
+func TestCrossResponsesCodexDesktopToolsToMessages(t *testing.T) {
+	up := newFakeUpstream(t, messagesTextHandler(messagesTextBody))
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	p := cfg.Providers["openrouter"]
+	p.Adapter = "anthropic"
+	cfg.Providers["openrouter"] = p
+	s, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	body := []byte(`{
+		"model":"aa/claude-opus-4-6",
+		"instructions":"You are Codex",
+		"input":[
+			{"type":"message","role":"developer","content":[{"type":"input_text","text":"app context"}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"你是谁"}]}
+		],
+		"tools":[
+			{"type":"custom","name":"exec","description":"Run JS","format":{"type":"grammar","syntax":"lark","definition":"start: SOURCE"}},
+			{"type":"function","name":"wait","description":"wait","parameters":{"type":"object","properties":{"cell_id":{"type":"string"}},"required":["cell_id"]}},
+			{"type":"namespace","name":"collaboration","tools":[
+				{"type":"function","name":"spawn_agent","description":"spawn","parameters":{"type":"object","properties":{}}}
+			]},
+			{"type":"web_search","external_web_access":true}
+		]
+	}`)
+	resp, data := chatPost(t, addr, "/c/codex/v1/responses", body, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, %s", resp.StatusCode, data)
+	}
+	reqs := up.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("upstream requests = %d", len(reqs))
+	}
+	var tools []struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(reqs[0].Fields["tools"], &tools); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, tool := range tools {
+		got[tool.Name] = true
+		if tool.Name == "web_search" || tool.Type == "web_search" {
+			t.Fatalf("hosted web_search reached upstream: %+v", tools)
+		}
+	}
+	for _, name := range []string{"exec", "wait", "spawn_agent"} {
+		if !got[name] {
+			t.Errorf("missing upstream tool %s in %+v", name, tools)
+		}
+	}
+	if !strings.Contains(string(reqs[0].Fields["system"]), "You are Codex") ||
+		!strings.Contains(string(reqs[0].Fields["system"]), "app context") {
+		t.Fatalf("system = %s", reqs[0].Fields["system"])
+	}
+	var messages []struct {
+		Role string `json:"role"`
+	}
+	if err := json.Unmarshal(reqs[0].Fields["messages"], &messages); err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || messages[0].Role != "user" {
+		t.Fatalf("upstream messages = %+v", messages)
+	}
+	files, err := filepath.Glob(filepath.Join(filepath.Dir(s.cfg.Path()), "logs", "*", "*.jsonl"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("log files = %v, err = %v", files, err)
+	}
+	warning, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(warning), `"code":"tool_dropped"`) ||
+		!strings.Contains(string(warning), `"web_search"`) ||
+		!strings.Contains(string(warning), `"custom_format"`) {
+		t.Fatalf("warning = %s", warning)
+	}
+}
+
+func TestCrossResponsesCustomToolCallStream(t *testing.T) {
+	up := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `event: message_start
+data: {"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"m","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_exec","name":"exec","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"input\":\"await tools.exec_command({cmd: 'hi'})\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`)
+	})
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	p := cfg.Providers["openrouter"]
+	p.Adapter = "anthropic"
+	cfg.Providers["openrouter"] = p
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	body := []byte(`{
+		"model":"m","stream":true,
+		"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],
+		"tools":[{"type":"custom","name":"exec","description":"Run JS"}]
+	}`)
+	resp, data := chatPost(t, addr, "/c/codex/v1/responses", body, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, %s", resp.StatusCode, data)
+	}
+	out := string(data)
+	if !strings.Contains(out, `"type":"custom_tool_call"`) || !strings.Contains(out, "await tools.exec_command({cmd: 'hi'})") {
+		t.Fatalf("client stream = %s", out)
+	}
+	if strings.Contains(out, `"type":"function_call"`) {
+		t.Fatalf("custom tool leaked as function_call: %s", out)
+	}
+}
+
 // responsesToMessagesNonStream: responses 客户端 → messages 上游。
 func TestCrossResponsesToMessagesNonStream(t *testing.T) {
 	up := newFakeUpstream(t, messagesTextHandler(messagesTextBody))

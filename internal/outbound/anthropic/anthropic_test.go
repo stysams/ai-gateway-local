@@ -82,6 +82,59 @@ func TestGenerateRequest(t *testing.T) {
 	}
 }
 
+func TestGenerateRequestMergesConsecutiveUser(t *testing.T) {
+	req := testIRRequest()
+	req.Messages = []ir.Message{
+		{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "one"}}},
+		{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "two"}}},
+	}
+	body, err := GenerateRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Messages) != 1 || doc.Messages[0].Role != "user" {
+		t.Fatalf("messages = %+v", doc.Messages)
+	}
+	if len(doc.Messages[0].Content) != 2 || doc.Messages[0].Content[0].Text != "one" || doc.Messages[0].Content[1].Text != "two" {
+		t.Fatalf("content = %+v", doc.Messages[0].Content)
+	}
+}
+
+func TestGenerateRequestCustomToolSchema(t *testing.T) {
+	req := testIRRequest()
+	req.Tools = []ir.Tool{{Name: "exec", Description: "Run JS", Custom: true}}
+	body, err := GenerateRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Tools []struct {
+			Name        string          `json:"name"`
+			InputSchema json.RawMessage `json:"input_schema"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Tools) != 1 || doc.Tools[0].Name != "exec" || !ir.ValidJSONObject(doc.Tools[0].InputSchema) {
+		t.Fatalf("tools = %+v", doc.Tools)
+	}
+	if !strings.Contains(string(doc.Tools[0].InputSchema), `"input"`) {
+		t.Fatalf("schema = %s", doc.Tools[0].InputSchema)
+	}
+}
+
 func TestGenerateRequestToolChoiceMapping(t *testing.T) {
 	cases := []struct {
 		in   string

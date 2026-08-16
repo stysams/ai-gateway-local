@@ -157,6 +157,15 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 				case ir.BlockText:
 					content = append(content, map[string]any{"type": "input_text", "text": b.Text})
 				case ir.BlockToolCall:
+					if b.ToolCall.Custom {
+						toolCalls = append(toolCalls, map[string]any{
+							"type":    "custom_tool_call",
+							"call_id": b.ToolCall.ID,
+							"name":    b.ToolCall.Name,
+							"input":   ir.UnwrapFreeformInput(b.ToolCall.Arguments),
+						})
+						break
+					}
 					toolCalls = append(toolCalls, map[string]any{
 						"type":      "function_call",
 						"call_id":   b.ToolCall.ID,
@@ -192,6 +201,14 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 	if len(req.Tools) > 0 {
 		tools := make([]map[string]any, 0, len(req.Tools))
 		for _, t := range req.Tools {
+			if t.Custom {
+				tools = append(tools, map[string]any{
+					"type":        "custom",
+					"name":        t.Name,
+					"description": t.Description,
+				})
+				continue
+			}
 			tools = append(tools, map[string]any{
 				"type":        "function",
 				"name":        t.Name,

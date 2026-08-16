@@ -337,6 +337,12 @@ func (s *Server) serveCrossProtocol(w http.ResponseWriter, r *http.Request, inPr
 			return
 		}
 	}
+	if len(req.DroppedTools) > 0 {
+		if err := s.writeToolDropped(trace, inProto, outProto, provider.id, req.DroppedTools); err != nil {
+			writeInboundError(w, http.StatusInternalServerError, inProto, err.Error(), "warning_log_failed")
+			return
+		}
+	}
 
 	outBody, err := generateRequest(outProto, req)
 	if err != nil {
@@ -375,11 +381,12 @@ func (s *Server) serveCrossProtocol(w http.ResponseWriter, r *http.Request, inPr
 		return
 	}
 
+	customNames := ir.CustomToolNames(req.Tools)
 	if stream {
-		s.streamCrossProtocol(w, inProto, outProto, model, upResp, trace)
+		s.streamCrossProtocol(w, inProto, outProto, model, upResp, trace, customNames)
 		return
 	}
-	s.nonStreamCrossProtocol(w, inProto, outProto, model, upResp, trace)
+	s.nonStreamCrossProtocol(w, inProto, outProto, model, upResp, trace, customNames)
 }
 
 // streamCrossProtocol pipes the upstream SSE stream (decoded with the
@@ -387,7 +394,7 @@ func (s *Server) serveCrossProtocol(w http.ResponseWriter, r *http.Request, inPr
 // inbound protocol's SSE encoding, flushing after every event. A broken
 // upstream stream ends with a protocol error event, never a fabricated
 // success.
-func (s *Server) streamCrossProtocol(w http.ResponseWriter, inProto, outProto ir.Protocol, model string, upResp *http.Response, trace *requestTrace) {
+func (s *Server) streamCrossProtocol(w http.ResponseWriter, inProto, outProto ir.Protocol, model string, upResp *http.Response, trace *requestTrace, customNames map[string]bool) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
@@ -399,6 +406,7 @@ func (s *Server) streamCrossProtocol(w http.ResponseWriter, inProto, outProto ir
 	upEvents := &sseEventLogger{trace: trace, upstream: true}
 	reader := newOutStreamReader(outProto, &usageTrackingReader{r: upResp.Body, c: collector, events: upEvents})
 	seq := ir.NewSequencer()
+	customIDs := map[string]bool{}
 	next := func() (ir.Event, error) {
 		ev, err := reader.Next()
 		if err != nil {
@@ -413,6 +421,7 @@ func (s *Server) streamCrossProtocol(w http.ResponseWriter, inProto, outProto ir
 				Type: "api_error", Message: "upstream stream error: " + err.Error(),
 			}}, nil
 		}
+		ev = ir.MarkCustomToolEvent(ev, customNames, customIDs)
 		if ev.Type == ir.EventUsage {
 			trace.setIRUsage(ev.Usage)
 		}
@@ -434,7 +443,7 @@ func (s *Server) streamCrossProtocol(w http.ResponseWriter, inProto, outProto ir
 // nonStreamCrossProtocol parses the upstream JSON into ir events, validates
 // them in the sequencer and encodes the aggregated response in the inbound
 // protocol.
-func (s *Server) nonStreamCrossProtocol(w http.ResponseWriter, inProto, outProto ir.Protocol, model string, upResp *http.Response, trace *requestTrace) {
+func (s *Server) nonStreamCrossProtocol(w http.ResponseWriter, inProto, outProto ir.Protocol, model string, upResp *http.Response, trace *requestTrace, customNames map[string]bool) {
 	upBody, err := io.ReadAll(upResp.Body)
 	if err != nil {
 		writeInboundError(w, http.StatusBadGateway, inProto, "cannot read upstream response", "")
@@ -454,6 +463,7 @@ func (s *Server) nonStreamCrossProtocol(w http.ResponseWriter, inProto, outProto
 		}
 	}
 	agg := seq.Accumulate()
+	ir.MarkCustomToolCalls(agg.ToolCalls, customNames)
 	trace.setIRUsage(agg.Usage)
 	if agg.Errored {
 		writeInboundError(w, http.StatusBadGateway, inProto, "upstream failed", "upstream_error")
@@ -710,6 +720,33 @@ func (s *Server) writeReasoningDropped(trace *requestTrace, inProto, outProto ir
 			"reason":            reason,
 		}}); err != nil {
 		return fmt.Errorf("write reasoning downgrade warning: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) writeToolDropped(trace *requestTrace, inProto, outProto ir.Protocol, providerID string, dropped []ir.DroppedTool) error {
+	if trace == nil {
+		return nil
+	}
+	details := make([]map[string]any, 0, len(dropped))
+	for _, tool := range dropped {
+		details = append(details, map[string]any{
+			"type":   tool.Type,
+			"name":   tool.Name,
+			"reason": tool.Reason,
+		})
+	}
+	if err := trace.session.Append("warning", map[string]any{
+		"code":    "tool_dropped",
+		"message": "hosted tools or custom-tool formats were removed or downgraded before the upstream request",
+		"details": map[string]any{
+			"inbound_protocol":  inProto,
+			"outbound_protocol": outProto,
+			"provider":          providerID,
+			"tools":             details,
+		},
+	}); err != nil {
+		return fmt.Errorf("write tool downgrade warning: %w", err)
 	}
 	return nil
 }

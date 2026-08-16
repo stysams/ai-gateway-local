@@ -139,11 +139,15 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 			case ir.BlockText:
 				content = append(content, map[string]any{"type": "text", "text": b.Text})
 			case ir.BlockToolCall:
+				args := b.ToolCall.Arguments
+				if !ir.ValidJSONObject(args) {
+					args = ir.WrapFreeformInput(string(args))
+				}
 				content = append(content, map[string]any{
 					"type":  "tool_use",
 					"id":    b.ToolCall.ID,
 					"name":  b.ToolCall.Name,
-					"input": json.RawMessage(b.ToolCall.Arguments),
+					"input": json.RawMessage(args),
 				})
 			case ir.BlockToolResult:
 				content = append(content, map[string]any{
@@ -181,21 +185,32 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 				}
 			}
 		}
+		if len(content) == 0 {
+			continue
+		}
 		role := string(m.Role)
 		if role == string(ir.RoleTool) {
 			role = string(ir.RoleUser) // tool_result 块位于 user 消息中
 		}
-		messages = append(messages, map[string]any{"role": role, "content": content})
+		messages = appendMergedMessage(messages, role, content)
 	}
 	body["messages"] = messages
 
 	if len(req.Tools) > 0 {
 		tools := make([]map[string]any, 0, len(req.Tools))
 		for _, t := range req.Tools {
+			schema := t.Parameters
+			if !ir.ValidJSONObject(schema) {
+				if t.Custom {
+					schema = ir.SchemaOrFreeform(nil)
+				} else {
+					schema = ir.SchemaOrEmpty(nil)
+				}
+			}
 			tools = append(tools, map[string]any{
 				"name":         t.Name,
 				"description":  t.Description,
-				"input_schema": json.RawMessage(t.Parameters),
+				"input_schema": json.RawMessage(schema),
 			})
 		}
 		body["tools"] = tools
@@ -217,6 +232,20 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 		body["thinking"] = thinking
 	}
 	return json.Marshal(body)
+}
+
+// appendMergedMessage appends content onto the previous message when the
+// role matches, because Messages rejects consecutive same-role turns.
+func appendMergedMessage(messages []map[string]any, role string, content []map[string]any) []map[string]any {
+	if n := len(messages); n > 0 {
+		last := messages[n-1]
+		if last["role"] == role {
+			prev, _ := last["content"].([]map[string]any)
+			last["content"] = append(prev, content...)
+			return messages
+		}
+	}
+	return append(messages, map[string]any{"role": role, "content": content})
 }
 
 // toolChoiceForMessages maps the IR tool_choice onto the Messages form.
