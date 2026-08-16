@@ -2,8 +2,8 @@
 
 > 状态：发布候选，第一期尚未验收完成  
 > 文档日期：2026-08-16  
-> 当前提交：`b5faadaabe99a332cec8ef4fa6e73a0185caac46`（撰写当日；之后以仓库 HEAD 为准）  
-> 当前发布：`0.1.0-rc1`（`dist/ai-gateway-0.1.0-rc1-windows-amd64.zip`）  
+> 当前提交：`2ad639fe8df56c8eaab6c4f2a3ce3b85b7f3f751`（撰写当日；之后以仓库 HEAD 为准）  
+> 当前发布：`0.1.0-rc1`（`dist/ai-gateway-0.1.0-rc1-windows-amd64.zip`，SHA-256 `DAC4153C84749C85ACEA596DE65FE6F131416FEEF8400502E0A5A1DEFE16E955`）  
 > 第一验收平台：Windows 11
 
 本文给后续 Agent（含 Grok）接续工作。本文记录进度、权威边界、已落地增量和下一步，**不是新的工程合同**。
