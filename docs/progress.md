@@ -100,10 +100,14 @@
    只有 `openai-responses` 上游可以转发 compact；其它适配器 422。
 10. **Responses 历史回放的 `output_text` 按文本转换。** Codex 把上一轮助手
     回复原样放进下一轮 `input`；跨协议不得因此 422。
+11. **Chat 出站工具参数是 JSON 字符串。** Responses `custom_tool_call`
+    经 IR 包装后，`openai-chat` 必须把 `function.arguments` 写成字符串，
+    不能嵌对象。否则 OpenCode Console Go 会 400。
 
 相关证据在规格 §20「2026-08-15 复核：客户端可选模型目录」、
-「2026-08-16 复核：Codex 远程压缩触发条件」和
-「2026-08-16 复核：Responses 历史回放使用 output_text」。不要重新发明 Codex 目录方案。
+「2026-08-16 复核：Codex 远程压缩触发条件」、
+「2026-08-16 复核：Responses 历史回放使用 output_text」和
+「2026-08-16 复核：Chat 出站工具参数必须是 JSON 字符串」。不要重新发明 Codex 目录方案。
 
 ---
 

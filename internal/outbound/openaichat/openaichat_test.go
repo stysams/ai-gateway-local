@@ -76,6 +76,61 @@ func TestGenerateRequestImageAndReasoning(t *testing.T) {
 	}
 }
 
+func TestGenerateRequestToolCallArgumentsAreJSONString(t *testing.T) {
+	// IR stores tool arguments as raw JSON. Chat Completions requires
+	// function.arguments to be a JSON string of that payload, not an object.
+	wrapped := ir.WrapFreeformInput(`{"cmd": "Get-ChildItem Env:"}`)
+	req := &ir.Request{
+		Model: "m",
+		Messages: []ir.Message{{
+			Role: ir.RoleAssistant,
+			Content: []ir.Block{{
+				Type: ir.BlockToolCall,
+				ToolCall: &ir.ToolCall{
+					ID:        "call_00_abc",
+					Name:      "exec",
+					Arguments: wrapped,
+					Custom:    true,
+				},
+			}},
+		}},
+	}
+	body, err := GenerateRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Messages []struct {
+			ToolCalls []struct {
+				Function struct {
+					Name      string          `json:"name"`
+					Arguments json.RawMessage `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Messages) != 1 || len(doc.Messages[0].ToolCalls) != 1 {
+		t.Fatalf("body = %s", body)
+	}
+	raw := doc.Messages[0].ToolCalls[0].Function.Arguments
+	if len(raw) == 0 || raw[0] != '"' {
+		t.Fatalf("arguments wire type is not a JSON string: %s", raw)
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err != nil {
+		t.Fatal(err)
+	}
+	if asString != string(wrapped) {
+		t.Fatalf("arguments = %s, want %s", asString, wrapped)
+	}
+	if doc.Messages[0].ToolCalls[0].Function.Name != "exec" {
+		t.Fatalf("name = %s", doc.Messages[0].ToolCalls[0].Function.Name)
+	}
+}
+
 func TestParseResponseReasoning(t *testing.T) {
 	events, err := ParseResponse([]byte(`{"id":"c1","choices":[{"message":{"role":"assistant","reasoning_content":"considering","content":"answer"},"finish_reason":"stop"}]}`))
 	if err != nil {

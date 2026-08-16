@@ -330,6 +330,61 @@ func TestCrossResponsesCodexDesktopToolsToMessages(t *testing.T) {
 	}
 }
 
+func TestCrossResponsesToChatCustomToolCallArgumentsAreString(t *testing.T) {
+	// Codex replays custom_tool_call history. The Chat outbound must send
+	// function.arguments as a JSON string, not as an object
+	// (docs/v1-scheme.md §20 2026-08-16 Console Go).
+	up := newFakeUpstream(t, nil)
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	p := cfg.Providers["openrouter"]
+	p.Adapter = "openai-chat"
+	cfg.Providers["openrouter"] = p
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	body := []byte(`{
+		"model":"opencode/deepseek-v4-flash",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"你不是deepseek吗"}]},
+			{"type":"custom_tool_call","call_id":"call_00_abc","name":"exec","input":"{\"cmd\": \"Get-ChildItem Env:\"}"},
+			{"type":"custom_tool_call_output","call_id":"call_00_abc","output":[{"type":"input_text","text":"ok"}]}
+		],
+		"tools":[{"type":"custom","name":"exec","description":"Run JS"}]
+	}`)
+	resp, data := chatPost(t, addr, "/c/codex/v1/responses", body, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, %s", resp.StatusCode, data)
+	}
+	req := up.last()
+	var messages []struct {
+		Role      string `json:"role"`
+		ToolCalls []struct {
+			Function struct {
+				Arguments json.RawMessage `json:"arguments"`
+			} `json:"function"`
+		} `json:"tool_calls"`
+	}
+	if err := json.Unmarshal(req.Fields["messages"], &messages); err != nil {
+		t.Fatal(err)
+	}
+	var args json.RawMessage
+	for _, msg := range messages {
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			args = msg.ToolCalls[0].Function.Arguments
+			break
+		}
+	}
+	if len(args) == 0 || args[0] != '"' {
+		t.Fatalf("upstream tool arguments are not a JSON string: %s messages=%s", args, req.Fields["messages"])
+	}
+	var asString string
+	if err := json.Unmarshal(args, &asString); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(asString, `"input"`) || !strings.Contains(asString, "Get-ChildItem Env:") {
+		t.Fatalf("arguments = %s", asString)
+	}
+}
+
 func TestCrossResponsesCustomToolCallStream(t *testing.T) {
 	up := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

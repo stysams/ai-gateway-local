@@ -541,7 +541,9 @@ type Block struct {
 - Responses `type: function` 转为 IR 函数工具。
 - Responses `type: custom` 转为 IR 自定义工具。JSON-only 协议用
   `{"input":"<raw text>"}` 包装自由格式入参；回写 Responses 时再拆回
-  `custom_tool_call.input`。
+  `custom_tool_call.input`。跨到 Chat Completions 时，该包装对象必须作为
+  `messages[].tool_calls[].function.arguments` 的 **JSON 字符串** 发送，
+  禁止把对象直接嵌入（官方外形；证据见 §20）。
 - Responses `type: namespace` 展开为其中的函数 / 自定义工具。
 - Responses `role: developer` 与 `role: system` 并入 IR 系统块。
 
@@ -700,7 +702,10 @@ GET  /readyz
 
 固定三类：
 
-- `openai-chat`：`POST <base_url>/chat/completions`
+- `openai-chat`：`POST <base_url>/chat/completions`。工具调用的
+  `function.arguments` 必须是 JSON 字符串（内容是原始参数 JSON），与入站
+  Chat 编码器一致。IR 里的 `ToolCall.Arguments` 是原始 JSON，出站必须再
+  编码成字符串。
 - `openai-responses`：`POST <base_url>/responses`
 - `anthropic`：`POST <base_url>/v1/messages`
 
@@ -2107,6 +2112,32 @@ done。Codex 按 JSON `type` 分发事件，因此看不到完成。
 `sequence_number`）；`response.completed` 之前必须先关闭仍打开的
 output item。上游在没有完成事件的情况下结束时，发 `response.failed`，
 不得假装成功结束。
+
+### 2026-08-16 复核：Chat 出站工具参数必须是 JSON 字符串
+
+实验对象：Codex Desktop 请求 `opencode/deepseek-v4-flash`（adapter
+`openai-chat`，`base_url` 为 `https://opencode.ai/zen/go/v1`）。
+
+证据文件：`%USERPROFILE%\.ai-gateway\logs\2026-08-16\req_a4e8758b427be625356680fc.jsonl`。
+
+入站是 Responses：`input[23]` 为 `custom_tool_call`（`name=exec`，
+`input` 是字符串）。IR 按 §8.4 包装成 `{"input":"<raw>"}`。出站 Chat 体
+的 `messages[12].tool_calls[0].function.arguments` 被编码成 JSON
+**对象**。OpenCode Console Go 按官方 Chat Completions 把 `arguments`
+反序列化为字符串，返回 400：
+
+```text
+Error from provider (Console Go): Upstream request failed:
+[invalid_request_error] Failed to deserialize the JSON body into the
+target type: messages[12]: invalid type: map, expected a string
+at line 1 column 124972
+```
+
+入站 Chat 编码器已经用 `string(tc.Arguments)` 写出字符串；出站
+`GenerateRequest` 用 `json.RawMessage` 把同一段原始 JSON 嵌成了对象。
+
+结论：Chat 出站 `function.arguments` 必须是 JSON 字符串。这是官方外形，
+不是供应商私有扩展。
 
 ---
 

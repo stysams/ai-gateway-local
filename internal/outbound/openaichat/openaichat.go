@@ -127,8 +127,11 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 		ID       string `json:"id"`
 		Type     string `json:"type"`
 		Function struct {
-			Name      string          `json:"name"`
-			Arguments json.RawMessage `json:"arguments"`
+			// Chat Completions requires arguments as a JSON string
+			// whose contents are the raw argument JSON
+			// (docs/v1-scheme.md §8.1, §10, §20 2026-08-16).
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
 		} `json:"function"`
 	}
 	type chatMessage struct {
@@ -181,7 +184,7 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 			case ir.BlockToolCall:
 				ctc := chatToolCall{ID: b.ToolCall.ID, Type: "function"}
 				ctc.Function.Name = b.ToolCall.Name
-				ctc.Function.Arguments = b.ToolCall.Arguments
+				ctc.Function.Arguments = string(b.ToolCall.Arguments)
 				toolCalls = append(toolCalls, ctc)
 			case ir.BlockToolResult:
 				cm.ToolCallID = b.ToolResult.ID
