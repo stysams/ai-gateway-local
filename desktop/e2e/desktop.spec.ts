@@ -17,7 +17,8 @@ test.beforeEach(async ({ page }) => {
     if (path.endsWith("/provider-models/discover")) return route.fulfill({ json: { object: "list", provider: "upstream", data: [{ id: "upstream/model-a", provider_id: "upstream", raw_id: "model-a", display_name: "Model A", context_window: 131072, max_output_tokens: 16384 }, { id: "upstream/model-without-metadata", provider_id: "upstream", raw_id: "model-without-metadata" }] } });
     if (path.endsWith("/logs")) return route.fulfill({ json: { items: [{ request_id: "req_01", started_at: "2026-08-15T05:00:00Z", client: "codex", provider: "openrouter", model: "gpt-5", status: "success", status_code: 200, duration_ms: 841 }] } });
     if (path.endsWith("/usage")) return route.fulfill({ json: { total: { requests: 24, success: 23, failed: 1, cancelled: 0, usage: { input_tokens: 12000, output_tokens: 4200, total_tokens: 16200 }, incomplete: false }, by_provider: { openrouter: { requests: 24, success: 23, failed: 1, cancelled: 0, usage: { input_tokens: 12000, output_tokens: 4200, total_tokens: 16200 }, incomplete: false } }, by_model: {}, by_client: {}, by_date: {} } });
-    const match = path.match(/\/clients\/(codex|claude|grok)$/); if (match) { const client = match[1] as "codex" | "claude" | "grok"; return route.fulfill({ json: { client, point_state: status.clients[client].point_state, target: `C:/Users/test/.${client}/config`, backup_available: client !== "claude" } }); }
+    const match = path.match(/\/clients\/(codex|claude|grok)$/); if (match) { const client = match[1] as "codex" | "claude" | "grok"; return route.fulfill({ json: { client, point_state: status.clients[client].point_state, target: `C:/Users/test/.${client}/config`, backup_available: client !== "claude", ...(client === "codex" ? { remote_compaction: false } : {}) } }); }
+    if (path.endsWith("/clients/codex/remote-compaction")) return route.fulfill({ json: { client: "codex", point_state: "pointed", target: "C:/Users/test/.codex/config", backup_available: true, remote_compaction: true } });
     return route.fulfill({ status: 200, json: {} });
   });
 });
@@ -51,6 +52,18 @@ test("client routes list every enabled model as provider/model id", async ({ pag
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   expect(overflow).toBe(false);
   await page.screenshot({ path: testInfo.outputPath("client-routes.png"), fullPage: true });
+});
+
+test("clients page exposes a Codex remote compaction switch", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Clients" }).click();
+  const toggle = page.getByRole("checkbox", { name: "Remote compaction" });
+  await expect(toggle).toBeVisible();
+  await expect(toggle).not.toBeChecked();
+  await expect(page.getByText("When on, Codex writes the provider display name OpenAI", { exact: false })).toBeVisible();
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+  expect(overflow).toBe(false);
+  await page.screenshot({ path: testInfo.outputPath("codex-remote-compaction.png"), fullPage: true });
 });
 
 test("all primary views fit and remain keyboard reachable", async ({ page }, testInfo) => {

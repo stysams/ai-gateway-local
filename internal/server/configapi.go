@@ -135,6 +135,13 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	next := payload.toConfig()
 	next.Extra = current.Extra
+	// Client preferences have dedicated endpoints so a settings save cannot
+	// silently drop them (same reason autostart cannot change here).
+	next.Clients = current.Clients
+	if current.Clients.Codex.RemoteCompaction != nil {
+		enabled := *current.Clients.Codex.RemoteCompaction
+		next.Clients.Codex.RemoteCompaction = &enabled
+	}
 	if err := next.Validate(); err != nil {
 		writeAPIError(w, http.StatusBadRequest, "config_invalid", err.Error(), map[string]string{"field": validationField(err)})
 		return

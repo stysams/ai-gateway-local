@@ -20,6 +20,12 @@ describe("management API client", () => {
     await expect(api.updateRoute("codex", { provider: "", model: "" })).rejects.toEqual(expect.objectContaining<Partial<APIError>>({ status: 400, code: "config_invalid", message: "bad route" }));
   });
 
+  it("updates Codex remote compaction through its dedicated endpoint", async () => {
+    const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ client: "codex", remote_compaction: true }));
+    await api.setCodexRemoteCompaction(true);
+    expect(fetcher).toHaveBeenCalledWith("http://127.0.0.1:12600/api/v1/clients/codex/remote-compaction", expect.objectContaining({ method: "PUT", body: "{\"enabled\":true}" }));
+  });
+
   it("updates autostart through its dedicated endpoint", async () => {
     const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ enabled: true, valid: true }));
     await api.setAutostart(true);

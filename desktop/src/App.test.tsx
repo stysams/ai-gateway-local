@@ -9,7 +9,7 @@ const providers = [
   { id: "ollama", name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", models: [{ id: "qwen3", name: "Qwen 3", context_window: 32768, max_output_tokens: 8192 }], has_secret: false, capabilities: { image_input: false, reasoning: false } },
   { id: "openrouter", name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", models: [{ id: "gpt-5", name: "GPT-5", context_window: 400000, max_output_tokens: 128000 }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4", context_window: 200000, max_output_tokens: 64000 }], has_secret: true, capabilities: { image_input: true, reasoning: true } },
 ];
-const pointStatus = (client: string) => ({ client, point_state: client === "codex" ? "not_pointed" : "client_not_installed", target: `C:/${client}/config`, backup_available: false });
+const pointStatus = (client: string) => ({ client, point_state: client === "codex" ? "not_pointed" : "client_not_installed", target: `C:/${client}/config`, backup_available: false, ...(client === "codex" ? { remote_compaction: false } : {}) });
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -29,6 +29,7 @@ beforeEach(() => {
     if (url.endsWith("/api/v1/logging") && init?.method === "PUT") return Response.json({ enabled: true });
     if (url.endsWith("/api/v1/autostart") && init?.method === "PUT") return Response.json({ enabled: true, valid: true });
     if (url.endsWith("/api/v1/clients/codex/point")) return Response.json({ ...pointStatus("codex"), point_state: "pointed", changed: true });
+    if (url.endsWith("/api/v1/clients/codex/remote-compaction") && init?.method === "PUT") return Response.json({ ...pointStatus("codex"), remote_compaction: true });
     return Response.json({ error: { code: "not_mocked", message: url } }, { status: 500 });
   });
 });
@@ -67,6 +68,16 @@ describe("desktop workflow", () => {
     const user = userEvent.setup(); const confirm = vi.spyOn(window, "confirm").mockReturnValue(false); render(<App />); await ready();
     await user.click(screen.getByRole("button", { name: "Clients" })); await user.click(screen.getAllByRole("button", { name: "Point to gateway" })[0]);
     expect(confirm).toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/point"), expect.anything());
+  });
+
+  it("toggles Codex remote compaction from the clients page", async () => {
+    const user = userEvent.setup(); render(<App />); await ready();
+    await user.click(screen.getByRole("button", { name: "Clients" }));
+    const toggle = screen.getByRole("checkbox", { name: "Remote compaction" });
+    expect(toggle).not.toBeChecked();
+    expect(screen.queryByRole("checkbox", { name: "Remote compaction" })).toBe(toggle);
+    await user.click(toggle);
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/clients/codex/remote-compaction"), expect.objectContaining({ method: "PUT", body: "{\"enabled\":true}" })));
   });
 
   it("shows logging disabled state and can enable it", async () => {

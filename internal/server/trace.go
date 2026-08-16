@@ -73,7 +73,7 @@ func (t *requestTrace) route(provider, model, adapter string) error {
 	return t.session.Append("route", map[string]any{"provider": provider, "model": model, "adapter": adapter})
 }
 
-func (t *requestTrace) upstreamRequest(proto ir.Protocol, p providerInfo, body []byte, stream bool) error {
+func (t *requestTrace) upstreamRequest(proto ir.Protocol, p providerInfo, body []byte, stream bool, compact bool) error {
 	if t == nil {
 		return nil
 	}
@@ -82,7 +82,11 @@ func (t *requestTrace) upstreamRequest(proto ir.Protocol, p providerInfo, body [
 	case ir.ProtocolChat:
 		endpoint = openaichat.CompletionURL(p.baseURL)
 	case ir.ProtocolResponses:
-		endpoint = openairesponses.CompletionURL(p.baseURL)
+		if compact {
+			endpoint = openairesponses.CompactURL(p.baseURL)
+		} else {
+			endpoint = openairesponses.CompletionURL(p.baseURL)
+		}
 	case ir.ProtocolMessages:
 		endpoint = anthropic.CompletionURL(p.baseURL)
 	}

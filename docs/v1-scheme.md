@@ -611,9 +611,11 @@ error
 ```text
 POST /v1/chat/completions
 POST /v1/responses
+POST /v1/responses/compact
 POST /v1/messages
 POST /c/{client}/v1/chat/completions
 POST /c/{client}/v1/responses
+POST /c/{client}/v1/responses/compact
 POST /c/{client}/v1/messages
 GET  /v1/models
 GET  /c/{client}/v1/models
@@ -854,9 +856,14 @@ PUT /api/v1/routes/{client}
 GET  /api/v1/clients/{client}
 POST /api/v1/clients/{client}/point
 POST /api/v1/clients/{client}/restore
+PUT  /api/v1/clients/codex/remote-compaction
 ```
 
 `point` 和 `restore` 的详细事务见第 12 节。
+
+`PUT /api/v1/clients/codex/remote-compaction` 写入 `config.yaml` 的
+`clients.codex.remote_compaction`。若 Codex 已经指向，必须就地改写
+`[model_providers.ai-gateway].name`，不得新建还原点。其它 `{client}` 必须 404。
 
 ### 11.6 日志和用量
 
@@ -981,10 +988,18 @@ wire_api = "responses"
 env_key = "AI_GATEWAY_PLACEHOLDER_KEY"
 ```
 
+当 `clients.codex.remote_compaction` 为 true 时，`name` 必须写成 `"OpenAI"`。
+Codex 只在该字段严格等于 `OpenAI` 时才会向网关发送
+`POST /c/codex/v1/responses/compact`。证据见 §20。
+
 规则：
 
 - 禁止覆盖保留 id `openai`、`ollama` 或 `lmstudio`。
 - `wire_api` 必须是 `responses`；当前 Codex 自定义 provider 不支持其他值。
+- `name` 默认是 `ai-gateway`。远程压缩开启时必须是 `OpenAI`，关闭时必须改回 `ai-gateway`。
+- 网关必须实现 `POST /v1/responses/compact` 与 `POST /c/{client}/v1/responses/compact`。
+  同协议 `openai-responses` 必须把请求转发到上游 `<base>/responses/compact`。
+  其它适配器必须 422，且零上游接触。禁止伪造 compact 响应。
 - 用户环境变量 `AI_GATEWAY_PLACEHOLDER_KEY` 必须是任意非空占位值。
 - `model` 固定为 `gateway-default`，即 §7.3 的启动首选模型。
 - 必须写入根键 `model_catalog_json`，值为与 `config.toml` 同目录的绝对路径
@@ -1973,6 +1988,21 @@ bundled 模板时拒绝指向。完整目录同时由 sidecar 与 `/c/codex/v1/m
 - 只有 Grok Build 在配置文件里落地完整目录；Codex 与 Claude Code 只写首选模型。
 - `/v1/models` 每项增加 `display_name`，取值等于该项 `id`，供 Claude Code
   发现与 Grok 选择器按 `供应商/模型 ID` 显示。
+
+### 2026-08-16 复核：Codex 远程压缩触发条件
+
+实验对象：本机 Codex CLI（`C:\Users\stysa\AppData\Local\OpenAI\Codex\bin\e305f1c75d8da435\codex.exe`），
+以及公开源码 `openai/codex` 的 `codex-rs/model-provider-info/src/lib.rs` 与
+`codex-rs/core/src/client.rs`。
+
+- `ModelProviderInfo::is_openai()` 仅在 `name == "OpenAI"` 时为真。
+- 远程压缩走 unary `POST <base_url>/responses/compact`，不是普通 `/responses`。
+- 官方 compact 响应对象为 `response.compaction`，`output` 是压缩后的上下文窗口。
+- 社区中文文档把该能力称为「远程压缩」。把自定义 provider 的 `name` 写成 `OpenAI`
+  是当前版本触发该路径的已核实方法；没有单独的 `config.toml` 稳定键可以替代。
+- 因此网关把该开关存进 `config.yaml` 的 `clients.codex.remote_compaction`，
+  指向或同步时改写 `[model_providers.ai-gateway].name`，并实现
+  `/v1/responses/compact` 的同协议转发。其它适配器返回 422。
 
 ### 2026-08-16 复核：Codex Desktop Responses 工具外形
 

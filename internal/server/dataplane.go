@@ -122,6 +122,14 @@ func (s *Server) handleResponsesClient(w http.ResponseWriter, r *http.Request) {
 	s.serveClientDataPlane(w, r, ir.ProtocolResponses)
 }
 
+func (s *Server) handleResponsesCompact(w http.ResponseWriter, r *http.Request) {
+	s.serveDataPlaneWith(w, r, route.Generic, ir.ProtocolResponses, dataPlaneOptions{compact: true})
+}
+
+func (s *Server) handleResponsesCompactClient(w http.ResponseWriter, r *http.Request) {
+	s.serveClientDataPlaneWith(w, r, ir.ProtocolResponses, dataPlaneOptions{compact: true})
+}
+
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	s.serveDataPlane(w, r, route.Generic, ir.ProtocolMessages)
 }
@@ -130,15 +138,23 @@ func (s *Server) handleMessagesClient(w http.ResponseWriter, r *http.Request) {
 	s.serveClientDataPlane(w, r, ir.ProtocolMessages)
 }
 
+type dataPlaneOptions struct {
+	compact bool
+}
+
 // serveClientDataPlane validates the client path segment (404 on unknown).
 func (s *Server) serveClientDataPlane(w http.ResponseWriter, r *http.Request, proto ir.Protocol) {
+	s.serveClientDataPlaneWith(w, r, proto, dataPlaneOptions{})
+}
+
+func (s *Server) serveClientDataPlaneWith(w http.ResponseWriter, r *http.Request, proto ir.Protocol, opts dataPlaneOptions) {
 	client, err := route.ParseClientID(r.PathValue("client"))
 	if err != nil {
 		writeInboundError(w, http.StatusNotFound, proto,
 			fmt.Sprintf("unknown client %q", r.PathValue("client")), "client_not_found")
 		return
 	}
-	s.serveDataPlane(w, r, client, proto)
+	s.serveDataPlaneWith(w, r, client, proto, opts)
 }
 
 // ---- pipeline --------------------------------------------------------------
@@ -147,6 +163,10 @@ func (s *Server) serveClientDataPlane(w http.ResponseWriter, r *http.Request, pr
 // routing resolution, adapter dispatch gate, then either the same-protocol
 // passthrough or the cross-protocol IR pipeline.
 func (s *Server) serveDataPlane(w http.ResponseWriter, r *http.Request, client route.ClientID, inProto ir.Protocol) {
+	s.serveDataPlaneWith(w, r, client, inProto, dataPlaneOptions{})
+}
+
+func (s *Server) serveDataPlaneWith(w http.ResponseWriter, r *http.Request, client route.ClientID, inProto ir.Protocol, opts dataPlaneOptions) {
 	if !isJSONContentType(r.Header.Get("Content-Type")) {
 		writeInboundError(w, http.StatusUnsupportedMediaType, inProto,
 			"Content-Type must be application/json", "invalid_content_type")
@@ -205,6 +225,18 @@ func (s *Server) serveDataPlane(w http.ResponseWriter, r *http.Request, client r
 			"unsupported_adapter")
 		return
 	}
+	if opts.compact {
+		// Codex remote compaction is POST /responses/compact. Only the
+		// openai-responses adapter can forward that path losslessly; any
+		// other adapter would require inventing a compact translation.
+		if outProto != ir.ProtocolResponses {
+			writeInboundError(w, http.StatusUnprocessableEntity, inProto,
+				fmt.Sprintf("remote compaction requires an openai-responses upstream; provider %q uses %q", res.Provider, cfgProvider.Adapter),
+				"unsupported_compact")
+			return
+		}
+		stream = false
+	}
 	if err := trace.route(res.Provider, res.Model, cfgProvider.Adapter); err != nil {
 		trace.setError(err)
 		writeInboundError(w, http.StatusInternalServerError, inProto, err.Error(), "request_log_failed")
@@ -248,7 +280,13 @@ func (s *Server) serveDataPlane(w http.ResponseWriter, r *http.Request, client r
 				return
 			}
 		}
-		s.serveSameProtocol(w, r, inProto, body, res.Model, stream, provider, trace)
+		s.serveSameProtocol(w, r, inProto, body, res.Model, stream, provider, trace, opts)
+		return
+	}
+	if opts.compact {
+		writeInboundError(w, http.StatusUnprocessableEntity, inProto,
+			fmt.Sprintf("remote compaction requires an openai-responses upstream; provider %q uses %q", res.Provider, cfgProvider.Adapter),
+			"unsupported_compact")
 		return
 	}
 	s.serveCrossProtocol(w, r, inProto, outProto, body, res.Model, stream, provider, trace)
@@ -284,18 +322,18 @@ func parseForRouting(proto ir.Protocol, body []byte) (string, bool, error) {
 
 // serveSameProtocol rewrites only model/stream, rewrites authentication and
 // forwards the upstream response at the HTTP level (docs/v1-scheme.md §8.3).
-func (s *Server) serveSameProtocol(w http.ResponseWriter, r *http.Request, proto ir.Protocol, body []byte, model string, stream bool, provider providerInfo, trace *requestTrace) {
+func (s *Server) serveSameProtocol(w http.ResponseWriter, r *http.Request, proto ir.Protocol, body []byte, model string, stream bool, provider providerInfo, trace *requestTrace, opts dataPlaneOptions) {
 	outBody, err := rewriteForProtocol(proto, body, model, stream)
 	if err != nil {
 		writeInboundError(w, http.StatusBadRequest, proto, err.Error(), "")
 		return
 	}
-	if err := trace.upstreamRequest(proto, provider, outBody, stream); err != nil {
+	if err := trace.upstreamRequest(proto, provider, outBody, stream, opts.compact); err != nil {
 		trace.setError(err)
 		writeInboundError(w, http.StatusInternalServerError, proto, err.Error(), "request_log_failed")
 		return
 	}
-	upResp, err := s.upstreamDo(r.Context(), proto, provider, outBody, stream)
+	upResp, err := s.upstreamDo(r.Context(), proto, provider, outBody, stream, opts.compact)
 	if err != nil {
 		trace.setError(err)
 		s.writeUpstreamError(w, proto, err)
@@ -354,13 +392,13 @@ func (s *Server) serveCrossProtocol(w http.ResponseWriter, r *http.Request, inPr
 		writeInboundError(w, http.StatusInternalServerError, inProto, err.Error(), "")
 		return
 	}
-	if err := trace.upstreamRequest(outProto, provider, outBody, stream); err != nil {
+	if err := trace.upstreamRequest(outProto, provider, outBody, stream, false); err != nil {
 		trace.setError(err)
 		writeInboundError(w, http.StatusInternalServerError, inProto, err.Error(), "request_log_failed")
 		return
 	}
 
-	upResp, err := s.upstreamDo(r.Context(), outProto, provider, outBody, stream)
+	upResp, err := s.upstreamDo(r.Context(), outProto, provider, outBody, stream, false)
 	if err != nil {
 		trace.setError(err)
 		s.writeUpstreamError(w, inProto, err)
@@ -521,12 +559,16 @@ type providerInfo struct {
 }
 
 // upstreamDo dispatches to the adapter pool matching the wire protocol.
-func (s *Server) upstreamDo(ctx context.Context, proto ir.Protocol, p providerInfo, body []byte, stream bool) (*http.Response, error) {
+func (s *Server) upstreamDo(ctx context.Context, proto ir.Protocol, p providerInfo, body []byte, stream bool, compact bool) (*http.Response, error) {
 	switch proto {
 	case ir.ProtocolChat:
 		return s.upstreamsChat.Client(p.baseURL, p.secretRef).Do(ctx, body, stream)
 	case ir.ProtocolResponses:
-		return s.upstreamsResponses.Client(p.baseURL, p.secretRef).Do(ctx, body, stream)
+		client := s.upstreamsResponses.Client(p.baseURL, p.secretRef)
+		if compact {
+			return client.DoCompact(ctx, body)
+		}
+		return client.Do(ctx, body, stream)
 	case ir.ProtocolMessages:
 		return s.upstreamsAnthropic.Client(p.baseURL, p.secretRef).Do(ctx, body, stream)
 	}

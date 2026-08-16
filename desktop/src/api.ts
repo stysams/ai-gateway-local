@@ -37,6 +37,7 @@ export const api = {
   updateRoute: (client: ClientID, route: Route) => request<Route & { client: ClientID }>(`/api/v1/routes/${client}`, { method: "PUT", body: JSON.stringify(route) }),
   client: (client: PointClient) => request<PointStatus>(`/api/v1/clients/${client}`),
   point: (client: PointClient) => request<PointStatus>(`/api/v1/clients/${client}/point`, { method: "POST" }),
+  setCodexRemoteCompaction: (enabled: boolean) => request<PointStatus>("/api/v1/clients/codex/remote-compaction", { method: "PUT", body: JSON.stringify({ enabled }) }),
   restore: (client: PointClient) => request<PointStatus>(`/api/v1/clients/${client}/restore`, { method: "POST" }),
   logs: () => request<{ items: LogSummary[]; next_cursor?: string }>("/api/v1/logs?limit=50"),
   logDetail: (id: string) => request<{ request_id: string; events: unknown[] }>(`/api/v1/logs/${id}`),

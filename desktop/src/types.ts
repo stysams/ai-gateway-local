@@ -56,6 +56,7 @@ export interface PointStatus {
   message?: string;
   backup_dir?: string;
   changed?: boolean;
+  remote_compaction?: boolean;
 }
 export interface LogSummary {
   request_id: string;

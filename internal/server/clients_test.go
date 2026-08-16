@@ -271,6 +271,73 @@ func TestAvailabilityUpdateRewritesCodexCatalog(t *testing.T) {
 	}
 }
 
+func TestCodexRemoteCompactionAPI(t *testing.T) {
+	dataRoot := t.TempDir()
+	home := filepath.Join(dataRoot, "home")
+	target := filepath.Join(home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("custom = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := newTestServer(t)
+	s.points = point.NewWithOptions(dataRoot, point.Options{
+		HomeDir:                 home,
+		LookupEnv:               func(string) (string, bool) { return "", false },
+		CommandExists:           func(string) bool { return false },
+		Environment:             point.NewMemoryEnvironment(),
+		LoadCodexBundledCatalog: testCodexCatalogLoader(),
+	})
+	ts := httptest.NewServer(s.routes())
+	defer ts.Close()
+
+	resp, body := clientJSON(t, ts, http.MethodGet, "/api/v1/clients/codex")
+	assertPointState(t, resp, body, http.StatusOK, point.StateNotPointed)
+	var before point.Status
+	if err := json.Unmarshal(body, &before); err != nil {
+		t.Fatal(err)
+	}
+	if before.RemoteCompaction == nil || *before.RemoteCompaction {
+		t.Fatalf("default remote_compaction = %+v", before.RemoteCompaction)
+	}
+
+	resp, body = clientJSON(t, ts, http.MethodPost, "/api/v1/clients/codex/point")
+	assertPointState(t, resp, body, http.StatusOK, point.StatePointed)
+	backupsBefore, _ := filepath.Glob(filepath.Join(dataRoot, "backups", "codex", "*", "manifest.json"))
+
+	resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPut, "/api/v1/clients/codex/remote-compaction", map[string]any{"enabled": true})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("enable remote compaction = %d %s", resp.StatusCode, body)
+	}
+	var enabled point.Status
+	if err := json.Unmarshal(body, &enabled); err != nil {
+		t.Fatal(err)
+	}
+	if enabled.RemoteCompaction == nil || !*enabled.RemoteCompaction {
+		t.Fatalf("enabled remote_compaction = %+v", enabled.RemoteCompaction)
+	}
+	if enabled.PointState != point.StatePointed {
+		t.Fatalf("state after enable = %s", enabled.PointState)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "OpenAI") {
+		t.Fatalf("pointed Codex config missing OpenAI name:\n%s", data)
+	}
+	backupsAfter, _ := filepath.Glob(filepath.Join(dataRoot, "backups", "codex", "*", "manifest.json"))
+	if len(backupsAfter) != len(backupsBefore) {
+		t.Fatal("remote compaction toggle created a new restore point")
+	}
+
+	resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPut, "/api/v1/clients/claude/remote-compaction", map[string]any{"enabled": true})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("claude remote compaction = %d %s", resp.StatusCode, body)
+	}
+}
+
 func clientJSON(t *testing.T, server *httptest.Server, method, path string) (*http.Response, []byte) {
 	t.Helper()
 	req, err := http.NewRequest(method, server.URL+path, nil)

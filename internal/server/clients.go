@@ -32,7 +32,7 @@ func (s *Server) pointContext(w http.ResponseWriter, r *http.Request) (point.Cli
 // catalog carries every enabled `<provider-id>/<model-id>` so a user can pick
 // any of them inside the agent. Grok writes it into config.toml; Codex writes
 // it into ai-gateway-catalog.json; Claude still only enables gateway discovery.
-func (s *Server) clientSettings(cfg *config.Config, _ point.Client) point.Settings {
+func (s *Server) clientSettings(cfg *config.Config, client point.Client) point.Settings {
 	items := s.modelCatalog(cfg)
 	catalog := make([]clientcatalog.Entry, 0, len(items))
 	for _, item := range items {
@@ -41,7 +41,11 @@ func (s *Server) clientSettings(cfg *config.Config, _ point.Client) point.Settin
 		}
 		catalog = append(catalog, clientcatalog.Entry{ID: item.ID, DisplayName: item.DisplayName})
 	}
-	return point.Settings{PreferredModel: route.ReservedModel, Catalog: catalog}
+	settings := point.Settings{PreferredModel: route.ReservedModel, Catalog: catalog}
+	if client == point.ClientCodex {
+		settings.RemoteCompaction = cfg.Clients.Codex.RemoteCompactionValue()
+	}
+	return settings
 }
 
 type clientSettingsSync struct {
@@ -114,7 +118,7 @@ func (s *Server) handleGetClient(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, s.points.Check(client, baseURL, settings))
+	writeJSON(w, http.StatusOK, s.withClientOptions(s.points.Check(client, baseURL, settings)))
 }
 
 func (s *Server) handlePointClient(w http.ResponseWriter, r *http.Request) {
@@ -127,7 +131,7 @@ func (s *Server) handlePointClient(w http.ResponseWriter, r *http.Request) {
 		s.writePointError(w, "point", result.BackupDir, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	writeJSON(w, http.StatusOK, s.withClientResult(result))
 }
 
 func (s *Server) handleRestoreClient(w http.ResponseWriter, r *http.Request) {
@@ -140,7 +144,60 @@ func (s *Server) handleRestoreClient(w http.ResponseWriter, r *http.Request) {
 		s.writePointError(w, "restore", result.BackupDir, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	writeJSON(w, http.StatusOK, s.withClientResult(result))
+}
+
+type remoteCompactionRequest struct {
+	Enabled *bool `json:"enabled"`
+}
+
+func (s *Server) handlePutClientRemoteCompaction(w http.ResponseWriter, r *http.Request) {
+	client, err := point.ParseClient(r.PathValue("client"))
+	if err != nil || client != point.ClientCodex {
+		writeAPIError(w, http.StatusNotFound, "client_not_found", "remote compaction is a Codex-only setting", nil)
+		return
+	}
+	var req remoteCompactionRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Enabled == nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "enabled is required", map[string]string{"enabled": "required"})
+		return
+	}
+	s.txMu.Lock()
+	defer s.txMu.Unlock()
+	current := s.cfg.Snapshot()
+	if current == nil {
+		writeAPIError(w, http.StatusInternalServerError, "config_not_loaded", "config not loaded", nil)
+		return
+	}
+	next := s.cfg.Snapshot()
+	next.Clients.Codex.RemoteCompaction = config.BoolPtr(*req.Enabled)
+	if err := s.syncClientsThenWrite(current, next); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "client_sync_failed", err.Error(), nil)
+		return
+	}
+	_, baseURL, settings, ok := s.pointContext(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, s.withClientOptions(s.points.Check(client, baseURL, settings)))
+}
+
+func (s *Server) withClientOptions(status point.Status) point.Status {
+	if status.Client == point.ClientCodex {
+		if cfg := s.cfg.Snapshot(); cfg != nil {
+			enabled := cfg.Clients.Codex.RemoteCompactionValue()
+			status.RemoteCompaction = &enabled
+		}
+	}
+	return status
+}
+
+func (s *Server) withClientResult(result point.Result) point.Result {
+	result.Status = s.withClientOptions(result.Status)
+	return result
 }
 
 func (s *Server) writePointError(w http.ResponseWriter, operation, backupDir string, err error) {

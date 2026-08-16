@@ -279,6 +279,9 @@ func TestCompletionURL(t *testing.T) {
 		if got := CompletionURL(tc.base); got != tc.want {
 			t.Errorf("CompletionURL(%q) = %q, want %q", tc.base, got, tc.want)
 		}
+		if got := CompactURL(tc.base); got != tc.want+"/compact" {
+			t.Errorf("CompactURL(%q) = %q, want %q", tc.base, got, tc.want+"/compact")
+		}
 	}
 }
 

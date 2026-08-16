@@ -29,7 +29,27 @@ type Config struct {
 	Autostart Autostart            `yaml:"autostart,omitempty"`
 	Providers map[string]Provider  `yaml:"providers,omitempty"`
 	Routes    Routes               `yaml:"routes,omitempty"`
+	Clients   Clients              `yaml:"clients,omitempty"`
 	Extra     map[string]yaml.Node `yaml:",inline"`
+}
+
+// Clients holds per-client gateway preferences that are not routes.
+// Desktop writes these through dedicated management endpoints, never by
+// editing the client files directly.
+type Clients struct {
+	Codex CodexClient `yaml:"codex,omitempty"`
+}
+
+// CodexClient is the Codex-only preference block.
+type CodexClient struct {
+	// RemoteCompaction, when true, makes a pointed Codex config advertise
+	// the provider display name "OpenAI" so Codex sends
+	// POST /responses/compact to the gateway (docs/v1-scheme.md §12.3).
+	RemoteCompaction *bool `yaml:"remote_compaction,omitempty"`
+}
+
+func (c CodexClient) RemoteCompactionValue() bool {
+	return c.RemoteCompaction != nil && *c.RemoteCompaction
 }
 
 // Listen configures the loopback listener. The hostname is fixed to
@@ -231,6 +251,10 @@ func (c *Config) clone() *Config {
 			}
 			out.Providers[k] = v
 		}
+	}
+	if c.Clients.Codex.RemoteCompaction != nil {
+		b := *c.Clients.Codex.RemoteCompaction
+		out.Clients.Codex.RemoteCompaction = &b
 	}
 	if c.Extra != nil {
 		out.Extra = make(map[string]yaml.Node, len(c.Extra))

@@ -37,9 +37,11 @@ func (e Entry) Label() string {
 // which models the user can pick inside the agent. Catalog is the complete set
 // of enabled models and is only written for clients that can hold a list
 // natively — see the 2026-08-15 verification record in §20.
+// RemoteCompaction is Codex-only: Claude and Grok ignore it.
 type Settings struct {
-	PreferredModel string
-	Catalog        []Entry
+	PreferredModel   string
+	Catalog          []Entry
+	RemoteCompaction bool
 }
 
 // Model returns the model name a client should start with. An unset preferred
@@ -53,7 +55,7 @@ func (s Settings) Model() string {
 
 // Equal reports whether two settings would produce the same client configuration.
 func (s Settings) Equal(other Settings) bool {
-	if s.PreferredModel != other.PreferredModel || len(s.Catalog) != len(other.Catalog) {
+	if s.PreferredModel != other.PreferredModel || s.RemoteCompaction != other.RemoteCompaction || len(s.Catalog) != len(other.Catalog) {
 		return false
 	}
 	for i, entry := range s.Catalog {

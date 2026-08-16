@@ -466,6 +466,46 @@ func TestCodexPointFailsWithoutTemplate(t *testing.T) {
 	}
 }
 
+func TestCodexRemoteCompactionSyncDoesNotReplaceRestorePoint(t *testing.T) {
+	home := t.TempDir()
+	target := clientTarget(home, ClientCodex, nil)
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("approval_policy = 'untrusted'\n")
+	if err := os.WriteFile(target, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := testManager(t, home, NewMemoryEnvironment(), map[string]string{}, nil)
+	off := Settings{PreferredModel: reservedModel}
+	if _, err := m.Point(ClientCodex, testBaseURL, off); err != nil {
+		t.Fatal(err)
+	}
+	manifestsBefore, _ := filepath.Glob(filepath.Join(m.dataRoot, "backups", "codex", "*", "manifest.json"))
+	on := Settings{PreferredModel: reservedModel, RemoteCompaction: true}
+	changed, err := m.SyncSettings(ClientCodex, testBaseURL, on)
+	if err != nil || !changed {
+		t.Fatalf("sync remote compaction changed=%v err=%v", changed, err)
+	}
+	manifestsAfter, _ := filepath.Glob(filepath.Join(m.dataRoot, "backups", "codex", "*", "manifest.json"))
+	if len(manifestsAfter) != len(manifestsBefore) {
+		t.Fatalf("remote compaction sync replaced the restore point: before=%d after=%d", len(manifestsBefore), len(manifestsAfter))
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "OpenAI") {
+		t.Fatalf("sync did not write OpenAI name:\n%s", data)
+	}
+	if state := m.Check(ClientCodex, testBaseURL, on).PointState; state != StatePointed {
+		t.Fatalf("state after enabling remote compaction = %s", state)
+	}
+	if state := m.Check(ClientCodex, testBaseURL, off).PointState; state == StatePointed {
+		t.Fatal("default name setting still reported pointed after OpenAI rewrite")
+	}
+}
+
 func TestCodexHomeOverride(t *testing.T) {
 	home := t.TempDir()
 	codexHome := filepath.Join(home, "custom-codex")

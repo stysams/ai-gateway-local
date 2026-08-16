@@ -146,6 +146,11 @@ and is shown in that form:
   gateway wrote.
 - Do not let OpenCodex and this gateway both own `model_catalog_json` in the
   same Codex home.
+- The Codex card in the desktop Clients page can enable remote compaction.
+  That writes `name = "OpenAI"` into the pointed Codex provider block and
+  forwards `POST /c/codex/v1/responses/compact`. The current Codex route must
+  use the `openai-responses` adapter, and the upstream must implement that
+  endpoint. Restart Codex after toggling.
 
 Restart an already-running agent CLI session if it caches configuration at
 startup.

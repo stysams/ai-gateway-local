@@ -132,6 +132,7 @@ CLI 子命令都在 `internal/app/app.go`：`serve`、`stop`、`status`、`docto
 | `PUT /api/v1/routes/{client}` | `handlePutRoute` | `routesapi.go` |
 | `GET /api/v1/clients/{client}` | `handleGetClient` | `clients.go` |
 | `POST .../point`、`.../restore` | `handlePointClient`、`handleRestoreClient` | `clients.go` |
+| `PUT /api/v1/clients/codex/remote-compaction` | `handlePutClientRemoteCompaction` | `clients.go` |
 | `GET /api/v1/logs`、`/logs/{id}`、`/usage` | `handleLogs` 等 | `logs.go` |
 | `PUT /api/v1/logging` | `handleLogging` | `logs.go` |
 | `PUT /api/v1/autostart` | `handleAutostart` | `autostart.go` |
@@ -150,6 +151,7 @@ CLI 子命令都在 `internal/app/app.go`：`serve`、`stop`、`status`、`docto
 |---|---|---|
 | `POST /v1/chat/completions` | Chat | `handleChatCompletions` |
 | `POST /v1/responses` | Responses | `handleResponses` |
+| `POST /v1/responses/compact` | Responses compact | `handleResponsesCompact` |
 | `POST /v1/messages` | Messages | `handleMessages` |
 | `GET /v1/models` | 模型列表 | `handleModels` → `modelCatalog` |
 

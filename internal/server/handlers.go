@@ -58,12 +58,15 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/clients/{client}", s.handleGetClient)
 	mux.HandleFunc("POST /api/v1/clients/{client}/point", s.handlePointClient)
 	mux.HandleFunc("POST /api/v1/clients/{client}/restore", s.handleRestoreClient)
+	mux.HandleFunc("PUT /api/v1/clients/{client}/remote-compaction", s.handlePutClientRemoteCompaction)
 	// Data plane (task package C): OpenAI Chat same-protocol forwarding.
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
 	mux.HandleFunc("POST /c/{client}/v1/chat/completions", s.handleChatCompletionsClient)
 	// Data plane (task package D): Responses and Messages endpoints.
 	mux.HandleFunc("POST /v1/responses", s.handleResponses)
 	mux.HandleFunc("POST /c/{client}/v1/responses", s.handleResponsesClient)
+	mux.HandleFunc("POST /v1/responses/compact", s.handleResponsesCompact)
+	mux.HandleFunc("POST /c/{client}/v1/responses/compact", s.handleResponsesCompactClient)
 	mux.HandleFunc("POST /v1/messages", s.handleMessages)
 	mux.HandleFunc("POST /c/{client}/v1/messages", s.handleMessagesClient)
 	mux.HandleFunc("GET /v1/models", s.handleModels)

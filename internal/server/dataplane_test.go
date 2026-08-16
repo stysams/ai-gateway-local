@@ -31,6 +31,7 @@ func fixture(t *testing.T, name string) []byte {
 
 // fakeRequest is one request captured by a fake upstream.
 type fakeRequest struct {
+	Path      string
 	Model     string
 	Stream    bool
 	Auth      string
@@ -91,6 +92,7 @@ func newFakeUpstream(t *testing.T, handler http.HandlerFunc) *fakeUpstream {
 		}
 		f.mu.Lock()
 		f.captured = append(f.captured, fakeRequest{
+			Path:      r.URL.Path,
 			Model:     model,
 			Stream:    stream,
 			Auth:      r.Header.Get("Authorization"),
@@ -885,6 +887,51 @@ func TestChatSecretStoreErrorIsInternal(t *testing.T) {
 	}
 	if len(up.requests()) != 0 {
 		t.Error("request reached the upstream despite the secret store failure")
+	}
+}
+
+func TestResponsesCompactForwardsSameProtocol(t *testing.T) {
+	up := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"object":"response.compaction","output":[{"type":"compaction"}]}`)
+	})
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	p := cfg.Providers["openrouter"]
+	p.Adapter = "openai-responses"
+	cfg.Providers["openrouter"] = p
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	resp, data := chatPost(t, addr, "/c/codex/v1/responses/compact", []byte(`{"model":"gateway-default","input":[]}`), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body %s", resp.StatusCode, data)
+	}
+	if !strings.Contains(string(data), `"object":"response.compaction"`) {
+		t.Fatalf("compact response = %s", data)
+	}
+	req := up.last()
+	if req.Path != "/responses/compact" {
+		t.Fatalf("upstream path = %q, want /responses/compact", req.Path)
+	}
+	if req.Model != "anthropic/claude-sonnet-4" {
+		t.Fatalf("upstream model = %q", req.Model)
+	}
+	if req.Accept != "application/json" {
+		t.Fatalf("upstream Accept = %q", req.Accept)
+	}
+}
+
+func TestResponsesCompactRejectsNonResponsesAdapter(t *testing.T) {
+	up := newFakeUpstream(t, nil)
+	_, addr := startDataPlane(t, up.URL, up.URL, false, nil)
+	resp, data := chatPost(t, addr, "/c/codex/v1/responses/compact", []byte(`{"model":"gateway-default","input":[]}`), nil)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422, body %s", resp.StatusCode, data)
+	}
+	if !strings.Contains(string(data), "openai-responses") {
+		t.Fatalf("error = %s", data)
+	}
+	if len(up.requests()) != 0 {
+		t.Fatal("compact request reached a non-responses upstream")
 	}
 }
 

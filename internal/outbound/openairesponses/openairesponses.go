@@ -72,9 +72,23 @@ func CompletionURL(baseURL string) string {
 	return strings.TrimRight(baseURL, "/") + "/responses"
 }
 
+// CompactURL builds <base_url>/responses/compact for Codex remote compaction.
+func CompactURL(baseURL string) string {
+	return CompletionURL(baseURL) + "/compact"
+}
+
 // Do sends a responses body upstream. stream selects Accept.
 func (c *Client) Do(ctx context.Context, body []byte, stream bool) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, CompletionURL(c.baseURL), bytes.NewReader(body))
+	return c.do(ctx, CompletionURL(c.baseURL), body, stream)
+}
+
+// DoCompact posts a unary compact request to /responses/compact.
+func (c *Client) DoCompact(ctx context.Context, body []byte) (*http.Response, error) {
+	return c.do(ctx, CompactURL(c.baseURL), body, false)
+}
+
+func (c *Client) do(ctx context.Context, url string, body []byte, stream bool) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}

@@ -99,11 +99,12 @@ func NewWithOptions(dataRoot string, opts Options) *Manager {
 func commandExists(name string) bool { _, err := exec.LookPath(name); return err == nil }
 
 type Status struct {
-	Client          Client `json:"client"`
-	PointState      State  `json:"point_state"`
-	Target          string `json:"target"`
-	BackupAvailable bool   `json:"backup_available"`
-	Message         string `json:"message,omitempty"`
+	Client           Client `json:"client"`
+	PointState       State  `json:"point_state"`
+	Target           string `json:"target"`
+	BackupAvailable  bool   `json:"backup_available"`
+	Message          string `json:"message,omitempty"`
+	RemoteCompaction *bool  `json:"remote_compaction,omitempty"`
 }
 
 type Result struct {
