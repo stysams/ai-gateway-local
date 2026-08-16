@@ -183,7 +183,8 @@ an npm lockfile. It starts the loopback gateway when needed and offers Overview,
 Providers, Routes, Clients, Logs, Usage, and Settings views through management
 HTTP APIs only. The provider editor can fetch an upstream model list before
 saving, choose a default model, and manually override token-limit metadata.
-Routes use the selected provider's catalog when available. The interface
+A client route sets that client's default selected model; the picker inside
+each client lists every enabled model as `<provider-id>/<model-id>`. The interface
 includes first-run body-log risk acceptance,
 Chinese and English, light and dark themes, keyboard operation, responsive
 layouts, and automated 1440×900 and 390×844 browser tests.

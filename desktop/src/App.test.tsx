@@ -4,8 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 
 const status = { version: "test", pid: 42, listen: "127.0.0.1:12600", logging_enabled: false, autostart_enabled: false, clients: { codex: { point_state: "not_pointed" }, claude: { point_state: "client_not_installed" }, grok: { point_state: "drifted" }, generic: { point_state: "unknown" } }, routes: { codex: { provider: "ollama", model: "qwen3" }, claude: { provider: "ollama", model: "qwen3" }, grok: { provider: "ollama", model: "qwen3" }, generic: { provider: "ollama", model: "qwen3" } } };
-const config = { version: 1, listen: { port: 12600 }, logging: { enabled: false, dir: "logs" }, ui: { language: "en-US", logging_notice_accepted: true }, autostart: { enabled: false }, providers: { ollama: { name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", models: [{ id: "qwen3", name: "Qwen 3", context_window: 32768, max_output_tokens: 8192 }], capabilities: { image_input: false, reasoning: false } } }, routes: status.routes };
-const providers = [{ id: "ollama", name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", models: [{ id: "qwen3", name: "Qwen 3", context_window: 32768, max_output_tokens: 8192 }], has_secret: false, capabilities: { image_input: false, reasoning: false } }];
+const config = { version: 1, listen: { port: 12600 }, logging: { enabled: false, dir: "logs" }, ui: { language: "en-US", logging_notice_accepted: true }, autostart: { enabled: false }, providers: { ollama: { name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", models: [{ id: "qwen3", name: "Qwen 3", context_window: 32768, max_output_tokens: 8192 }], capabilities: { image_input: false, reasoning: false } }, openrouter: { name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", models: [{ id: "gpt-5", name: "GPT-5", context_window: 400000, max_output_tokens: 128000 }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4", context_window: 200000, max_output_tokens: 64000 }], capabilities: { image_input: true, reasoning: true } } }, routes: status.routes };
+const providers = [
+  { id: "ollama", name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", models: [{ id: "qwen3", name: "Qwen 3", context_window: 32768, max_output_tokens: 8192 }], has_secret: false, capabilities: { image_input: false, reasoning: false } },
+  { id: "openrouter", name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", models: [{ id: "gpt-5", name: "GPT-5", context_window: 400000, max_output_tokens: 128000 }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4", context_window: 200000, max_output_tokens: 64000 }], has_secret: true, capabilities: { image_input: true, reasoning: true } },
+];
 const pointStatus = (client: string) => ({ client, point_state: client === "codex" ? "not_pointed" : "client_not_installed", target: `C:/${client}/config`, backup_available: false });
 
 beforeEach(() => {
@@ -22,7 +25,7 @@ beforeEach(() => {
     if (url.endsWith("/api/v1/logs/req-copy")) return Response.json({ request_id: "req-copy", events: [{ type: "request", headers: { "X-Debug-Trace": ["trace-value"] }, body: { model: "qwen3" } }] });
     if (url.endsWith("/api/v1/usage")) return Response.json({ total: { requests: 0, success: 0, failed: 0, cancelled: 0, usage: null, incomplete: true }, by_provider: {}, by_model: {}, by_client: {}, by_date: {} });
     for (const client of ["codex", "claude", "grok"]) if (url.endsWith(`/api/v1/clients/${client}`)) return Response.json(pointStatus(client));
-    if (url.includes("/api/v1/routes/codex") && init?.method === "PUT") return Response.json({ client: "codex", provider: "ollama", model: "new-model" });
+    if (url.includes("/api/v1/routes/codex") && init?.method === "PUT") return Response.json({ client: "codex", provider: "openrouter", model: "anthropic/claude-sonnet-4" });
     if (url.endsWith("/api/v1/logging") && init?.method === "PUT") return Response.json({ enabled: true });
     if (url.endsWith("/api/v1/autostart") && init?.method === "PUT") return Response.json({ enabled: true, valid: true });
     if (url.endsWith("/api/v1/clients/codex/point")) return Response.json({ ...pointStatus("codex"), point_state: "pointed", changed: true });
@@ -36,10 +39,15 @@ describe("desktop workflow", () => {
   it("navigates by keyboard and switches a route", async () => {
     const user = userEvent.setup(); render(<App />); await ready();
     const routes = screen.getByRole("button", { name: "Routes" }); routes.focus(); await user.keyboard("{Enter}");
-    expect(await screen.findByText(/preferred model at startup/)).toBeVisible();
-    const modelSelects = screen.getAllByRole("combobox"); await user.selectOptions(modelSelects[1], "qwen3");
+    expect(await screen.findByText(/Changes apply to the next request/)).toBeVisible();
+    expect(screen.getByText(/not the only model it can use/)).toBeVisible();
+    const modelSelect = screen.getByRole("combobox", { name: "codex Default selected model" });
+    expect(within(modelSelect).getByRole("option", { name: "ollama/qwen3" })).toBeVisible();
+    expect(within(modelSelect).getByRole("option", { name: "openrouter/gpt-5" })).toBeVisible();
+    expect(within(modelSelect).getByRole("option", { name: "openrouter/anthropic/claude-sonnet-4" })).toBeVisible();
+    await user.selectOptions(modelSelect, "openrouter/anthropic/claude-sonnet-4");
     await user.click(screen.getAllByRole("button", { name: "Apply" })[0]);
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/routes/codex"), expect.objectContaining({ method: "PUT", body: expect.stringContaining("qwen3") })));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/routes/codex"), expect.objectContaining({ method: "PUT", body: "{\"provider\":\"openrouter\",\"model\":\"anthropic/claude-sonnet-4\"}" })));
     const toast = await screen.findByRole("status");
     expect(toast).toHaveTextContent("Success");
     await user.click(within(toast).getByRole("button", { name: "Close" }));

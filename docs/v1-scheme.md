@@ -479,9 +479,11 @@ generic
 
 模型列表拉取失败不得影响数据面启动。
 
-每项必须带 `display_name`，取值优先使用模型目录中的 `name`，缺失时回退为模型 id。
-该字段是 §7.3 中「进入 agent 后选择任意已启用模型」的显示名来源：Claude Code 的
-网关模型发现会读取它，Grok Build 的选择器用它作为条目标签（证据见 §20）。
+每项必须带 `display_name`，取值必须等于该项的 `id`（`gateway-default` 或
+`<provider-id>/<model-id>`）。客户端选择器按 `供应商/模型 ID` 展示全部已启用
+模型。模型目录中的 `name` 只用于网关管理面，不得改写客户端选择器标签。
+Claude Code 的网关模型发现读取 `display_name`，Grok Build 的选择器 `name`
+字段同样写成该 id（证据见 §20）。
 
 被禁用的 provider 和被禁用的模型不得出现在列表中。
 
@@ -1052,6 +1054,8 @@ api_key = "sk-ai-gateway-local"
 - Grok Build 是唯一能在配置文件里承载完整目录的客户端：每个已启用的
   `<provider-id>/<model-id>` 各写一个 `[model."ai-gateway:<provider-id>/<model-id>"]`
   条目，与内置模型并存而非替换（证据见 §20）。
+- 选择器显示名 `name` 必须写成该条目的模型 id（`gateway-default` 或
+  `<provider-id>/<model-id>`），不得改写成目录中的友好名称。
 - 网关写入的条目一律以 `ai-gateway:` 为 id 前缀，除首选模型条目 `ai-gateway` 之外。
   restore 必须删除网关写入的全部条目，不得删除用户自己声明的模型。
 - 目录条目的增删只发生在 point 与路由同步时，且不得替换最初 point 创建的恢复点。
@@ -1909,7 +1913,8 @@ docs/
   `ai-gateway:openrouter/anthropic/claude-sonnet-4`、`ai-gateway:deepseek/deepseek-chat`、
   `my-own-model`。即 id 含 `/` 和 `:` 都不影响解析，且用户自有条目不受影响。
 - `grok models` 列出的是配置中的表 id，不是 `name`。`name` 按官方 settings reference
-  是选择器显示名，本次未在 TUI 中直接验证。
+  是选择器显示名；第一阶段把该字段写成与 `model` 相同的
+  `<provider-id>/<model-id>`（或 `gateway-default`），不使用目录中的友好名称。
 
 #### 由此确定的第一阶段做法
 
@@ -1917,7 +1922,8 @@ docs/
 - 完整的已启用 `<provider-id>/<model-id>` 目录一律由 `/c/{client}/v1/models` 提供，
   这是三个客户端唯一共同可用的入口。
 - 只有 Grok Build 在配置文件里落地完整目录；Codex 与 Claude Code 只写首选模型。
-- `/v1/models` 每项增加 `display_name`，供 Claude Code 发现与 Grok 选择器显示。
+- `/v1/models` 每项增加 `display_name`，取值等于该项 `id`，供 Claude Code
+  发现与 Grok 选择器按 `供应商/模型 ID` 显示。
 
 ---
 

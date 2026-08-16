@@ -349,7 +349,7 @@ func TestPointWritesPerClientCatalogContract(t *testing.T) {
 			want: []string{
 				"[model.'ai-gateway:openrouter/anthropic/claude-sonnet-4']",
 				"model = 'openrouter/anthropic/claude-sonnet-4'",
-				"name = 'Claude Sonnet 4'",
+				"name = 'openrouter/anthropic/claude-sonnet-4'",
 				"default = 'ai-gateway'",
 			},
 		},

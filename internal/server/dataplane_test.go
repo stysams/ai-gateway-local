@@ -745,9 +745,8 @@ func TestModelsList(t *testing.T) {
 			if list.Data[i].ID != w {
 				t.Errorf("%s: data[%d].id = %q, want %q", path, i, list.Data[i].ID, w)
 			}
-			// §7.5: every entry carries a display_name; with no configured name
-			// it falls back to the model id so a client picker never shows a
-			// blank row.
+			// §7.5: display_name equals the selectable id so client pickers
+			// show <provider-id>/<model-id> (or gateway-default).
 			if list.Data[i].DisplayName != w {
 				t.Errorf("%s: data[%d].display_name = %q, want %q", path, i, list.Data[i].DisplayName, w)
 			}
@@ -780,10 +779,12 @@ func TestModelsListIncludesPersistedProviderCatalog(t *testing.T) {
 	if strings.Count(string(body), `"id":"openrouter/anthropic/claude-sonnet-4"`) != 1 {
 		t.Fatalf("default model was duplicated: %s", body)
 	}
-	// §7.5: the configured catalog name becomes display_name, which is what the
-	// Grok Build entries and Claude Code discovery show in their pickers.
-	if !strings.Contains(string(body), `"display_name":"GPT-5"`) {
-		t.Fatalf("configured model name missing from display_name: %s", body)
+	// §7.5: display_name is the selectable id, not the catalog friendly name.
+	if !strings.Contains(string(body), `"display_name":"openrouter/openai/gpt-5"`) {
+		t.Fatalf("selectable id missing from display_name: %s", body)
+	}
+	if strings.Contains(string(body), `"display_name":"GPT-5"`) {
+		t.Fatalf("catalog friendly name leaked into client display_name: %s", body)
 	}
 }
 

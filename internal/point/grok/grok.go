@@ -44,7 +44,7 @@ func Transform(original []byte, baseURL string, settings clientcatalog.Settings)
 	for _, entry := range entries(settings) {
 		modelSet[entry.key] = map[string]any{
 			"model": entry.model, "base_url": baseURL + "/c/grok/v1",
-			"name": entry.name, "api_backend": "responses", "api_key": apiKeyPlaceholder,
+			"name": entry.model, "api_backend": "responses", "api_key": apiKeyPlaceholder,
 		}
 	}
 	models["default"] = preferredKey
@@ -75,7 +75,7 @@ func Check(data []byte, baseURL string, settings clientcatalog.Settings) (bool, 
 			return false, nil
 		}
 		if p["model"] != entry.model || p["base_url"] != baseURL+"/c/grok/v1" ||
-			p["name"] != entry.name || p["api_backend"] != "responses" ||
+			p["name"] != entry.model || p["api_backend"] != "responses" ||
 			p["api_key"] != apiKeyPlaceholder {
 			return false, nil
 		}
@@ -111,15 +111,16 @@ func Managed(data []byte, baseURL string) (bool, error) {
 type entry struct {
 	key   string
 	model string
-	name  string
 }
 
 // entries is the exact set of tables the gateway owns: the preferred model that
 // `[models] default` points at, then every other selectable model. The reserved
 // model is always offered so the user can fall back to following the route.
+// The picker label is the selectable id itself (`gateway-default` or
+// `<provider-id>/<model-id>`), never a friendly catalog name.
 func entries(settings clientcatalog.Settings) []entry {
 	preferred := settings.Model()
-	out := []entry{{key: preferredKey, model: preferred, name: label(settings, preferred)}}
+	out := []entry{{key: preferredKey, model: preferred}}
 	seen := map[string]bool{preferred: true}
 	candidates := make([]string, 0, len(settings.Catalog)+1)
 	candidates = append(candidates, clientcatalog.ReservedModel)
@@ -131,21 +132,9 @@ func entries(settings clientcatalog.Settings) []entry {
 			continue
 		}
 		seen[id] = true
-		out = append(out, entry{key: catalogPrefix + id, model: id, name: label(settings, id)})
+		out = append(out, entry{key: catalogPrefix + id, model: id})
 	}
 	return out
-}
-
-func label(settings clientcatalog.Settings, id string) string {
-	if id == clientcatalog.ReservedModel {
-		return clientcatalog.ReservedDisplayName
-	}
-	for _, item := range settings.Catalog {
-		if item.ID == id {
-			return item.Label()
-		}
-	}
-	return id
 }
 
 func ownedKey(key string) bool {

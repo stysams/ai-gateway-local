@@ -22,13 +22,13 @@ type Entry struct {
 	DisplayName string
 }
 
-// Label is the name shown in a client's model picker. It falls back to the id
-// so a provider model without a configured name is still selectable.
+// Label is the name shown in a client's model picker. Client pickers always
+// display the selectable id (`<provider-id>/<model-id>`), so this returns ID.
 func (e Entry) Label() string {
-	if e.DisplayName != "" {
-		return e.DisplayName
+	if e.ID != "" {
+		return e.ID
 	}
-	return e.ID
+	return e.DisplayName
 }
 
 // Settings is what a client configuration must express after point.

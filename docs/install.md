@@ -123,7 +123,8 @@ that slot, and the configured route selects the upstream for `gateway-default`
 requests, so updating a route changes the next request without rewriting the
 client configuration or replacing its restore backup.
 
-Every enabled `<provider-id>/<model-id>` remains selectable inside the client:
+Every enabled `<provider-id>/<model-id>` remains selectable inside the client
+and is shown in that form:
 
 - All three clients read the full catalog from `/c/{client}/v1/models`, and any
   of those ids can be requested directly (for example `claude --model

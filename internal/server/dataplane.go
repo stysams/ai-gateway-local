@@ -816,9 +816,10 @@ func encodeNonStream(proto ir.Protocol, w io.Writer, model string, resp *ir.Resp
 
 // modelItem is one entry of GET /v1/models.
 //
-// display_name is required by §7.5: it is the label clients show in their model
-// pickers. Claude Code's gateway model discovery reads it, and the Grok Build
-// catalog written by internal/point uses it as the entry name.
+// display_name is required by §7.5 and always equals id so client pickers
+// show the selectable form: gateway-default or <provider-id>/<model-id>.
+// Claude Code's gateway model discovery reads it; Grok Build writes the same
+// string into each catalog entry's name.
 type modelItem struct {
 	ID          string `json:"id"`
 	Object      string `json:"object"`
@@ -865,15 +866,12 @@ func (s *Server) modelCatalog(cfg *config.Config) []modelItem {
 
 	data := []modelItem{{ID: route.ReservedModel, Object: "model", OwnedBy: "ai-gateway", DisplayName: route.ReservedModel}}
 	seen := map[string]bool{route.ReservedModel: true}
-	add := func(modelID, providerID, displayName string) {
+	add := func(modelID, providerID string) {
 		if seen[modelID] {
 			return
 		}
 		seen[modelID] = true
-		if displayName == "" {
-			displayName = modelID
-		}
-		data = append(data, modelItem{ID: modelID, Object: "model", OwnedBy: providerID, DisplayName: displayName})
+		data = append(data, modelItem{ID: modelID, Object: "model", OwnedBy: providerID, DisplayName: modelID})
 	}
 	for _, id := range ids {
 		p := cfg.Providers[id]
@@ -881,13 +879,13 @@ func (s *Server) modelCatalog(cfg *config.Config) []modelItem {
 			continue
 		}
 		if providerModelEnabled(p, p.DefaultModel) {
-			add(id+"/"+p.DefaultModel, id, providerModelName(p, p.DefaultModel))
+			add(id+"/"+p.DefaultModel, id)
 		}
 		for _, model := range p.Models {
 			if !model.EnabledValue() {
 				continue
 			}
-			add(id+"/"+model.ID, id, model.Name)
+			add(id+"/"+model.ID, id)
 		}
 	}
 	cache := s.cachedModels()
@@ -899,7 +897,7 @@ func (s *Server) modelCatalog(cfg *config.Config) []modelItem {
 			if !providerModelEnabled(cfg.Providers[id], model.RawID) {
 				continue
 			}
-			add(model.ID, id, model.DisplayName)
+			add(model.ID, id)
 		}
 	}
 	return data
@@ -912,15 +910,4 @@ func providerModelEnabled(provider config.Provider, modelID string) bool {
 		}
 	}
 	return true
-}
-
-// providerModelName is the configured display name of a model, empty when the
-// provider catalog does not carry one.
-func providerModelName(provider config.Provider, modelID string) string {
-	for _, model := range provider.Models {
-		if model.ID == modelID {
-			return model.Name
-		}
-	}
-	return ""
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -72,19 +71,20 @@ func (c *trayController) refresh() {
 	menu.Add(text.refresh).OnClick(func(*application.Context) { c.refresh() })
 	menu.AddSeparator()
 
-	sort.Slice(providers, func(i, j int) bool { return providers[i].Name < providers[j].Name })
+	catalog := trayCatalog(providers)
 	for _, client := range []string{"codex", "claude", "grok"} {
 		submenu := menu.AddSubmenu(fmt.Sprintf("%s %s", client, text.routeSuffix))
-		if !running || len(providers) == 0 {
+		if !running || len(catalog) == 0 {
 			submenu.Add("-").SetEnabled(false)
 			continue
 		}
-		for _, provider := range providers {
-			provider := provider
-			checked := status.Routes[client].Provider == provider.ID
-			submenu.AddRadio(provider.Name+" · "+provider.DefaultModel, checked).OnClick(func(*application.Context) {
+		current := status.Routes[client]
+		for _, item := range catalog {
+			item := item
+			checked := current.Provider == item.Provider && current.Model == item.Model
+			submenu.AddRadio(item.Provider+"/"+item.Model, checked).OnClick(func(*application.Context) {
 				c.perform(func(ctx context.Context) error {
-					return c.api.setRoute(ctx, client, trayRoute{Provider: provider.ID, Model: provider.DefaultModel})
+					return c.api.setRoute(ctx, client, item)
 				}, text)
 			})
 		}
@@ -123,6 +123,38 @@ func (c *trayController) refresh() {
 	} else if statusErr != nil {
 		c.tray.SetTooltip(stateLabel)
 	}
+}
+
+func trayCatalog(providers []trayProvider) []trayRoute {
+	out := make([]trayRoute, 0)
+	seen := map[string]bool{}
+	for _, provider := range providers {
+		if provider.Enabled != nil && !*provider.Enabled {
+			continue
+		}
+		models := make([]string, 0, len(provider.Models)+1)
+		if len(provider.Models) > 0 {
+			for _, model := range provider.Models {
+				if model.Enabled != nil && !*model.Enabled {
+					continue
+				}
+				if model.ID != "" {
+					models = append(models, model.ID)
+				}
+			}
+		} else if provider.DefaultModel != "" {
+			models = append(models, provider.DefaultModel)
+		}
+		for _, model := range models {
+			key := provider.ID + "/" + model
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, trayRoute{Provider: provider.ID, Model: model})
+		}
+	}
+	return out
 }
 
 func (c *trayController) perform(operation func(context.Context) error, text trayText) {

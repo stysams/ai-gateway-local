@@ -23,9 +23,16 @@ type trayStatus struct {
 }
 
 type trayProvider struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	DefaultModel string `json:"default_model"`
+	ID           string      `json:"id"`
+	Name         string      `json:"name"`
+	DefaultModel string      `json:"default_model"`
+	Enabled      *bool       `json:"enabled"`
+	Models       []trayModel `json:"models"`
+}
+
+type trayModel struct {
+	ID      string `json:"id"`
+	Enabled *bool  `json:"enabled"`
 }
 
 type trayConfig struct {
