@@ -236,7 +236,10 @@ func TestEncodeStreamTextAndCompletion(t *testing.T) {
 		"event: response.output_text.delta",
 		`"delta":"Hel"`,
 		`"delta":"lo"`,
+		"event: response.output_text.done",
+		"event: response.output_item.done",
 		"event: response.completed",
+		`"type":"response.completed"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stream missing %q:\n%s", want, out)
@@ -247,6 +250,14 @@ func TestEncodeStreamTextAndCompletion(t *testing.T) {
 	}
 	if strings.Count(out, "event: response.output_item.added") != 1 {
 		t.Errorf("text deltas must share one output item:\n%s", out)
+	}
+	if !strings.Contains(out, `"text":"Hello"`) {
+		t.Errorf("output_text.done must carry concatenated text:\n%s", out)
+	}
+	completedAt := strings.Index(out, "event: response.completed")
+	doneAt := strings.Index(out, "event: response.output_item.done")
+	if completedAt < 0 || doneAt < 0 || doneAt > completedAt {
+		t.Errorf("output_item.done must precede response.completed:\n%s", out)
 	}
 	// 文本 delta 顺序。
 	if strings.Index(out, "Hel") > strings.Index(out, "lo") {
@@ -279,6 +290,53 @@ func TestEncodeStreamToolCall(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("stream missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestEncodeStreamReasoningThenTextClosesItems(t *testing.T) {
+	var buf bytes.Buffer
+	err := EncodeStream(&buf, func() {}, "m", eventSource([]ir.Event{
+		{Type: ir.EventStarted},
+		{Type: ir.EventReasoningDelta, Text: "think"},
+		{Type: ir.EventTextDelta, Text: "say"},
+		{Type: ir.EventCompleted},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"event: response.reasoning_summary_part.added",
+		"event: response.reasoning_summary_text.delta",
+		"event: response.reasoning_summary_text.done",
+		"event: response.reasoning_summary_part.done",
+		`"type":"response.completed"`,
+		`"sequence_number":`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stream missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Index(out, "event: response.reasoning_summary_text.done") > strings.Index(out, "event: response.output_text.done") {
+		t.Errorf("reasoning item must close before later text item:\n%s", out)
+	}
+}
+
+func TestEncodeStreamEOFWithoutCompletedIsFailed(t *testing.T) {
+	var buf bytes.Buffer
+	err := EncodeStream(&buf, func() {}, "m", eventSource([]ir.Event{
+		{Type: ir.EventStarted},
+		{Type: ir.EventTextDelta, Text: "partial"},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "event: response.completed") {
+		t.Errorf("truncated stream must not fabricate response.completed: %s", out)
+	}
+	if !strings.Contains(out, `"type":"response.failed"`) || !strings.Contains(out, "ended before response.completed") {
+		t.Errorf("truncated stream should carry response.failed: %s", out)
 	}
 }
 

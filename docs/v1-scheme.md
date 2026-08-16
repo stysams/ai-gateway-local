@@ -2028,6 +2028,29 @@ Responses→Responses 仍按原文转发这些字段。
 id；`finish_reason` 到达时补齐 `tool_call.completed`。Responses 入站编码时，
 同一段文本 / reasoning 必须共用一个 output item，禁止每个 delta 新开一项。
 
+### 2026-08-16 复核：跨协议 Responses 编码缺少 JSON type 与 item 关闭
+
+实验对象：Codex Desktop 请求 `opencode/deepseek-v4-flash`（adapter
+`openai-chat`，`base_url` 已是 `https://opencode.ai/zen/go/v1`）。
+
+证据文件：`%USERPROFILE%\.ai-gateway\logs\2026-08-16\req_8cb93effeb48e75e10a96156.jsonl`。
+
+上游 Chat 流正常结束：`finish_reason=stop` 后跟 `data: [DONE]`。网关把
+`response.completed` 写进了客户端流，日志也记 200。客户端仍报
+`stream disconnected before completion: stream closed before response.completed`。
+
+对照同协议成功请求（`tudou` Responses）和夹具
+`testdata/protocols/responses/response-stream.txt`，官方每个 SSE `data`
+都带 `"type":"<event>"`，并在完成前发出 `output_text.done` /
+`reasoning_summary_text.done` / `output_item.done`。跨协议编码器只写了
+`event:` 行，JSON 里没有 `type`，打开的 reasoning / message item 也没有
+done。Codex 按 JSON `type` 分发事件，因此看不到完成。
+
+结论：Responses 入站 SSE 的 `data` 必须包含 `type`（以及递增
+`sequence_number`）；`response.completed` 之前必须先关闭仍打开的
+output item。上游在没有完成事件的情况下结束时，发 `response.failed`，
+不得假装成功结束。
+
 ---
 
 ## 21. 第一个 Agent 的开工指令

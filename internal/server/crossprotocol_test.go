@@ -361,8 +361,8 @@ func TestCrossResponsesChatToolCallIndexStream(t *testing.T) {
 		t.Fatalf("status %d, %s", resp.StatusCode, data)
 	}
 	out := string(data)
-	if !strings.Contains(out, "event: response.completed") {
-		t.Fatalf("missing response.completed: %s", out)
+	if !strings.Contains(out, "event: response.completed") || !strings.Contains(out, `"type":"response.completed"`) {
+		t.Fatalf("missing response.completed JSON type: %s", out)
 	}
 	if strings.Contains(out, "response.failed") || strings.Contains(out, "unknown tool call") {
 		t.Fatalf("stream failed: %s", out)

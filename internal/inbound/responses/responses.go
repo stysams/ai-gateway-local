@@ -560,163 +560,287 @@ func EncodeNonStream(w io.Writer, model string, resp *ir.Response) error {
 // EncodeStream renders ir events as Responses SSE events, flushing after
 // every event. response.completed ends the stream; an upstream failure is
 // emitted as response.failed and never followed by a success event.
+//
+// Every data payload carries "type" (and sequence_number) so clients that
+// dispatch on the JSON type field — including Codex Desktop — can see
+// response.completed. Open items are closed before that terminal event.
 func EncodeStream(w io.Writer, flush func(), model string, next func() (ir.Event, error)) error {
-	itemIndex := 0
-	textItemID := ""
-	textIndex := 0
-	reasoningItemID := ""
-	reasoningIndex := 0
+	enc := &streamEncoder{w: w, flush: flush, model: model}
 	for {
 		ev, err := next()
 		if err == io.EOF {
-			break
+			if !enc.terminal {
+				// docs/v1-scheme.md §8.2: a broken stream ends in a protocol
+				// error event, never a fabricated completion.
+				return enc.failed("upstream stream ended before response.completed")
+			}
+			return nil
 		}
 		if err != nil {
 			return err
 		}
 		switch ev.Type {
 		case ir.EventStarted:
-			if err := writeSSE(w, "response.created", map[string]any{
+			if err := enc.emit("response.created", map[string]any{
 				"response": map[string]any{"id": respIDPrefix, "object": "response", "status": "in_progress", "model": model},
 			}); err != nil {
 				return err
 			}
-			flush()
 		case ir.EventTextDelta:
-			if textItemID == "" {
-				itemIndex++
-				textIndex = itemIndex - 1
-				textItemID = fmt.Sprintf("msg_%d", itemIndex)
-				if err := writeSSE(w, "response.output_item.added", map[string]any{
-					"output_index": textIndex,
-					"item": map[string]any{
-						"id": textItemID, "type": "message", "role": "assistant",
-						"content": []any{}, "status": "in_progress",
-					},
-				}); err != nil {
-					return err
-				}
-				flush()
-				if err := writeSSE(w, "response.content_part.added", map[string]any{
-					"item_id": textItemID, "output_index": textIndex, "content_index": 0,
-					"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
-				}); err != nil {
-					return err
-				}
-				flush()
+			if err := enc.ensureText(); err != nil {
+				return err
 			}
-			if err := writeSSE(w, "response.output_text.delta", map[string]any{
-				"item_id": textItemID, "output_index": textIndex, "content_index": 0, "delta": ev.Text,
+			enc.text.WriteString(ev.Text)
+			if err := enc.emit("response.output_text.delta", map[string]any{
+				"item_id": enc.textID, "output_index": enc.textIx, "content_index": 0, "delta": ev.Text,
 			}); err != nil {
 				return err
 			}
-			flush()
 		case ir.EventReasoningDelta:
-			if reasoningItemID == "" {
-				itemIndex++
-				reasoningIndex = itemIndex - 1
-				reasoningItemID = fmt.Sprintf("rs_%d", itemIndex)
-				if err := writeSSE(w, "response.output_item.added", map[string]any{
-					"output_index": reasoningIndex,
-					"item":         map[string]any{"id": reasoningItemID, "type": "reasoning", "summary": []any{}, "status": "in_progress"},
-				}); err != nil {
-					return err
-				}
-				flush()
+			if err := enc.ensureReasoning(); err != nil {
+				return err
 			}
-			if err := writeSSE(w, "response.reasoning_summary_text.delta", map[string]any{
-				"item_id": reasoningItemID, "output_index": reasoningIndex, "summary_index": 0, "delta": ev.Text,
+			enc.reasoning.WriteString(ev.Text)
+			if err := enc.emit("response.reasoning_summary_text.delta", map[string]any{
+				"item_id": enc.reasoningID, "output_index": enc.reasoningIx, "summary_index": 0, "delta": ev.Text,
 			}); err != nil {
 				return err
 			}
-			flush()
 		case ir.EventToolCallStarted:
-			itemIndex++
+			enc.itemN++
 			item := functionCallItem(ev, "", "in_progress")
 			if ev.ToolCustom {
 				item = customToolCallItem(ev, "", "in_progress")
 			}
-			if err := writeSSE(w, "response.output_item.added", map[string]any{
-				"output_index": itemIndex - 1,
+			if err := enc.emit("response.output_item.added", map[string]any{
+				"output_index": enc.itemN - 1,
 				"item":         item,
 			}); err != nil {
 				return err
 			}
-			flush()
 		case ir.EventToolCallArgumentsDlt:
 			if ev.ToolCustom {
 				// JSON-wrapped freeform deltas are not the custom-tool text
 				// stream; the completed event carries the unwrapped input.
 				continue
 			}
-			if err := writeSSE(w, "response.function_call_arguments.delta", map[string]any{
+			if err := enc.emit("response.function_call_arguments.delta", map[string]any{
 				"item_id": "fc_" + ev.ToolCallID, "output_index": 0, "delta": ev.ArgumentsDelta,
 			}); err != nil {
 				return err
 			}
-			flush()
 		case ir.EventToolCallCompleted:
 			if ev.ToolCustom {
 				input := ir.UnwrapFreeformInput(json.RawMessage(ev.Arguments))
-				if err := writeSSE(w, "response.custom_tool_call_input.done", map[string]any{
+				if err := enc.emit("response.custom_tool_call_input.done", map[string]any{
 					"item_id": "ctc_" + ev.ToolCallID, "output_index": 0, "input": input,
 				}); err != nil {
 					return err
 				}
-				flush()
-				if err := writeSSE(w, "response.output_item.done", map[string]any{
+				if err := enc.emit("response.output_item.done", map[string]any{
 					"output_index": 0,
 					"item":         customToolCallItem(ev, input, "completed"),
 				}); err != nil {
 					return err
 				}
-				flush()
 				continue
 			}
-			if err := writeSSE(w, "response.function_call_arguments.done", map[string]any{
+			if err := enc.emit("response.function_call_arguments.done", map[string]any{
 				"item_id": "fc_" + ev.ToolCallID, "output_index": 0,
 				"arguments": ev.Arguments,
 			}); err != nil {
 				return err
 			}
-			flush()
-			if err := writeSSE(w, "response.output_item.done", map[string]any{
+			if err := enc.emit("response.output_item.done", map[string]any{
 				"output_index": 0,
 				"item":         functionCallItem(ev, ev.Arguments, "completed"),
 			}); err != nil {
 				return err
 			}
-			flush()
 		case ir.EventTextCompleted, ir.EventReasoningCompleted, ir.EventUsage:
 			// 客户端流式协议无需这些事件。
 		case ir.EventCompleted:
-			if err := writeSSE(w, "response.completed", map[string]any{
-				"response": map[string]any{
-					"id": respIDPrefix, "object": "response", "status": "completed", "model": model,
-					"output": []any{}, "parallel_tool_calls": true,
-				},
-			}); err != nil {
-				return err
-			}
-			flush()
-			return nil
+			return enc.completed()
 		case ir.EventError:
 			msg := "upstream error"
 			if ev.Error != nil && ev.Error.Message != "" {
 				msg = ev.Error.Message
 			}
-			if err := writeSSE(w, "response.failed", map[string]any{
-				"response": map[string]any{
-					"id": respIDPrefix, "object": "response", "status": "failed", "model": model,
-					"error": map[string]any{"code": "upstream_error", "message": msg},
-				},
-			}); err != nil {
-				return err
-			}
-			flush()
-			return nil
+			return enc.failed(msg)
 		}
 	}
+}
+
+type streamEncoder struct {
+	w           io.Writer
+	flush       func()
+	model       string
+	seq         int
+	itemN       int
+	textID      string
+	textIx      int
+	text        strings.Builder
+	reasoningID string
+	reasoningIx int
+	reasoning   strings.Builder
+	terminal    bool
+}
+
+func (e *streamEncoder) emit(typ string, payload map[string]any) error {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["type"] = typ
+	payload["sequence_number"] = e.seq
+	e.seq++
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if _, err := io.WriteString(e.w, "event: "+typ+"\ndata: "+string(data)+"\n\n"); err != nil {
+		return err
+	}
+	e.flush()
+	return nil
+}
+
+func (e *streamEncoder) ensureText() error {
+	if e.textID != "" {
+		return nil
+	}
+	e.itemN++
+	e.textIx = e.itemN - 1
+	e.textID = fmt.Sprintf("msg_%d", e.itemN)
+	if err := e.emit("response.output_item.added", map[string]any{
+		"output_index": e.textIx,
+		"item": map[string]any{
+			"id": e.textID, "type": "message", "role": "assistant",
+			"content": []any{}, "status": "in_progress",
+		},
+	}); err != nil {
+		return err
+	}
+	return e.emit("response.content_part.added", map[string]any{
+		"item_id": e.textID, "output_index": e.textIx, "content_index": 0,
+		"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
+	})
+}
+
+func (e *streamEncoder) ensureReasoning() error {
+	if e.reasoningID != "" {
+		return nil
+	}
+	e.itemN++
+	e.reasoningIx = e.itemN - 1
+	e.reasoningID = fmt.Sprintf("rs_%d", e.itemN)
+	if err := e.emit("response.output_item.added", map[string]any{
+		"output_index": e.reasoningIx,
+		"item":         map[string]any{"id": e.reasoningID, "type": "reasoning", "summary": []any{}, "status": "in_progress"},
+	}); err != nil {
+		return err
+	}
+	return e.emit("response.reasoning_summary_part.added", map[string]any{
+		"item_id": e.reasoningID, "output_index": e.reasoningIx, "summary_index": 0,
+		"part": map[string]any{"type": "summary_text", "text": ""},
+	})
+}
+
+func (e *streamEncoder) closeText() error {
+	if e.textID == "" {
+		return nil
+	}
+	text := e.text.String()
+	if err := e.emit("response.output_text.done", map[string]any{
+		"item_id": e.textID, "output_index": e.textIx, "content_index": 0, "text": text,
+	}); err != nil {
+		return err
+	}
+	if err := e.emit("response.content_part.done", map[string]any{
+		"item_id": e.textID, "output_index": e.textIx, "content_index": 0,
+		"part": map[string]any{"type": "output_text", "text": text, "annotations": []any{}},
+	}); err != nil {
+		return err
+	}
+	if err := e.emit("response.output_item.done", map[string]any{
+		"output_index": e.textIx,
+		"item": map[string]any{
+			"id": e.textID, "type": "message", "role": "assistant", "status": "completed",
+			"content": []any{map[string]any{"type": "output_text", "text": text, "annotations": []any{}}},
+		},
+	}); err != nil {
+		return err
+	}
+	e.textID = ""
+	return nil
+}
+
+func (e *streamEncoder) closeReasoning() error {
+	if e.reasoningID == "" {
+		return nil
+	}
+	text := e.reasoning.String()
+	if err := e.emit("response.reasoning_summary_text.done", map[string]any{
+		"item_id": e.reasoningID, "output_index": e.reasoningIx, "summary_index": 0, "text": text,
+	}); err != nil {
+		return err
+	}
+	if err := e.emit("response.reasoning_summary_part.done", map[string]any{
+		"item_id": e.reasoningID, "output_index": e.reasoningIx, "summary_index": 0,
+		"part": map[string]any{"type": "summary_text", "text": text},
+	}); err != nil {
+		return err
+	}
+	if err := e.emit("response.output_item.done", map[string]any{
+		"output_index": e.reasoningIx,
+		"item": map[string]any{
+			"id": e.reasoningID, "type": "reasoning", "status": "completed",
+			"summary": []any{map[string]any{"type": "summary_text", "text": text}},
+		},
+	}); err != nil {
+		return err
+	}
+	e.reasoningID = ""
+	return nil
+}
+
+func (e *streamEncoder) closeOpenItems() error {
+	if e.reasoningID != "" && (e.textID == "" || e.reasoningIx < e.textIx) {
+		if err := e.closeReasoning(); err != nil {
+			return err
+		}
+	}
+	if err := e.closeText(); err != nil {
+		return err
+	}
+	return e.closeReasoning()
+}
+
+func (e *streamEncoder) completed() error {
+	if err := e.closeOpenItems(); err != nil {
+		return err
+	}
+	if err := e.emit("response.completed", map[string]any{
+		"response": map[string]any{
+			"id": respIDPrefix, "object": "response", "status": "completed", "model": e.model,
+			"output": []any{}, "parallel_tool_calls": true,
+		},
+	}); err != nil {
+		return err
+	}
+	e.terminal = true
+	return nil
+}
+
+func (e *streamEncoder) failed(msg string) error {
+	if err := e.emit("response.failed", map[string]any{
+		"response": map[string]any{
+			"id": respIDPrefix, "object": "response", "status": "failed", "model": e.model,
+			"error": map[string]any{"code": "upstream_error", "message": msg},
+		},
+	}); err != nil {
+		return err
+	}
+	e.terminal = true
 	return nil
 }
 
@@ -733,14 +857,3 @@ func customToolCallItem(ev ir.Event, input, status string) map[string]any {
 		"name": ev.ToolName, "input": input, "status": status,
 	}
 }
-
-func writeSSE(w io.Writer, typ string, payload any) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	_, err = io.WriteString(w, "event: "+typ+"\ndata: "+string(data)+"\n\n")
-	return err
-}
-
-var _ = strings.TrimSpace
