@@ -562,7 +562,10 @@ func EncodeNonStream(w io.Writer, model string, resp *ir.Response) error {
 // emitted as response.failed and never followed by a success event.
 func EncodeStream(w io.Writer, flush func(), model string, next func() (ir.Event, error)) error {
 	itemIndex := 0
-	textItems := map[string]bool{}
+	textItemID := ""
+	textIndex := 0
+	reasoningItemID := ""
+	reasoningIndex := 0
 	for {
 		ev, err := next()
 		if err == io.EOF {
@@ -580,44 +583,49 @@ func EncodeStream(w io.Writer, flush func(), model string, next func() (ir.Event
 			}
 			flush()
 		case ir.EventTextDelta:
-			itemIndex++
-			itemID := fmt.Sprintf("msg_%d", itemIndex)
-			textItems[itemID] = true
-			if err := writeSSE(w, "response.output_item.added", map[string]any{
-				"output_index": itemIndex - 1,
-				"item": map[string]any{
-					"id": itemID, "type": "message", "role": "assistant",
-					"content": []any{}, "status": "in_progress",
-				},
-			}); err != nil {
-				return err
+			if textItemID == "" {
+				itemIndex++
+				textIndex = itemIndex - 1
+				textItemID = fmt.Sprintf("msg_%d", itemIndex)
+				if err := writeSSE(w, "response.output_item.added", map[string]any{
+					"output_index": textIndex,
+					"item": map[string]any{
+						"id": textItemID, "type": "message", "role": "assistant",
+						"content": []any{}, "status": "in_progress",
+					},
+				}); err != nil {
+					return err
+				}
+				flush()
+				if err := writeSSE(w, "response.content_part.added", map[string]any{
+					"item_id": textItemID, "output_index": textIndex, "content_index": 0,
+					"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
+				}); err != nil {
+					return err
+				}
+				flush()
 			}
-			flush()
-			if err := writeSSE(w, "response.content_part.added", map[string]any{
-				"item_id": itemID, "output_index": itemIndex - 1, "content_index": 0,
-				"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
-			}); err != nil {
-				return err
-			}
-			flush()
 			if err := writeSSE(w, "response.output_text.delta", map[string]any{
-				"item_id": itemID, "output_index": itemIndex - 1, "content_index": 0, "delta": ev.Text,
+				"item_id": textItemID, "output_index": textIndex, "content_index": 0, "delta": ev.Text,
 			}); err != nil {
 				return err
 			}
 			flush()
 		case ir.EventReasoningDelta:
-			itemIndex++
-			itemID := fmt.Sprintf("rs_%d", itemIndex)
-			if err := writeSSE(w, "response.output_item.added", map[string]any{
-				"output_index": itemIndex - 1,
-				"item":         map[string]any{"id": itemID, "type": "reasoning", "summary": []any{}, "status": "in_progress"},
-			}); err != nil {
-				return err
+			if reasoningItemID == "" {
+				itemIndex++
+				reasoningIndex = itemIndex - 1
+				reasoningItemID = fmt.Sprintf("rs_%d", itemIndex)
+				if err := writeSSE(w, "response.output_item.added", map[string]any{
+					"output_index": reasoningIndex,
+					"item":         map[string]any{"id": reasoningItemID, "type": "reasoning", "summary": []any{}, "status": "in_progress"},
+				}); err != nil {
+					return err
+				}
+				flush()
 			}
-			flush()
 			if err := writeSSE(w, "response.reasoning_summary_text.delta", map[string]any{
-				"item_id": itemID, "output_index": itemIndex - 1, "summary_index": 0, "delta": ev.Text,
+				"item_id": reasoningItemID, "output_index": reasoningIndex, "summary_index": 0, "delta": ev.Text,
 			}); err != nil {
 				return err
 			}

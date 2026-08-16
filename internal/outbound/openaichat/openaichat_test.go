@@ -112,6 +112,46 @@ func TestStreamReaderReasoning(t *testing.T) {
 	}
 }
 
+func TestStreamReaderToolCallIndexDeltas(t *testing.T) {
+	// Official Chat Completions stream: first fragment has id+name,
+	// later fragments only have index + argument delta.
+	stream := "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_00_abc\",\"type\":\"function\",\"function\":{\"name\":\"exec\",\"arguments\":\"\"}}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\"}}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"input\\\":\\\"await tools.exec_command({cmd: 'hi'})\\\"}\"}}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	sr := NewStreamReader(strings.NewReader(stream))
+	seq := ir.NewSequencer()
+	var types []ir.EventType
+	for {
+		ev, err := sr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := seq.Push(ev); err != nil {
+			t.Fatalf("push %s: %v", ev.Type, err)
+		}
+		types = append(types, ev.Type)
+		if ev.Type == ir.EventToolCallArgumentsDlt && ev.ToolCallID != "call_00_abc" {
+			t.Fatalf("delta id = %q", ev.ToolCallID)
+		}
+	}
+	resp := seq.Accumulate()
+	if !resp.Completed || len(resp.ToolCalls) != 1 {
+		t.Fatalf("response = %+v events=%v", resp, types)
+	}
+	if resp.ToolCalls[0].ID != "call_00_abc" || resp.ToolCalls[0].Name != "exec" {
+		t.Fatalf("tool = %+v", resp.ToolCalls[0])
+	}
+	if ir.UnwrapFreeformInput(resp.ToolCalls[0].Arguments) != "await tools.exec_command({cmd: 'hi'})" {
+		t.Fatalf("arguments = %s", resp.ToolCalls[0].Arguments)
+	}
+}
+
 // trackingStore observes zeroing of the key bytes returned by Get.
 type trackingStore struct {
 	inner secret.Store

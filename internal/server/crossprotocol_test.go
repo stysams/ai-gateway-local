@@ -339,6 +339,39 @@ data: {"type":"message_stop"}
 	}
 }
 
+func TestCrossResponsesChatToolCallIndexStream(t *testing.T) {
+	up := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_00_abc\",\"type\":\"function\",\"function\":{\"name\":\"exec\",\"arguments\":\"\"}}]}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"input\\\":\\\"await tools.exec_command({cmd: 'hi'})\\\"}\"}}]}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	})
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+	body := []byte(`{
+		"model":"m","stream":true,
+		"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],
+		"tools":[{"type":"custom","name":"exec","description":"Run JS"}]
+	}`)
+	resp, data := chatPost(t, addr, "/c/codex/v1/responses", body, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, %s", resp.StatusCode, data)
+	}
+	out := string(data)
+	if !strings.Contains(out, "event: response.completed") {
+		t.Fatalf("missing response.completed: %s", out)
+	}
+	if strings.Contains(out, "response.failed") || strings.Contains(out, "unknown tool call") {
+		t.Fatalf("stream failed: %s", out)
+	}
+	if !strings.Contains(out, `"type":"custom_tool_call"`) || !strings.Contains(out, "await tools.exec_command({cmd: 'hi'})") {
+		t.Fatalf("custom tool call missing: %s", out)
+	}
+}
+
 // responsesToMessagesNonStream: responses 客户端 → messages 上游。
 func TestCrossResponsesToMessagesNonStream(t *testing.T) {
 	up := newFakeUpstream(t, messagesTextHandler(messagesTextBody))

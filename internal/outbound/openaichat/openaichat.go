@@ -320,14 +320,28 @@ const streamLineMax = 4 << 20
 // chunk may expand into several events (text delta, tool fragments,
 // finish); the reader flattens them through an internal queue so each Next
 // returns exactly one event. It never buffers the whole stream.
+//
+// Subsequent tool-call chunks often omit id and only carry index, matching
+// the official Chat Completions stream. IDs are recovered from the first
+// fragment of each index.
 type StreamReader struct {
-	sc      *lineScanner
-	pending []ir.Event
+	sc        *lineScanner
+	pending   []ir.Event
+	started   bool
+	callIDs   map[int64]string
+	callNames map[int64]string
+	args      map[int64]*strings.Builder
+	callOrder []int64
 }
 
 // NewStreamReader wraps an upstream SSE body.
 func NewStreamReader(r io.Reader) *StreamReader {
-	return &StreamReader{sc: newLineScanner(r, streamLineMax)}
+	return &StreamReader{
+		sc:        newLineScanner(r, streamLineMax),
+		callIDs:   map[int64]string{},
+		callNames: map[int64]string{},
+		args:      map[int64]*strings.Builder{},
+	}
 }
 
 // Next returns the next event, or io.EOF at the end of the stream (the
@@ -351,7 +365,7 @@ func (sr *StreamReader) Next() (ir.Event, error) {
 		if data == "[DONE]" {
 			return ir.Event{}, io.EOF
 		}
-		events, err := parseChunk(data)
+		events, err := sr.parseChunk(data)
 		if err != nil {
 			return ir.Event{}, err
 		}
@@ -360,25 +374,17 @@ func (sr *StreamReader) Next() (ir.Event, error) {
 }
 
 // parseChunk converts one chat.completion.chunk into ir events.
-func parseChunk(data string) ([]ir.Event, error) {
+func (sr *StreamReader) parseChunk(data string) ([]ir.Event, error) {
 	var chunk struct {
 		ID      string `json:"id"`
 		Object  string `json:"object"`
 		Choices []struct {
 			Index int64 `json:"index"`
 			Delta struct {
-				Role             string `json:"role"`
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"`
-				ToolCalls        []struct {
-					Index    int64  `json:"index"`
-					ID       string `json:"id"`
-					Type     string `json:"type"`
-					Function struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
-					} `json:"function"`
-				} `json:"tool_calls"`
+				Role             string          `json:"role"`
+				Content          string          `json:"content"`
+				ReasoningContent string          `json:"reasoning_content"`
+				ToolCalls        []chatToolDelta `json:"tool_calls"`
 			} `json:"delta"`
 			FinishReason *string `json:"finish_reason"`
 		} `json:"choices"`
@@ -388,8 +394,8 @@ func parseChunk(data string) ([]ir.Event, error) {
 	}
 	var events []ir.Event
 	for _, ch := range chunk.Choices {
-		if ch.Delta.Role != "" {
-			events = append(events, ir.Event{Type: ir.EventStarted})
+		if ch.Delta.Role != "" || ch.Delta.ReasoningContent != "" || ch.Delta.Content != "" || len(ch.Delta.ToolCalls) > 0 {
+			events = sr.ensureStarted(events)
 		}
 		if ch.Delta.ReasoningContent != "" {
 			events = append(events, ir.Event{Type: ir.EventReasoningDelta, Text: ch.Delta.ReasoningContent})
@@ -398,18 +404,87 @@ func parseChunk(data string) ([]ir.Event, error) {
 			events = append(events, ir.Event{Type: ir.EventTextDelta, Text: ch.Delta.Content})
 		}
 		for _, tc := range ch.Delta.ToolCalls {
-			if tc.ID != "" {
-				events = append(events, ir.Event{Type: ir.EventToolCallStarted, ToolCallID: tc.ID, ToolName: tc.Function.Name})
-			}
-			if tc.Function.Arguments != "" {
-				events = append(events, ir.Event{Type: ir.EventToolCallArgumentsDlt, ToolCallID: tc.ID, ArgumentsDelta: tc.Function.Arguments})
-			}
+			events = append(events, sr.toolCallEvents(tc)...)
 		}
 		if ch.FinishReason != nil && *ch.FinishReason != "" {
+			events = append(events, sr.finishToolCalls()...)
 			events = append(events, ir.Event{Type: ir.EventCompleted, StopReason: *ch.FinishReason})
 		}
 	}
 	return events, nil
+}
+
+func (sr *StreamReader) ensureStarted(events []ir.Event) []ir.Event {
+	if sr.started {
+		return events
+	}
+	sr.started = true
+	return append(events, ir.Event{Type: ir.EventStarted})
+}
+
+type chatToolDelta struct {
+	Index    int64  `json:"index"`
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+func (sr *StreamReader) toolCallEvents(tc chatToolDelta) []ir.Event {
+	var events []ir.Event
+	id := tc.ID
+	if id == "" {
+		id = sr.callIDs[tc.Index]
+	}
+	if tc.ID != "" && sr.callIDs[tc.Index] == "" {
+		sr.callIDs[tc.Index] = tc.ID
+		sr.callOrder = append(sr.callOrder, tc.Index)
+		if sr.args[tc.Index] == nil {
+			sr.args[tc.Index] = &strings.Builder{}
+		}
+		events = append(events, ir.Event{Type: ir.EventToolCallStarted, ToolCallID: tc.ID, ToolName: tc.Function.Name})
+	}
+	if tc.Function.Name != "" {
+		sr.callNames[tc.Index] = tc.Function.Name
+	}
+	if tc.Function.Arguments == "" {
+		return events
+	}
+	if sr.args[tc.Index] == nil {
+		sr.args[tc.Index] = &strings.Builder{}
+	}
+	sr.args[tc.Index].WriteString(tc.Function.Arguments)
+	if id == "" {
+		return events
+	}
+	events = append(events, ir.Event{
+		Type: ir.EventToolCallArgumentsDlt, ToolCallID: id, ArgumentsDelta: tc.Function.Arguments,
+	})
+	return events
+}
+
+func (sr *StreamReader) finishToolCalls() []ir.Event {
+	var events []ir.Event
+	for _, idx := range sr.callOrder {
+		id := sr.callIDs[idx]
+		if id == "" {
+			continue
+		}
+		args := ""
+		if b := sr.args[idx]; b != nil {
+			args = b.String()
+		}
+		events = append(events, ir.Event{
+			Type:       ir.EventToolCallCompleted,
+			ToolCallID: id,
+			ToolName:   sr.callNames[idx],
+			Arguments:  args,
+		})
+	}
+	sr.callOrder = nil
+	return events
 }
 
 // lineScanner reads length-capped lines.

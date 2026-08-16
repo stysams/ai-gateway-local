@@ -2005,6 +2005,29 @@ Responses→Responses 仍按原文转发这些字段。
 后者丢弃并记 `tool_dropped`。`developer` 并入系统块。无法转换的其它工具类型
 仍返回 422。
 
+### 2026-08-16 复核：Chat 流式工具调用后续分片只有 index
+
+实验对象：同一 Codex Desktop，模型改为 `opencode/deepseek-v4-flash`
+（adapter `openai-chat`，跨协议 Responses→Chat）。
+
+证据文件：`%USERPROFILE%\.ai-gateway\logs\2026-08-16\req_c76f5651b24a767c58c38b2d.jsonl`。
+
+上游第二片工具增量是官方 Chat Completions 外形：
+
+```text
+{"index":0,"id":"call_00_...","type":"function","function":{"name":"exec","arguments":""}}
+{"index":0,"function":{"arguments":"{"}}
+```
+
+后一片没有 `id`。网关原先把空 `call_id` 交给 `ir.Sequencer`，得到
+`event sequence: arguments.delta for unknown tool call ""`，客户端收到
+`response.failed`。Codex Desktop 把这种情况报成
+`stream disconnected before completion: stream closed before response.completed`。
+
+结论：Chat 出站流必须按 `tool_calls[].index` 记住 id，后续无 id 分片沿用该
+id；`finish_reason` 到达时补齐 `tool_call.completed`。Responses 入站编码时，
+同一段文本 / reasoning 必须共用一个 output item，禁止每个 delta 新开一项。
+
 ---
 
 ## 21. 第一个 Agent 的开工指令

@@ -245,6 +245,9 @@ func TestEncodeStreamTextAndCompletion(t *testing.T) {
 	if strings.Contains(out, "response.failed") {
 		t.Errorf("successful stream contains failed: %s", out)
 	}
+	if strings.Count(out, "event: response.output_item.added") != 1 {
+		t.Errorf("text deltas must share one output item:\n%s", out)
+	}
 	// 文本 delta 顺序。
 	if strings.Index(out, "Hel") > strings.Index(out, "lo") {
 		t.Error("delta order wrong")
