@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity, Boxes, Cable, Check, ChevronRight, CircleAlert, Copy, Database, FileClock, Gauge,
+  Activity, Boxes, Cable, Check, ChevronRight, CircleAlert, Copy, Database, FileClock,
   Languages, Moon, Network, Plus, Power, RefreshCw, RotateCcw, Save, Server, Settings, Sun,
   TerminalSquare, Trash2, X,
 } from "lucide-react";
+import { ClientsIcon, GatewayMark, LogsIcon, OverviewIcon, ProvidersIcon, RoutesIcon, SettingsIcon, UsageIcon, type AppIcon } from "./icons";
 import { api } from "./api";
 import { catalogId, enabledCatalog } from "./catalog";
 import { translator, type Language, type MessageKey } from "./i18n";
@@ -17,9 +18,9 @@ type Toast = { id: number; kind: ToastKind; message: string };
 const pointClients: PointClient[] = ["codex", "claude", "grok"];
 const allClients: ClientID[] = ["codex", "claude", "grok", "generic"];
 
-const navigation: { id: Page; icon: typeof Activity }[] = [
-  { id: "overview", icon: Activity }, { id: "providers", icon: Boxes }, { id: "routes", icon: Network },
-  { id: "clients", icon: Cable }, { id: "logs", icon: FileClock }, { id: "usage", icon: Gauge }, { id: "settings", icon: Settings },
+const navigation: { id: Page; icon: AppIcon }[] = [
+  { id: "overview", icon: OverviewIcon }, { id: "providers", icon: ProvidersIcon }, { id: "routes", icon: RoutesIcon },
+  { id: "clients", icon: ClientsIcon }, { id: "logs", icon: LogsIcon }, { id: "usage", icon: UsageIcon }, { id: "settings", icon: SettingsIcon },
 ];
 
 const emptyProvider: ProviderFormValue = { id: "", name: "", adapter: "openai-chat", base_url: "", models_url: "", default_model: "", models: [], api_key: "" };
@@ -100,7 +101,7 @@ export function App() {
   return (
     <div className="shell">
       <aside className="sidebar" aria-label="Primary navigation">
-        <div className="brand"><span className="brand-mark"><TerminalSquare size={17} /></span><span>ai-gateway</span></div>
+        <div className="brand"><span className="brand-mark"><GatewayMark size={18} /></span><span>ai-gateway</span></div>
         <nav>
           {navigation.map(({ id, icon: Icon }) => <button key={id} ref={page === id ? activeNavRef : undefined} className={page === id ? "nav-item active" : "nav-item"} onClick={() => setPage(id)} aria-current={page === id ? "page" : undefined}><Icon size={17} /><span>{t(id)}</span></button>)}
         </nav>
@@ -275,7 +276,7 @@ function Routes({ status, providers, t, run }: { status: Status; providers: Prov
 }
 
 function Clients({ clients, t, run }: { clients: Record<string, PointStatus>; t: (key: MessageKey) => string; run: (op: () => Promise<unknown>, message?: string) => Promise<void> }) {
-  return <section><SectionHeader title={t("clients")} description={t("clientsDescription")} /><div className="client-list">{pointClients.map((client) => { const value = clients[client]; return <article className="client-item" key={client}><div className="client-main"><div className="client-title"><div className="client-icon"><TerminalSquare size={18} /></div><div><h3>{client}</h3><State value={value?.point_state || "unknown"} /></div></div><dl><dt>{t("target")}</dt><dd className="mono">{value?.target || "—"}</dd></dl><div className="client-actions"><button className="primary" disabled={value?.point_state === "pointed" || value?.point_state === "client_not_installed"} onClick={() => { if (confirm(t("confirmPoint"))) void run(() => api.point(client), t("success")); }}><Cable size={16} />{t("point")}</button><button className="secondary" disabled={!value?.backup_available} onClick={() => { if (confirm(t("confirmRestore"))) void run(() => api.restore(client), t("success")); }}><RotateCcw size={16} />{t("restore")}</button></div></div>{value?.message && <p className="client-message muted">{value.message}</p>}{client === "codex" && <details className="client-advanced" open><summary>{t("advancedSettings")}</summary><div className="client-option"><label className="switch"><input type="checkbox" checked={Boolean(value?.remote_compaction)} onChange={(event) => void run(() => api.setCodexRemoteCompaction(event.target.checked), t("success"))} aria-label={t("remoteCompaction")} /><span /><b>{t("remoteCompaction")}</b></label><p className="muted">{t("remoteCompactionHint")}</p></div></details>}</article>; })}</div></section>;
+  return <section><SectionHeader title={t("clients")} description={t("clientsDescription")} /><div className="client-list">{pointClients.map((client) => { const value = clients[client]; return <article className="client-item" key={client}><div className="client-main"><div className="client-title"><div className="client-icon"><ClientsIcon size={18} /></div><div><h3>{client}</h3><State value={value?.point_state || "unknown"} /></div></div><dl><dt>{t("target")}</dt><dd className="mono">{value?.target || "—"}</dd></dl><div className="client-actions"><button className="primary" disabled={value?.point_state === "pointed" || value?.point_state === "client_not_installed"} onClick={() => { if (confirm(t("confirmPoint"))) void run(() => api.point(client), t("success")); }}><Cable size={16} />{t("point")}</button><button className="secondary" disabled={!value?.backup_available} onClick={() => { if (confirm(t("confirmRestore"))) void run(() => api.restore(client), t("success")); }}><RotateCcw size={16} />{t("restore")}</button></div></div>{value?.message && <p className="client-message muted">{value.message}</p>}{client === "codex" && <details className="client-advanced" open><summary>{t("advancedSettings")}</summary><div className="client-option"><label className="switch"><input type="checkbox" checked={Boolean(value?.remote_compaction)} onChange={(event) => void run(() => api.setCodexRemoteCompaction(event.target.checked), t("success"))} aria-label={t("remoteCompaction")} /><span /><b>{t("remoteCompaction")}</b></label><p className="muted">{t("remoteCompactionHint")}</p></div></details>}</article>; })}</div></section>;
 }
 
 async function copyText(value: string) {

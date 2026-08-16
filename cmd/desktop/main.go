@@ -30,12 +30,17 @@ func main() {
 
 	var window atomic.Pointer[application.WebviewWindow]
 	var showRequested atomic.Bool
+	appIcon, err := assets.ReadFile("assets/icons/appicon.png")
+	if err != nil {
+		log.Fatalf("load app icon: %v", err)
+	}
 
 	// Acquire the desktop single-instance lock before ensureGateway so a
 	// second launch cannot spawn another serve process or another tray.
 	desktop := application.New(application.Options{
 		Name:        "ai-gateway",
 		Description: "Local AI gateway control surface",
+		Icon:        appIcon,
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
 		},
@@ -70,7 +75,7 @@ func main() {
 	if showRequested.Load() {
 		activateDesktopWindow(created)
 	}
-	tray := newTrayController(desktop, created, apiURL, port)
+	tray := newTrayController(desktop, created, apiURL, port, appIcon)
 	created.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
 		if tray.quitting.Load() {
 			return

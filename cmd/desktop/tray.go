@@ -32,9 +32,10 @@ type trayController struct {
 	quitting atomic.Bool
 }
 
-func newTrayController(app *application.App, window *application.WebviewWindow, apiURL string, port int) *trayController {
+func newTrayController(app *application.App, window *application.WebviewWindow, apiURL string, port int, icon []byte) *trayController {
 	c := &trayController{app: app, window: window, api: newTrayAPI(apiURL), port: port}
 	c.tray = app.SystemTray.New()
+	c.tray.SetIcon(icon)
 	c.tray.SetTooltip("ai-gateway")
 	c.tray.OnClick(func() { c.window.Show().Focus() })
 	c.refresh()
