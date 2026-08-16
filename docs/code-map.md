@@ -97,6 +97,15 @@ ai-gateway serve
     internal/server.Server       Listen + Serve
     信号 / 控制台关闭 / POST /api/v1/shutdown
     30s 优雅关闭
+
+ai-gateway-desktop
+    cmd/desktop/main.go          serve 参数先交给 app.Main（走 gateway.lock）
+    Wails SingleInstance         UniqueID local.ai-gateway.desktop
+                                 第二次启动只激活已有窗口并退出
+    cmd/desktop/launcher.go      healthz 已通则复用
+                                 gateway.lock 已占用则只等待，不再派生 serve
+                                 否则 exe serve 拉起独立网关进程
+    window + tray
 ```
 
 CLI 子命令都在 `internal/app/app.go`：`serve`、`stop`、`status`、`doctor`、`autostart`、`version`。退出码见规格 §14.1，常量在同文件。
@@ -338,8 +347,8 @@ Codex 的占位环境变量在 `point/environment_windows.go`。非 Windows 上�
 
 | 文件 | 职责 |
 |---|---|
-| `main.go` | embed 资源、开窗口、关窗隐藏、组装托盘；`serve` 参数转给 `app.Main` |
-| `launcher.go` | `ensureGateway`：`healthz` 不通就 `exe serve` 拉起独立进程 |
+| `main.go` | embed 资源、Wails 单实例、开窗口、关窗隐藏、组装托盘；`serve` 参数转给 `app.Main` |
+| `launcher.go` | `ensureGateway`：`healthz` 已通则复用；`gateway.lock` 已占用则只等待；否则 `exe serve` |
 | `process_windows.go` / `process_other.go` | 分离进程、不继承控制台 |
 | `tray.go` | 菜单：状态、打开窗口、三个客户端的已启用 `供应商/模型ID`、日志、登录启动、启停网关、退出桌面 |
 | `trayclient.go` | 托盘自己的管理 HTTP 客户端 |

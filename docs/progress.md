@@ -114,6 +114,7 @@
     `/(claude|anthropic)/i` 过滤器；`display_name` 仍是真实可选 id。
     `route.Resolve` 先解码再走 §7.4。别名不得写进启动环境变量、Codex/Grok
     目录或发给上游。
+14. **桌面和管理端都是单实例。** 网关继续用 `gateway.lock`。桌面在创建窗口和托盘之前先拿 Wails 单实例锁；再次启动只激活已有窗口并退出，不再出现第二个托盘图标。桌面派生 `serve` 之前必须探测 `gateway.lock`，锁已被占用时只等待管理面就绪，不得再拉起一个网关进程。`ai-gateway-desktop serve` 仍走无头入口，只受 `gateway.lock` 约束。
 
 相关证据在规格 §20「2026-08-15 复核：客户端可选模型目录」、
 「2026-08-16 复核：Codex 远程压缩触发条件」、

@@ -197,8 +197,9 @@ layouts, and automated 1440×900 and 390×844 browser tests.
 tray reports gateway state, opens the main window, independently switches the
 Codex, Claude, and Grok routes through management HTTP, toggles body logging
 and login start, starts or stops the gateway, and exits the desktop without
-stopping the separate gateway process. Closing the window hides it while the
-tray remains active. Current-user login registration uses Windows Task
+stopping the separate gateway process. A second desktop launch focuses the
+existing window and does not create another process or tray icon. Closing the
+window hides it while the tray remains active. Current-user login registration uses Windows Task
 Scheduler with XML readback validation, launchd on macOS, and user systemd on
 Linux. Windows release packaging injects version metadata into both binaries;
 cross-builds produce macOS and Linux headless binaries.

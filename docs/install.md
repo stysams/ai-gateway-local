@@ -22,9 +22,11 @@ Moving the executable after enabling login start makes `doctor` report the old
 registered path; disable login start before moving, then enable it again.
 
 Launch `ai-gateway-desktop.exe`. It starts `ai-gateway-desktop.exe serve` as a
-separate process when the gateway is not already running. Closing the main
-window hides it; use the tray to reopen it. “Exit desktop” leaves the gateway
-running. “Stop gateway” is the explicit action that calls the shutdown API.
+separate process when the gateway is not already running. Launching the desktop
+again focuses the existing window and does not create a second process or tray
+icon. Closing the main window hides it; use the tray to reopen it. “Exit
+desktop” leaves the gateway running. “Stop gateway” is the explicit action that
+calls the shutdown API.
 
 ## Headless operation
 
