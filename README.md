@@ -250,6 +250,30 @@ ai-gateway version      print version information
 `serve --port N` overrides the configured listen port for that run only; the
 config file stays the single source of truth.
 
+## Local AI applications
+
+Open the **AI 中台** / **Local API** view in the desktop application to copy
+the current connection values and inspect every enabled model. For a local
+third-party application that supports an OpenAI-compatible provider, use:
+
+```text
+Base URL:     http://127.0.0.1:12600/v1
+API key:     ai-gateway
+Model:       gateway-default or <provider-id>/<model-id>
+Models URL:  http://127.0.0.1:12600/v1/models
+```
+
+The API key is a non-secret placeholder for applications that require a
+non-empty value. The loopback data plane does not validate it and never sends
+the inbound credential upstream. `gateway-default` follows the generic route;
+selecting `<provider-id>/<model-id>` addresses an enabled model directly.
+
+The local data plane accepts OpenAI Chat Completions at
+`POST /v1/chat/completions`, OpenAI Responses at `POST /v1/responses`, and
+Anthropic Messages at `POST /v1/messages`. `GET /api/v1/local-access` returns
+the actual runtime URLs and the same enabled model catalog used by
+`GET /v1/models`.
+
 Data root: `%USERPROFILE%\.ai-gateway` on Windows, `~/.ai-gateway` elsewhere
 (`AI_GATEWAY_DATA_DIR` overrides it).
 

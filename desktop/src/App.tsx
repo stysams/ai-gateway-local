@@ -8,10 +8,10 @@ import { ClientsIcon, GatewayMark, LogsIcon, OverviewIcon, ProvidersIcon, Routes
 import { api } from "./api";
 import { catalogId, enabledCatalog } from "./catalog";
 import { translator, type Language, type MessageKey } from "./i18n";
-import type { ClientID, Config, LogSummary, PointClient, PointStatus, Provider, ProviderModel, Status, UsageGroup, UsageReport } from "./types";
+import type { ClientID, Config, LocalAccess, LogSummary, PointClient, PointStatus, Provider, ProviderModel, Status, UsageGroup, UsageReport } from "./types";
 import { validateProvider, type ProviderFormValue } from "./validation";
 
-type Page = "overview" | "providers" | "routes" | "clients" | "logs" | "usage" | "settings";
+type Page = "overview" | "localAccess" | "providers" | "routes" | "clients" | "logs" | "usage" | "settings";
 type Theme = "light" | "dark" | "system";
 type ToastKind = "error" | "success";
 type Toast = { id: number; kind: ToastKind; message: string };
@@ -19,7 +19,7 @@ const pointClients: PointClient[] = ["codex", "claude", "grok"];
 const allClients: ClientID[] = ["codex", "claude", "grok", "generic"];
 
 const navigation: { id: Page; icon: AppIcon }[] = [
-  { id: "overview", icon: OverviewIcon }, { id: "providers", icon: ProvidersIcon }, { id: "routes", icon: RoutesIcon },
+  { id: "overview", icon: OverviewIcon }, { id: "localAccess", icon: GatewayMark }, { id: "providers", icon: ProvidersIcon }, { id: "routes", icon: RoutesIcon },
   { id: "clients", icon: ClientsIcon }, { id: "logs", icon: LogsIcon }, { id: "usage", icon: UsageIcon }, { id: "settings", icon: SettingsIcon },
 ];
 
@@ -30,6 +30,7 @@ export function App() {
   const [language, setLanguage] = useState<Language>(() => (localStorage.getItem("language") as Language) || "zh-CN");
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("theme") as Theme) || "system");
   const [status, setStatus] = useState<Status | null>(null);
+  const [localAccess, setLocalAccess] = useState<LocalAccess | null>(null);
   const [config, setConfig] = useState<Config | null>(null);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [clients, setClients] = useState<Record<string, PointStatus>>({});
@@ -64,10 +65,10 @@ export function App() {
   const refresh = useCallback(async () => {
     setBusy(true);
     try {
-      const [nextStatus, nextConfig, nextProviders, nextLogs, nextUsage, ...nextClients] = await Promise.all([
-        api.status(), api.config(), api.providers(), api.logs(), api.usage(), ...pointClients.map(api.client),
+      const [nextStatus, nextLocalAccess, nextConfig, nextProviders, nextLogs, nextUsage, ...nextClients] = await Promise.all([
+        api.status(), api.localAccess(), api.config(), api.providers(), api.logs(), api.usage(), ...pointClients.map(api.client),
       ]);
-      setStatus(nextStatus); setConfig(nextConfig); setProviders(nextProviders); setLogs(nextLogs.items); setLogCursor(nextLogs.next_cursor); setUsage(nextUsage);
+      setStatus(nextStatus); setLocalAccess(nextLocalAccess); setConfig(nextConfig); setProviders(nextProviders); setLogs(nextLogs.items); setLogCursor(nextLogs.next_cursor); setUsage(nextUsage);
       setClients(Object.fromEntries(nextClients.map((value) => [value.client, value])));
       if (nextConfig.ui.language === "zh-CN" || nextConfig.ui.language === "en-US") setLanguage(nextConfig.ui.language);
     } catch (reason) { pushToast("error", reason instanceof Error ? reason.message : String(reason)); }
@@ -115,6 +116,7 @@ export function App() {
         {busy && !status ? <div className="loading"><RefreshCw className="spin" size={18} />{t("loading")}</div> : (
           <div className="content">
             {page === "overview" && <Overview status={status} usage={usage} t={t} />}
+            {page === "localAccess" && localAccess && <LocalAccessPage access={localAccess} t={t} notify={pushToast} />}
             {page === "providers" && <Providers providers={providers} t={t} run={run} notify={pushToast} />}
             {page === "routes" && status && <Routes status={status} providers={providers} t={t} run={run} />}
             {page === "clients" && <Clients clients={clients} t={t} run={run} />}
@@ -169,6 +171,45 @@ function Overview({ status, usage, t }: { status: Status | null; usage: UsageRep
       <div className="rows">{allClients.map((client) => <div className="data-row" key={client}><strong className="mono">{client}</strong><span className="mono">{catalogId(status.routes[client])}</span>{client === "generic" ? <State value="api" /> : <State value={status.clients[client].point_state} />}</div>)}</div>
     </section>
   </>;
+}
+
+function LocalAccessPage({ access, t, notify }: { access: LocalAccess; t: (key: MessageKey) => string; notify: (kind: ToastKind, message: string) => void }) {
+  const copyValue = async (value: string) => {
+    try { await navigator.clipboard.writeText(value); notify("success", t("copied")); }
+    catch { notify("error", t("copyFailed")); }
+  };
+  const endpoints = [
+    [t("modelDiscovery"), access.endpoints.models],
+    ["OpenAI Chat Completions", access.endpoints.chat_completions],
+    ["OpenAI Responses", access.endpoints.responses],
+    ["Anthropic Messages", access.endpoints.messages],
+  ] as const;
+  return <>
+    <section>
+      <SectionHeader title={t("connectionParameters")} description={t("localAccessDescription")} />
+      <dl className="access-parameters">
+        <AccessValue label={t("baseURL")} value={access.base_url} onCopy={copyValue} t={t} />
+        <AccessValue label={t("apiKeyPlaceholder")} value={access.api_key} note={access.auth_required ? t("authenticationRequired") : t("authenticationOptional")} onCopy={copyValue} t={t} />
+        <AccessValue label={t("defaultModel")} value={access.default_model} note={`${t("defaultRoute")}: ${catalogId(access.default_route)}`} onCopy={copyValue} t={t} />
+      </dl>
+    </section>
+    <section>
+      <SectionHeader title={t("protocolEndpoints")} />
+      <div className="table-wrap"><table className="access-table"><thead><tr><th>{t("protocol")}</th><th>{t("endpoint")}</th><th className="actions">{t("actions")}</th></tr></thead><tbody>
+        {endpoints.map(([name, endpoint]) => <tr key={name}><td><strong>{name}</strong></td><td className="mono">{endpoint}</td><td className="actions"><button className="icon-button compact" type="button" title={`${t("copy")} ${name}`} aria-label={`${t("copy")} ${name}`} onClick={() => void copyValue(endpoint)}><Copy size={14} /></button></td></tr>)}
+      </tbody></table></div>
+    </section>
+    <section>
+      <SectionHeader title={t("enabledModels")} description={`${access.models.length} ${t("models")}`} />
+      <div className="table-wrap"><table className="access-table"><thead><tr><th>{t("modelID")}</th><th>{t("owner")}</th><th className="actions">{t("actions")}</th></tr></thead><tbody>
+        {access.models.map((model) => <tr key={model.id}><td className="mono"><strong>{model.id}</strong></td><td className="mono">{model.owned_by}</td><td className="actions"><button className="icon-button compact" type="button" title={`${t("copy")} ${model.id}`} aria-label={`${t("copy")} ${model.id}`} onClick={() => void copyValue(model.id)}><Copy size={14} /></button></td></tr>)}
+      </tbody></table></div>
+    </section>
+  </>;
+}
+
+function AccessValue({ label, value, note, onCopy, t }: { label: string; value: string; note?: string; onCopy: (value: string) => Promise<void>; t: (key: MessageKey) => string }) {
+  return <div><dt>{label}</dt><dd><span><code>{value}</code>{note && <small>{note}</small>}</span><button className="icon-button compact" type="button" title={`${t("copy")} ${label}`} aria-label={`${t("copy")} ${label}`} onClick={() => void onCopy(value)}><Copy size={14} /></button></dd></div>;
 }
 
 function Metric({ label, value, note, icon: Icon }: { label: string; value: string; note: string; icon: typeof Activity }) {

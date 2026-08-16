@@ -15,6 +15,13 @@ describe("management API client", () => {
     expect(fetcher).toHaveBeenCalledWith("http://127.0.0.1:12600/api/v1/routes/codex", expect.objectContaining({ method: "PUT", body: JSON.stringify({ provider: "p", model: "m" }) }));
   });
 
+  it("loads local access connection data", async () => {
+    const value = { base_url: "http://127.0.0.1:12600/v1", models: [] };
+    const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json(value));
+    await expect(api.localAccess()).resolves.toEqual(value);
+    expect(fetcher).toHaveBeenCalledWith("http://127.0.0.1:12600/api/v1/local-access", expect.anything());
+  });
+
   it("normalizes API errors", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ error: { code: "config_invalid", message: "bad route" } }), { status: 400 }));
     await expect(api.updateRoute("codex", { provider: "", model: "" })).rejects.toEqual(expect.objectContaining<Partial<APIError>>({ status: 400, code: "config_invalid", message: "bad route" }));

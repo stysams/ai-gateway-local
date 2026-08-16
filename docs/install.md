@@ -61,6 +61,32 @@ requests.
 The Routes view shows a provider/model tree. Disabling a provider or model
 removes it from `/v1/models` and prevents requests from resolving to it.
 
+## Connect a third-party local application
+
+The desktop **AI 中台** / **Local API** view is the source of the current
+connection values. For an OpenAI-compatible application on the same computer,
+set its Base URL to `http://127.0.0.1:12600/v1`, enter `ai-gateway` when the
+application requires a non-empty API key, and refresh its model list. It will
+read `GET /v1/models` and receive `gateway-default` plus every enabled
+`<provider-id>/<model-id>`.
+
+`gateway-default` follows the generic route configured in the Routes view. A
+fully qualified model identifier bypasses that default and selects its provider
+directly. The supported request endpoints are:
+
+| Protocol | Endpoint |
+| --- | --- |
+| OpenAI model discovery | `GET /v1/models` |
+| OpenAI Chat Completions | `POST /v1/chat/completions` |
+| OpenAI Responses | `POST /v1/responses` |
+| Anthropic Messages | `POST /v1/messages` |
+
+The placeholder key is not a gateway credential, is not validated on the
+loopback data plane, and is never forwarded upstream. Provider credentials
+remain in the operating-system secret store. `GET /api/v1/local-access`
+returns the actual runtime connection values for integrations that need to
+discover them programmatically.
+
 ## Login start
 
 Use the desktop Settings switch, the tray checkbox, or the headless CLI:

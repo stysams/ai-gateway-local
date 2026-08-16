@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"ai-gateway/internal/config"
+	"ai-gateway/internal/route"
 	"ai-gateway/internal/secret"
 	"gopkg.in/yaml.v3"
 )
@@ -98,6 +99,55 @@ func TestRouteAPIUpdatesAllRoutesAndNextRequest(t *testing.T) {
 	bad, _ := httpJSON(t, addr, http.MethodPut, "/api/v1/routes/codex", RouteRequest{Provider: "missing", Model: "m"})
 	if bad.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown provider status = %d", bad.StatusCode)
+	}
+}
+
+func TestLocalAccessReportsLoopbackEndpointsAndEnabledModels(t *testing.T) {
+	cfg := config.Defaults()
+	provider := cfg.Providers["openrouter"]
+	provider.Models = []config.ProviderModel{
+		{ID: provider.DefaultModel, Name: "Default"},
+		{ID: "enabled-model", Name: "Enabled"},
+		{ID: "disabled-model", Name: "Disabled", Enabled: config.BoolPtr(false)},
+	}
+	cfg.Providers["openrouter"] = provider
+	disabledProvider := cfg.Providers["ollama"]
+	disabledProvider.Enabled = config.BoolPtr(false)
+	cfg.Providers["ollama"] = disabledProvider
+
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+	resp, body := httpJSON(t, addr, http.MethodGet, "/api/v1/local-access", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("local access: %d %s", resp.StatusCode, body)
+	}
+	var got LocalAccessResponse
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	wantBaseURL := "http://" + addr + "/v1"
+	if got.BaseURL != wantBaseURL || got.Endpoints.Models != wantBaseURL+"/models" || got.Endpoints.ChatCompletions != wantBaseURL+"/chat/completions" {
+		t.Fatalf("local endpoints = %+v, base URL = %q", got.Endpoints, got.BaseURL)
+	}
+	if got.APIKey != localAccessAPIKeyPlaceholder || got.AuthRequired || got.DefaultModel != route.ReservedModel {
+		t.Fatalf("local access defaults = %+v", got)
+	}
+	if got.DefaultRoute.Provider != cfg.Routes.Generic.Provider || got.DefaultRoute.Model != cfg.Routes.Generic.Model {
+		t.Fatalf("default route = %+v", got.DefaultRoute)
+	}
+	modelIDs := make([]string, 0, len(got.Models))
+	for _, model := range got.Models {
+		modelIDs = append(modelIDs, model.ID)
+	}
+	joined := strings.Join(modelIDs, ",")
+	for _, want := range []string{route.ReservedModel, "openrouter/" + provider.DefaultModel, "openrouter/enabled-model"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("enabled model %q missing from %q", want, joined)
+		}
+	}
+	for _, excluded := range []string{"disabled-model", "ollama/"} {
+		if strings.Contains(joined, excluded) {
+			t.Errorf("disabled model/provider leaked into %q", joined)
+		}
 	}
 }
 

@@ -37,6 +37,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.HandleFunc("GET /api/v1/status", s.handleStatus)
+	mux.HandleFunc("GET /api/v1/local-access", s.handleLocalAccess)
 	mux.HandleFunc("POST /api/v1/shutdown", s.handleShutdown)
 	mux.HandleFunc("GET /api/v1/doctor", s.handleDoctor)
 	mux.HandleFunc("GET /api/v1/config", s.handleGetConfig)

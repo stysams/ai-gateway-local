@@ -1,4 +1,4 @@
-import type { ClientID, Config, DiscoveredProviderModel, LogSummary, PointClient, PointStatus, Provider, Route, Status, UsageReport } from "./types";
+import type { ClientID, Config, DiscoveredProviderModel, LocalAccess, LogSummary, PointClient, PointStatus, Provider, Route, Status, UsageReport } from "./types";
 
 export class APIError extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); }
@@ -24,6 +24,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   status: () => request<Status>("/api/v1/status"),
+  localAccess: () => request<LocalAccess>("/api/v1/local-access"),
   config: () => request<Config>("/api/v1/config"),
   updateConfig: (config: Config) => request<Config>("/api/v1/config", { method: "PUT", body: JSON.stringify(config) }),
   providers: () => request<Provider[]>("/api/v1/providers"),

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 
 const status = { version: "test", pid: 42, listen: "127.0.0.1:12600", logging_enabled: false, logging_body_enabled: false, autostart_enabled: false, clients: { codex: { point_state: "not_pointed" }, claude: { point_state: "client_not_installed" }, grok: { point_state: "drifted" }, generic: { point_state: "unknown" } }, routes: { codex: { provider: "ollama", model: "qwen3" }, claude: { provider: "ollama", model: "qwen3" }, grok: { provider: "ollama", model: "qwen3" }, generic: { provider: "ollama", model: "qwen3" } } };
+const localAccess = { base_url: "http://127.0.0.1:12600/v1", api_key: "ai-gateway", auth_required: false, default_model: "gateway-default", default_route: status.routes.generic, endpoints: { models: "http://127.0.0.1:12600/v1/models", chat_completions: "http://127.0.0.1:12600/v1/chat/completions", responses: "http://127.0.0.1:12600/v1/responses", messages: "http://127.0.0.1:12600/v1/messages" }, models: [{ id: "gateway-default", object: "model", created: 0, owned_by: "ai-gateway", display_name: "gateway-default" }, { id: "ollama/qwen3", object: "model", created: 0, owned_by: "ollama", display_name: "ollama/qwen3" }] };
 const config = { version: 1, listen: { port: 12600 }, logging: { enabled: false, body: false, dir: "logs" }, ui: { language: "en-US", logging_notice_accepted: true }, autostart: { enabled: false }, providers: { ollama: { name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", models: [{ id: "qwen3", name: "Qwen 3", context_window: 32768, max_output_tokens: 8192 }], capabilities: { image_input: false, reasoning: false } }, openrouter: { name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", models: [{ id: "gpt-5", name: "GPT-5", context_window: 400000, max_output_tokens: 128000 }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4", context_window: 200000, max_output_tokens: 64000 }], capabilities: { image_input: true, reasoning: true } } }, routes: status.routes };
 const providers = [
   { id: "ollama", name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", models: [{ id: "qwen3", name: "Qwen 3", context_window: 32768, max_output_tokens: 8192 }], has_secret: false, capabilities: { image_input: false, reasoning: false } },
@@ -17,6 +18,7 @@ beforeEach(() => {
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
     if (url.endsWith("/api/v1/status")) return Response.json(status);
+    if (url.endsWith("/api/v1/local-access")) return Response.json(localAccess);
     if (url.endsWith("/api/v1/config")) return Response.json(config);
     if (url.endsWith("/api/v1/providers")) return Response.json(providers);
     if (url.endsWith("/api/v1/provider-models/discover") && init?.method === "POST") return Response.json({ object: "list", provider: "new-provider", data: [{ id: "new-provider/model-a", provider_id: "new-provider", raw_id: "model-a", display_name: "Model A", context_window: 131072, max_output_tokens: 16384 }, { id: "new-provider/model-b", provider_id: "new-provider", raw_id: "model-b" }] });
@@ -57,6 +59,17 @@ describe("desktop workflow", () => {
     expect(toast).toHaveTextContent("Success");
     await user.click(within(toast).getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("shows local access parameters and copies a model identifier", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+    render(<App />); await ready(); await user.click(screen.getByRole("button", { name: "Local API" }));
+    expect(screen.getByText("http://127.0.0.1:12600/v1")).toBeVisible();
+    expect(screen.getByText("http://127.0.0.1:12600/v1/models")).toBeVisible();
+    expect(screen.getByText("ollama/qwen3")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Copy ollama/qwen3" }));
+    expect(writeText).toHaveBeenCalledWith("ollama/qwen3");
   });
 
   it("loads upstream model metadata and includes edits in the provider payload", async () => {

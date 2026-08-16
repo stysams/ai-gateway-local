@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 const status = { version: "0.1.0", pid: 4242, listen: "127.0.0.1:12600", logging_enabled: true, logging_body_enabled: true, autostart_enabled: false, clients: { codex: { point_state: "pointed" }, claude: { point_state: "not_pointed" }, grok: { point_state: "drifted" }, generic: { point_state: "unknown" } }, routes: { codex: { provider: "openrouter", model: "gpt-5" }, claude: { provider: "anthropic", model: "claude-sonnet" }, grok: { provider: "openrouter", model: "grok-4" }, generic: { provider: "ollama", model: "qwen3" } } };
+const localAccess = { base_url: "http://127.0.0.1:12600/v1", api_key: "ai-gateway", auth_required: false, default_model: "gateway-default", default_route: status.routes.generic, endpoints: { models: "http://127.0.0.1:12600/v1/models", chat_completions: "http://127.0.0.1:12600/v1/chat/completions", responses: "http://127.0.0.1:12600/v1/responses", messages: "http://127.0.0.1:12600/v1/messages" }, models: [{ id: "gateway-default", object: "model", created: 0, owned_by: "ai-gateway", display_name: "gateway-default" }, { id: "openrouter/gpt-5", object: "model", created: 0, owned_by: "openrouter", display_name: "openrouter/gpt-5" }, { id: "openrouter/anthropic/claude-sonnet-4", object: "model", created: 0, owned_by: "openrouter", display_name: "openrouter/anthropic/claude-sonnet-4" }] };
 const providerModels = [
   { id: "gpt-5", name: "GPT-5", context_window: 400000, max_output_tokens: 128000 },
   { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4", context_window: 200000, max_output_tokens: 64000 },
@@ -11,6 +12,7 @@ test.beforeEach(async ({ page }) => {
   await page.route("http://127.0.0.1:12600/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/status")) return route.fulfill({ json: status });
+    if (path.endsWith("/local-access")) return route.fulfill({ json: localAccess });
     if (path.endsWith("/config")) return route.fulfill({ json: config });
     if (path.endsWith("/providers")) return route.fulfill({ json: [{ id: "openrouter", name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", models: providerModels, has_secret: true, capabilities: { image_input: true, reasoning: true } }, { id: "deepseek", name: "DeepSeek", adapter: "openai-chat", base_url: "https://api.deepseek.com", default_model: "deepseek-chat", models: [{ id: "deepseek-chat", name: "DeepSeek Chat", context_window: 128000, max_output_tokens: 8192 }], has_secret: true, capabilities: { image_input: false, reasoning: true } }] });
     if (path.endsWith("/providers/openrouter/probe")) return route.fulfill({ json: { ok: true, status: 200, latency_ms: 318, models: 2, response: '{"id":"resp_probe","output":[{"type":"message","content":[{"type":"output_text","text":"I am the configured upstream model."}]}]}' } });
@@ -37,6 +39,17 @@ test("provider form exposes an editable upstream model catalog", async ({ page }
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   expect(overflow).toBe(false);
   await page.screenshot({ path: testInfo.outputPath("provider-model-catalog.png"), fullPage: true });
+});
+
+test("local API exposes connection values and enabled models", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Local API" }).click();
+  await expect(page.getByText("http://127.0.0.1:12600/v1", { exact: true })).toBeVisible();
+  await expect(page.getByText("http://127.0.0.1:12600/v1/models", { exact: true })).toBeVisible();
+  await expect(page.getByText("openrouter/anthropic/claude-sonnet-4", { exact: true })).toBeVisible();
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+  expect(overflow).toBe(false);
+  await page.screenshot({ path: testInfo.outputPath("local-api.png"), fullPage: true });
 });
 
 test("client routes list every enabled model as provider/model id", async ({ page }, testInfo) => {
@@ -86,7 +99,7 @@ test("request logs retain route context at every breakpoint", async ({ page }, t
 test("all primary views fit and remain keyboard reachable", async ({ page }, testInfo) => {
   await page.goto("/");
   await expect(page.locator("h1", { hasText: "Overview" })).toBeVisible();
-  for (const name of ["Providers", "Routes", "Clients", "Logs", "Usage", "Settings"]) {
+  for (const name of ["Local API", "Providers", "Routes", "Clients", "Logs", "Usage", "Settings"]) {
     await page.getByRole("button", { name }).focus(); await page.keyboard.press("Enter"); await expect(page.locator("h1", { hasText: name })).toBeVisible();
   }
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);

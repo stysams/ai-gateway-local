@@ -12,6 +12,27 @@ export interface Status {
   clients: Record<ClientID, { point_state: string }>;
   routes: Record<ClientID, Route>;
 }
+export interface LocalAccessModel {
+  id: string;
+  object: "model";
+  created: number;
+  owned_by: string;
+  display_name: string;
+}
+export interface LocalAccess {
+  base_url: string;
+  api_key: string;
+  auth_required: boolean;
+  default_model: string;
+  default_route: Route;
+  endpoints: {
+    models: string;
+    chat_completions: string;
+    responses: string;
+    messages: string;
+  };
+  models: LocalAccessModel[];
+}
 export interface Provider {
   id: string;
   name: string;
