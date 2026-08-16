@@ -17,9 +17,12 @@ One Go module (`ai-gateway`), two publishable binaries: `ai-gateway`
 
 ## docs/v1-scheme.md is the contract
 
-`docs/v1-scheme.md` (Simplified Chinese) is not a vision document — it is the
-frozen engineering contract for phase 1, and it wins over the implementation
-when they disagree. Almost every source file cites it (`docs/v1-scheme.md §7.4`
+`docs/progress.md` (Simplified Chinese) is the phase-1 progress and handoff
+for the next agent. Read it before starting work. `docs/code-map.md` is the
+file-by-file map: look up the change you want, then open those paths.
+`docs/v1-scheme.md` is the
+frozen engineering contract, and it wins over the implementation when they
+disagree. Almost every source file cites it (`docs/v1-scheme.md §7.4`
 style). Before changing behaviour in `config`, `route`, `ir`, `inbound`,
 `outbound`, `secret`, `point`, or the HTTP surface, read the cited section.
 

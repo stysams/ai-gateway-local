@@ -22,6 +22,15 @@ const testBaseURL = "http://127.0.0.1:12600"
 // it (docs/v1-scheme.md §7.3).
 const reservedModel = clientcatalog.ReservedModel
 
+func testBundledCatalog(t *testing.T) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "point", "codex-bundled-catalog.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
 func testManager(t *testing.T, home string, env UserEnvironment, lookup map[string]string, after func() error) *Manager {
 	t.Helper()
 	return NewWithOptions(t.TempDir(), Options{
@@ -31,12 +40,18 @@ func testManager(t *testing.T, home string, env UserEnvironment, lookup map[stri
 		Environment:    env,
 		Now:            func() time.Time { return time.Date(2026, 8, 15, 6, 0, 0, 123, time.UTC) },
 		AfterFileWrite: after,
+		LoadCodexBundledCatalog: func() ([]byte, error) {
+			return testBundledCatalog(t), nil
+		},
 	})
 }
 
 func clientTarget(home string, client Client, lookup map[string]string) string {
 	switch client {
 	case ClientCodex:
+		if lookup["CODEX_HOME"] != "" {
+			return filepath.Join(lookup["CODEX_HOME"], "config.toml")
+		}
 		return filepath.Join(home, ".codex", "config.toml")
 	case ClientClaude:
 		dir := filepath.Join(home, ".claude")
@@ -189,6 +204,11 @@ func TestPointAndRestoreWhenOriginalFileDoesNotExist(t *testing.T) {
 			if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("restore did not remove created file: %v", err)
 			}
+			if client == ClientCodex {
+				if _, err := os.Stat(codex.CatalogPath(target)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("restore left Codex catalog sidecar")
+				}
+			}
 		})
 	}
 }
@@ -237,14 +257,34 @@ func TestPointAppliesCatalogChangeWithoutReplacingOriginalBackup(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// Only Grok Build can hold the catalog in its configuration file; the
-			// other two clients must stay provider-neutral (§12.3, §12.4).
-			wantCatalogInFile := client == ClientGrok
-			if got := strings.Contains(string(data), "deepseek/deepseek-chat"); got != wantCatalogInFile {
-				t.Fatalf("%s catalog in file = %v, want %v:\n%s", client, got, wantCatalogInFile, data)
-			}
-			if !updated.Changed && wantCatalogInFile {
-				t.Fatalf("catalog change was not applied: %+v", updated)
+			// Grok holds the catalog in config.toml. Codex holds it in the
+			// sidecar named by model_catalog_json. Claude does not land a list.
+			switch client {
+			case ClientGrok:
+				if !strings.Contains(string(data), "deepseek/deepseek-chat") {
+					t.Fatalf("Grok catalog missing from file:\n%s", data)
+				}
+				if !updated.Changed {
+					t.Fatalf("catalog change was not applied: %+v", updated)
+				}
+			case ClientCodex:
+				if !strings.Contains(string(data), "model_catalog_json") {
+					t.Fatalf("Codex config missing model_catalog_json:\n%s", data)
+				}
+				sidecar, err := os.ReadFile(codex.CatalogPath(target))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(sidecar), "deepseek/deepseek-chat") {
+					t.Fatalf("Codex sidecar missing catalog id:\n%s", sidecar)
+				}
+				if !updated.Changed {
+					t.Fatalf("Codex catalog change was not applied: %+v", updated)
+				}
+			default:
+				if strings.Contains(string(data), "deepseek/deepseek-chat") {
+					t.Fatalf("Claude config unexpectedly contains catalog id:\n%s", data)
+				}
 			}
 			if _, err := m.Restore(client, testBaseURL, catalog); err != nil {
 				t.Fatal(err)
@@ -315,10 +355,9 @@ func TestGrokCatalogShrinksAndPreservesUserModels(t *testing.T) {
 	}
 }
 
-// Each client expresses the catalog differently, and getting this wrong is
-// silent: a Codex `model_catalog_json` would replace the agent system prompt,
-// and Claude Code without the discovery flag would offer nothing but the
-// preferred model (docs/v1-scheme.md §12.3, §12.4, evidence in §20).
+// Each client expresses the catalog differently. Codex writes a sidecar
+// cloned from the bundled template; Claude only enables discovery; Grok
+// writes native [model] tables (docs/v1-scheme.md §12.3–§12.5).
 func TestPointWritesPerClientCatalogContract(t *testing.T) {
 	settings := Settings{PreferredModel: reservedModel, Catalog: []clientcatalog.Entry{
 		{ID: "openrouter/anthropic/claude-sonnet-4", DisplayName: "Claude Sonnet 4"},
@@ -330,8 +369,8 @@ func TestPointWritesPerClientCatalogContract(t *testing.T) {
 	}{
 		{
 			client: ClientCodex,
-			want:   []string{"model = 'gateway-default'", "model_provider = 'ai-gateway'"},
-			reject: []string{"model_catalog_json", "base_instructions"},
+			want:   []string{"model = 'gateway-default'", "model_provider = 'ai-gateway'", "model_catalog_json", "ai-gateway-catalog.json"},
+			reject: []string{"base_instructions"},
 		},
 		{
 			client: ClientClaude,
@@ -379,7 +418,73 @@ func TestPointWritesPerClientCatalogContract(t *testing.T) {
 					t.Fatalf("%s config unexpectedly contains %q:\n%s", tc.client, reject, data)
 				}
 			}
+			if tc.client == ClientCodex {
+				sidecar, err := os.ReadFile(codex.CatalogPath(target))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, want := range []string{
+					`"slug":"gateway-default"`,
+					`"slug":"openrouter/anthropic/claude-sonnet-4"`,
+					`"display_name":"openrouter/anthropic/claude-sonnet-4"`,
+					"SENTINEL_BUNDLED_BASE_INSTRUCTIONS_FOR_TESTS_ONLY",
+				} {
+					if !strings.Contains(string(sidecar), want) {
+						t.Fatalf("Codex sidecar missing %q:\n%s", want, sidecar)
+					}
+				}
+				if strings.Contains(string(sidecar), "MUST_BE_REMOVED_FROM_ROUTED_ENTRIES") {
+					t.Fatalf("Codex sidecar kept model_messages:\n%s", sidecar)
+				}
+			}
 		})
+	}
+}
+
+func TestCodexPointFailsWithoutTemplate(t *testing.T) {
+	home := t.TempDir()
+	target := clientTarget(home, ClientCodex, nil)
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	m := NewWithOptions(t.TempDir(), Options{
+		HomeDir:                 home,
+		LookupEnv:               func(string) (string, bool) { return "", false },
+		CommandExists:           func(string) bool { return false },
+		Environment:             NewMemoryEnvironment(),
+		Now:                     func() time.Time { return time.Date(2026, 8, 15, 6, 0, 0, 123, time.UTC) },
+		LoadCodexBundledCatalog: func() ([]byte, error) { return []byte(`{"models":[]}`), nil },
+	})
+	if _, err := m.Point(ClientCodex, testBaseURL, Settings{}); err == nil {
+		t.Fatal("point succeeded without a native template")
+	}
+	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed point left config: %v", err)
+	}
+	if _, err := os.Stat(codex.CatalogPath(target)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("failed point left sidecar")
+	}
+}
+
+func TestCodexHomeOverride(t *testing.T) {
+	home := t.TempDir()
+	codexHome := filepath.Join(home, "custom-codex")
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lookup := map[string]string{"CODEX_HOME": codexHome}
+	m := testManager(t, home, NewMemoryEnvironment(), lookup, nil)
+	if _, err := m.Point(ClientCodex, testBaseURL, Settings{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(codexHome, "config.toml")); err != nil {
+		t.Fatalf("CODEX_HOME config missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(codexHome, "ai-gateway-catalog.json")); err != nil {
+		t.Fatalf("CODEX_HOME sidecar missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".codex", "config.toml")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("wrote default ~/.codex despite CODEX_HOME")
 	}
 }
 

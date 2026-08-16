@@ -54,6 +54,9 @@ func testPointManager(dataRoot string) *point.Manager {
 		LookupEnv:     func(string) (string, bool) { return "", false },
 		CommandExists: func(string) bool { return false },
 		Environment:   point.NewMemoryEnvironment(),
+		LoadCodexBundledCatalog: func() ([]byte, error) {
+			return os.ReadFile(filepath.Join("..", "..", "testdata", "point", "codex-bundled-catalog.json"))
+		},
 	})
 }
 

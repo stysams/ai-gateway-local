@@ -13,7 +13,9 @@ clients point at themselves.
 The implementation-ready v1 specification is in
 [docs/v1-scheme.md](docs/v1-scheme.md). It includes frozen architecture
 decisions, API and protocol contracts, task packages, tests, and acceptance
-criteria.
+criteria. Phase-1 progress and the next handoff live in
+[docs/progress.md](docs/progress.md). The file-by-file code map for agents
+is [docs/code-map.md](docs/code-map.md).
 
 **Task package A (repository bootstrap & headless skeleton) is implemented.**
 Scope delivered:

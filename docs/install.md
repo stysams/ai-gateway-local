@@ -129,6 +129,13 @@ and is shown in that form:
 - All three clients read the full catalog from `/c/{client}/v1/models`, and any
   of those ids can be requested directly (for example `claude --model
   openrouter/anthropic/claude-sonnet-4`).
+- Codex also writes `%USERPROFILE%\.codex\ai-gateway-catalog.json` (or
+  `$CODEX_HOME\ai-gateway-catalog.json`) and points `model_catalog_json` at it,
+  so the in-session `/model` command lists every enabled `供应商/模型 ID`.
+  Official GPT rows disappear from that picker because a custom catalog replaces
+  the bundled one. Restart Codex (and any Desktop `app-server`) after pointing
+  or changing availability. Some Codex Desktop builds still filter non-official
+  ids; CLI and TUI `/model` follow the sidecar.
 - Claude Code is pointed with
   `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` so its picker queries the
   gateway. Claude Code keeps only ids containing `claude` or `anthropic`, so its
@@ -137,13 +144,15 @@ and is shown in that form:
   `[model."ai-gateway:<provider-id>/<model-id>"]` entry per enabled model, so
   its own picker lists the whole catalog. Restore removes only the entries the
   gateway wrote.
+- Do not let OpenCodex and this gateway both own `model_catalog_json` in the
+  same Codex home.
 
 Restart an already-running agent CLI session if it caches configuration at
 startup.
 
 | Client | Default file | Override |
 | --- | --- | --- |
-| Codex | `%USERPROFILE%\.codex\config.toml` | none |
+| Codex | `%USERPROFILE%\.codex\config.toml` | `CODEX_HOME` |
 | Claude Code | `%USERPROFILE%\.claude\settings.json` | `CLAUDE_CONFIG_DIR` |
 | Grok Build | `%USERPROFILE%\.grok\config.toml` | `GROK_HOME` |
 

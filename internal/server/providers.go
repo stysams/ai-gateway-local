@@ -232,8 +232,8 @@ func (s *Server) upsertProvider(ctx context.Context, id string, p config.Provide
 		}
 	}
 
-	cfg := s.cfg.Snapshot()
-	if cfg == nil {
+	current := s.cfg.Snapshot()
+	if current == nil {
 		// The config was never loaded; the key store must not end up ahead
 		// of the config. Restore, then fail loudly.
 		if restoreErr := s.restoreKey(ctx, ref, haveOld, oldKey); restoreErr != nil {
@@ -241,8 +241,9 @@ func (s *Server) upsertProvider(ctx context.Context, id string, p config.Provide
 		}
 		return nil, errors.New("config not loaded")
 	}
-	cfg.Providers[id] = p
-	if err := s.cfg.Write(cfg); err != nil {
+	next := s.cfg.Snapshot()
+	next.Providers[id] = p
+	if err := s.syncClientsThenWrite(current, next); err != nil {
 		if restoreErr := s.restoreKey(ctx, ref, haveOld, oldKey); restoreErr != nil {
 			return nil, &PartialFailureError{Ref: ref, ConfigErr: err, RestoreErr: restoreErr}
 		}
@@ -250,7 +251,7 @@ func (s *Server) upsertProvider(ctx context.Context, id string, p config.Provide
 	}
 	s.invalidateModels(id)
 
-	resp := s.providerResponse(ctx, id, cfg.Providers[id])
+	resp := s.providerResponse(ctx, id, next.Providers[id])
 	return &resp, nil
 }
 
@@ -464,8 +465,13 @@ func (s *Server) deleteProvider(ctx context.Context, id string) (warning string,
 		return "", fmt.Errorf("%w: provider %q is referenced by routes; remove the references first", errProviderInUse, id)
 	}
 
-	delete(cfg.Providers, id)
-	if err := s.cfg.Write(cfg); err != nil {
+	current := cfg
+	next := s.cfg.Snapshot()
+	if next == nil {
+		return "", errors.New("config not loaded")
+	}
+	delete(next.Providers, id)
+	if err := s.syncClientsThenWrite(current, next); err != nil {
 		return "", fmt.Errorf("write config: %w", err)
 	}
 	s.invalidateModels(id)
@@ -513,6 +519,7 @@ func (s *Server) handleUpdateProviderAvailability(w http.ResponseWriter, r *http
 	}
 	s.txMu.Lock()
 	defer s.txMu.Unlock()
+	current := s.cfg.Snapshot()
 	cfg := s.cfg.Snapshot()
 	if cfg == nil {
 		writeAPIError(w, http.StatusInternalServerError, "config_not_loaded", "config not loaded", nil)
@@ -548,8 +555,8 @@ func (s *Server) handleUpdateProviderAvailability(w http.ResponseWriter, r *http
 		writeAPIError(w, http.StatusBadRequest, "config_invalid", err.Error(), map[string]string{"field": validationField(err)})
 		return
 	}
-	if err := s.cfg.Write(cfg); err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "config_write_failed", err.Error(), nil)
+	if err := s.syncClientsThenWrite(current, cfg); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "client_sync_failed", err.Error(), nil)
 		return
 	}
 	s.invalidateModels(id)

@@ -46,7 +46,7 @@ ai-gateway 是一个当前用户会话内运行的本机单用户代理网关。
 - 多用户、多租户、账号池、负载均衡或请求级故障转移。
 - 监听非回环地址、远程访问或管理 API 身份认证。
 - 自动同步 MCP、Skills、提示词、会话或客户端供应商目录。
-- 修改 Codex 内置模型目录，或劫持客户端二进制。
+- 劫持 Codex 二进制。允许按 §12.3 写入替换式 `model_catalog_json`，条目必须从本机 `codex debug models --bundled` 克隆并保留 `base_instructions`。
 - 文生图、视觉 sidecar、语音、文件托管。
 - 自动端口漂移。
 - 自动更新和遥测。
@@ -447,10 +447,10 @@ generic
 三个一等客户端执行 point 后，写入的首选模型必须是 `gateway-default`，或当前路由
 对应的 `<provider-id>/<model-id>`。两种形式都必须能被 §7.4 正确解析。
 
-客户端配置文件中落地完整目录只在客户端原生支持时进行。依据 §20 的 2026-08-15
-复核结论，第一阶段只有 Grok Build 落地完整目录；Codex 与 Claude Code 只写首选
-模型，因为在这两个客户端里塞入完整目录会替换客户端自身的系统提示词，或被客户端
-的 id 过滤规则丢弃大部分条目。
+客户端配置文件中落地完整目录只在客户端原生支持、且不破坏系统提示词时进行。
+依据 §20 的 2026-08-16 复核，Codex 通过克隆 bundled 模板写入 `model_catalog_json`
+sidecar；Grok Build 在配置里追加条目。Claude Code 仍只写首选模型，因为它会按
+`/(claude|anthropic)/i` 丢掉大部分 id。
 
 管理面切换客户端路由时只影响下一次请求。切换路由不得替换最初 point 创建的恢复点。
 若某客户端配置中写的是 `gateway-default`，切换路由不得改写该客户端配置文件。
@@ -885,7 +885,7 @@ point 必须：
 2. 读取原始字节；不存在时记录 `original_exists: false`。
 3. 解析并验证当前格式。
 4. 创建新的 UTC 备份目录。
-5. 写入原始文件和 `manifest.json`。
+5. 写入原始文件和 `manifest.json`。manifest 可以包含多个 `files`（例如 Codex 的目录 sidecar）；`original_exists: false` 的项在 restore 时删除。
 6. 生成修改后的完整内容。
 7. 在目标目录原子替换客户端配置。
 8. 修改需要的用户环境变量，并在 manifest 中记录旧状态。
@@ -970,12 +970,17 @@ env_key = "AI_GATEWAY_PLACEHOLDER_KEY"
 - `wire_api` 必须是 `responses`；当前 Codex 自定义 provider 不支持其他值。
 - 用户环境变量 `AI_GATEWAY_PLACEHOLDER_KEY` 必须是任意非空占位值。
 - `model` 固定为 `gateway-default`，即 §7.3 的启动首选模型。
-- 禁止写入 `model_catalog_json`。该键确实可用，但自定义目录会整体替换 Codex 内置目录，
-  并且条目的 `base_instructions` / `model_messages` 会替换 Codex 真正的系统提示词
-  （实测 21178 字符降到 32 字符，克隆内置条目后降到 0），证据见 §20。
-- 进入 agent 后选择其它已启用模型的方式是 `codex -m <provider-id>/<model-id>`，
-  完整目录由 `/c/codex/v1/models` 提供。实测该形式可直接使用，上游收到的模型名逐字一致，
-  仅多打印一行模型元数据缺失警告。
+- 必须写入根键 `model_catalog_json`，值为与 `config.toml` 同目录的绝对路径
+  `ai-gateway-catalog.json`。该键写在 `[model_providers.ai-gateway]` 表内不生效。
+- 目录文件是替换式的 `{ "models": [...] }`，只包含 `gateway-default` 和全部已启用
+  `<provider-id>/<model-id>`，不合并官方 `gpt-*` 原生行。
+- 每条路由条目必须从本机 `codex debug models --bundled`（失败则读同目录
+  `models_cache.json`）里带非空 `base_instructions` 的原生模板克隆：保留
+  `base_instructions`，删除 `model_messages`，`display_name` 等于 `slug`。
+  找不到模板时 point / sync 必须失败，禁止写入短桩提示词。证据见 §20。
+- Codex home 为非空 `CODEX_HOME`，否则 `~/.codex`。
+- 进入 agent 后用 `/model` 选择其它已启用模型；`codex -m <provider-id>/<model-id>`
+  仍然可用。完整 HTTP 目录仍由 `/c/codex/v1/models` 提供。
 - 若环境变量原本存在，restore 必须恢复原值。
 - `doctor` 必须检查 provider 块、base URL、wire API、模型和环境变量。
 
@@ -1876,10 +1881,37 @@ docs/
   `openrouter/anthropic/claude-sonnet-4`、完全不配置目录，Codex 仍能正常完成回合，
   上游收到的模型名逐字一致，系统提示词保持 21178 字符，仅多打印一行元数据缺失警告。
 
-结论：第一阶段不写 `model_catalog_json`。为了让选择器多出几行，代价是替换掉客户端
-系统提示词、并把上游厂商的提示词文本复制进本仓库并随其版本腐坏。§1.3
-「不修改 Codex 内置模型目录」继续有效。Codex 侧改为写入首选模型，
-完整目录通过 `/c/codex/v1/models` 与 `codex -m <provider-id>/<model-id>` 使用。
+2026-08-15 结论当时是：不写 `model_catalog_json`，因为手写短 `base_instructions`
+或只克隆 `model_messages` 会毁掉系统提示词。该对照实验仍然成立，见下一小节。
+
+#### 2026-08-16 复核：克隆 bundled 模板后的 Codex 目录
+
+实验对象：Codex CLI `0.147.0`，Windows，独立 `CODEX_HOME`，假 Responses 上游。
+
+- `codex debug models --bundled` 可用。bundled 目录 8 个模型**同时**带
+  `base_instructions`（11097–21544 字符）和 `model_messages.instructions_template`。
+- 自定义目录整体替换内置目录。`codex debug models`（非 `--bundled`）对
+  Path A 目录只列出 `openrouter/anthropic/claude-sonnet-4`。
+- Codex `0.147.0` 的 Responses 请求**不再带顶层 `instructions`**。官方提示词在
+  `input[]` 里以 `You are Codex...` 文本块出现。2026-08-15 测到的顶层
+  `instructions` 长度 0，在本版本上是字段缺席，不是提示词被清空。
+- 三组对照（同一假上游，`codex exec`，模型 id 均为
+  `openrouter/anthropic/claude-sonnet-4`）：
+
+  | 变换 | 上游 `input` 中官方提示词长度 |
+  |---|---|
+  | 克隆模板，保留 `base_instructions`，删除 `model_messages`（Path A） | 17730 |
+  | 短哨兵 `base_instructions`，无 `model_messages` | 26（`SENTINEL_BASE_INSTRUCTIONS`） |
+  | 删除 `base_instructions`，保留 `model_messages` | 17730 |
+
+- 因此：手写短 `base_instructions` 仍然会替换提示词；克隆 bundled 模板并保留
+  `base_instructions`、删除 `model_messages` 时，官方提示词完整保留。
+  禁止把官方 `base_instructions` 检入本仓库；运行时从本机 Codex 克隆。
+- Desktop 远程 allowlist（openai/codex#19694）仍可能丢掉自定义行。CLI / TUI
+  的 `/model` 与 `codex debug models` 以磁盘目录为准。
+
+结论：第一阶段**可以**写 `model_catalog_json`，但必须走 Path A，且找不到
+bundled 模板时拒绝指向。完整目录同时由 sidecar 与 `/c/codex/v1/models` 提供。
 
 #### Claude Code：网关模型发现可用，但只保留含 claude/anthropic 的 id
 

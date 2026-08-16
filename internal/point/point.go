@@ -20,6 +20,8 @@ import (
 	"ai-gateway/internal/point/clientcatalog"
 	"ai-gateway/internal/point/codex"
 	"ai-gateway/internal/point/grok"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 // Settings is what the caller wants a pointed client configuration to express.
@@ -55,17 +57,22 @@ type Options struct {
 	Environment    UserEnvironment
 	Now            func() time.Time
 	AfterFileWrite func() error
+	// LoadCodexBundledCatalog, when set, supplies the native Codex catalog
+	// used to clone /model rows. Tests inject a fixture; production leaves
+	// it nil so the live `codex debug models --bundled` path is used.
+	LoadCodexBundledCatalog func() ([]byte, error)
 }
 
 type Manager struct {
-	dataRoot       string
-	home           string
-	lookupEnv      func(string) (string, bool)
-	commandExists  func(string) bool
-	environment    UserEnvironment
-	now            func() time.Time
-	afterFileWrite func() error
-	mu             sync.Mutex
+	dataRoot                string
+	home                    string
+	lookupEnv               func(string) (string, bool)
+	commandExists           func(string) bool
+	environment             UserEnvironment
+	now                     func() time.Time
+	afterFileWrite          func() error
+	loadCodexBundledCatalog func() ([]byte, error)
+	mu                      sync.Mutex
 }
 
 func New(dataRoot string) *Manager {
@@ -86,7 +93,7 @@ func NewWithOptions(dataRoot string, opts Options) *Manager {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	return &Manager{dataRoot: dataRoot, home: opts.HomeDir, lookupEnv: opts.LookupEnv, commandExists: opts.CommandExists, environment: opts.Environment, now: opts.Now, afterFileWrite: opts.AfterFileWrite}
+	return &Manager{dataRoot: dataRoot, home: opts.HomeDir, lookupEnv: opts.LookupEnv, commandExists: opts.CommandExists, environment: opts.Environment, now: opts.Now, afterFileWrite: opts.AfterFileWrite, loadCodexBundledCatalog: opts.LoadCodexBundledCatalog}
 }
 
 func commandExists(name string) bool { _, err := exec.LookPath(name); return err == nil }
@@ -225,20 +232,16 @@ func (m *Manager) Point(client Client, baseURL string, settings Settings) (Resul
 		return Result{Status: current}, ErrClientNotInstalled
 	}
 	target := current.Target
-	original, exists, mode, err := readFile(target)
+	original, _, _, err := readFile(target)
 	if err != nil {
 		return Result{Status: current}, err
 	}
-	modified, err := transformContent(client, original, baseURL, settings)
+	planned, err := m.planClientWrite(client, target, original, baseURL, settings)
 	if err != nil {
 		return Result{Status: current}, err
 	}
 
-	manifest := Manifest{Version: 1, Client: client, CreatedAt: m.now().UTC(), Files: []ManifestFile{{Target: target, Backup: filepath.Base(target), OriginalExists: exists}}}
-	if exists {
-		sum := sha256.Sum256(original)
-		manifest.Files[0].OriginalSHA256 = hex.EncodeToString(sum[:])
-	}
+	manifest := Manifest{Version: 1, Client: client, CreatedAt: m.now().UTC(), Files: planned.files}
 	if client == ClientCodex {
 		value, envExists, envErr := m.environment.Lookup(codex.PlaceholderEnvironment)
 		if envErr != nil {
@@ -250,18 +253,21 @@ func (m *Manager) Point(client Client, baseURL string, settings Settings) (Resul
 		}
 		manifest.Environment = []ManifestEnvironment{entry}
 	}
-	backupDir, err := m.createBackup(manifest, original)
+	backupDir, err := m.createBackup(manifest, planned.originals)
 	if err != nil {
 		return Result{Status: current}, err
 	}
-	if err := atomicWrite(target, modified, mode); err != nil {
+	if err := planned.apply(); err != nil {
 		return Result{Status: current, BackupDir: backupDir}, err
+	}
+	if client == ClientCodex {
+		codex.InvalidateModelsCache(filepath.Join(filepath.Dir(target), codex.ModelsCacheName))
 	}
 	fileChanged, envChanged := true, false
 	rollback := func(cause error) (Result, error) {
 		var rollbackErr error
 		if fileChanged {
-			rollbackErr = restoreFile(target, original, exists, mode)
+			rollbackErr = planned.restore()
 		}
 		if envChanged && len(manifest.Environment) > 0 {
 			if err := restoreEnvironment(m.environment, manifest.Environment[0]); err != nil {
@@ -318,7 +324,7 @@ func (m *Manager) syncSettingsLocked(client Client, baseURL string, settings Set
 	if !installed {
 		return false, nil
 	}
-	original, exists, mode, err := readFile(target)
+	original, exists, _, err := readFile(target)
 	if err != nil {
 		return false, err
 	}
@@ -351,16 +357,19 @@ func (m *Manager) syncSettingsLocked(client Client, baseURL string, settings Set
 	if current {
 		return false, nil
 	}
-	modified, err := transformContent(client, original, baseURL, settings)
+	planned, err := m.planClientWrite(client, target, original, baseURL, settings)
 	if err != nil {
 		return false, err
 	}
-	if err := atomicWrite(target, modified, mode); err != nil {
+	if err := planned.apply(); err != nil {
 		return false, err
 	}
-	verified, err := checkContent(client, modified, baseURL, settings)
+	if client == ClientCodex {
+		codex.InvalidateModelsCache(filepath.Join(filepath.Dir(target), codex.ModelsCacheName))
+	}
+	verified, err := checkContent(client, planned.configBytes, baseURL, settings)
 	if err != nil || !verified {
-		rollbackErr := restoreFile(target, original, true, mode)
+		rollbackErr := planned.restore()
 		if err == nil {
 			err = errors.New("client settings verification failed")
 		}
@@ -387,11 +396,35 @@ func (m *Manager) Restore(client Client, baseURL string, settings Settings) (Res
 	if err != nil {
 		return Result{}, err
 	}
-	if len(manifest.Files) != 1 || filepath.Clean(manifest.Files[0].Target) != filepath.Clean(target) {
+	if len(manifest.Files) < 1 {
+		return Result{}, errors.New("backup manifest has no files")
+	}
+	primaryFound := false
+	for _, file := range manifest.Files {
+		if filepath.Clean(file.Target) == filepath.Clean(target) {
+			primaryFound = true
+			break
+		}
+	}
+	if !primaryFound {
 		return Result{}, errors.New("backup manifest target does not match the current client target")
 	}
 	backupDir := filepath.Dir(manifestPath)
-	current, currentExists, currentMode, err := readFile(target)
+	type liveFile struct {
+		path   string
+		data   []byte
+		exists bool
+		mode   os.FileMode
+	}
+	live := make([]liveFile, 0, len(manifest.Files))
+	for _, file := range manifest.Files {
+		data, exists, mode, readErr := readFile(file.Target)
+		if readErr != nil {
+			return Result{}, readErr
+		}
+		live = append(live, liveFile{path: file.Target, data: data, exists: exists, mode: mode})
+	}
+	_, _, currentMode, err := readFile(target)
 	if err != nil {
 		return Result{}, err
 	}
@@ -406,16 +439,25 @@ func (m *Manager) Restore(client Client, baseURL string, settings Settings) (Res
 			currentEnv.OriginalValue = &v
 		}
 	}
-	original, err := loadOriginal(backupDir, manifest.Files[0])
-	if err != nil {
-		return Result{}, err
-	}
-	if err := restoreFile(target, original, manifest.Files[0].OriginalExists, currentMode); err != nil {
-		return Result{}, err
+	for i, file := range manifest.Files {
+		original, loadErr := loadOriginal(backupDir, file)
+		if loadErr != nil {
+			return Result{}, loadErr
+		}
+		mode := currentMode
+		if i < len(live) {
+			mode = live[i].mode
+		}
+		if err := restoreFile(file.Target, original, file.OriginalExists, mode); err != nil {
+			return Result{}, err
+		}
 	}
 	envChanged := false
 	rollback := func(cause error) (Result, error) {
-		rb := restoreFile(target, current, currentExists, currentMode)
+		var rb error
+		for _, item := range live {
+			rb = errors.Join(rb, restoreFile(item.path, item.data, item.exists, item.mode))
+		}
 		if envChanged && client == ClientCodex {
 			rb = errors.Join(rb, restoreEnvironment(m.environment, currentEnv))
 		}
@@ -435,6 +477,10 @@ func (m *Manager) Restore(client Client, baseURL string, settings Settings) (Res
 	if err := writeManifest(manifestPath, manifest); err != nil {
 		return rollback(err)
 	}
+	if client == ClientCodex {
+		m.cleanupUnreferencedCodexCatalog(target)
+		codex.InvalidateModelsCache(filepath.Join(filepath.Dir(target), codex.ModelsCacheName))
+	}
 	status := m.checkUnlocked(client, baseURL, settings)
 	return Result{Status: status, BackupDir: backupDir, Changed: true}, nil
 }
@@ -447,6 +493,9 @@ func (m *Manager) target(client Client) (string, bool, error) {
 	switch client {
 	case ClientCodex:
 		dir, file, command = filepath.Join(m.home, ".codex"), "config.toml", "codex"
+		if override, ok := m.lookupEnv("CODEX_HOME"); ok && strings.TrimSpace(override) != "" {
+			dir = override
+		}
 	case ClientClaude:
 		dir, file, command = filepath.Join(m.home, ".claude"), "settings.json", "claude"
 		if override, ok := m.lookupEnv("CLAUDE_CONFIG_DIR"); ok && strings.TrimSpace(override) != "" {
@@ -476,7 +525,7 @@ func (m *Manager) target(client Client) (string, bool, error) {
 	return target, installed, nil
 }
 
-func (m *Manager) createBackup(manifest Manifest, original []byte) (string, error) {
+func (m *Manager) createBackup(manifest Manifest, originals map[string][]byte) (string, error) {
 	var nonce [4]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return "", err
@@ -485,8 +534,12 @@ func (m *Manager) createBackup(manifest Manifest, original []byte) (string, erro
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create backup directory: %w", err)
 	}
-	if manifest.Files[0].OriginalExists {
-		if err := atomicWrite(filepath.Join(dir, manifest.Files[0].Backup), original, 0o600); err != nil {
+	for _, file := range manifest.Files {
+		if !file.OriginalExists {
+			continue
+		}
+		data := originals[file.Target]
+		if err := atomicWrite(filepath.Join(dir, file.Backup), data, 0o600); err != nil {
 			return dir, err
 		}
 	}
@@ -518,10 +571,10 @@ func (m *Manager) latestManifest(client Client) string {
 	return ""
 }
 
-func transformContent(client Client, data []byte, baseURL string, settings Settings) ([]byte, error) {
+func transformContent(client Client, data []byte, baseURL string, settings Settings, catalogPath string) ([]byte, error) {
 	switch client {
 	case ClientCodex:
-		return codex.Transform(data, baseURL, settings)
+		return codex.Transform(data, baseURL, settings, catalogPath)
 	case ClientClaude:
 		return claude.Transform(data, baseURL, settings)
 	case ClientGrok:
@@ -554,4 +607,116 @@ func managedContent(client Client, data []byte, baseURL string) (bool, error) {
 		return grok.Managed(data, baseURL)
 	}
 	return false, errors.New("unknown client")
+}
+
+type clientWrite struct {
+	configPath  string
+	configBytes []byte
+	configMode  os.FileMode
+	files       []ManifestFile
+	originals   map[string][]byte
+	writes      []plannedWrite
+}
+
+type plannedWrite struct {
+	path     string
+	data     []byte
+	original []byte
+	exists   bool
+	mode     os.FileMode
+}
+
+func (w clientWrite) apply() error {
+	for _, item := range w.writes {
+		if err := atomicWrite(item.path, item.data, item.mode); err != nil {
+			_ = w.restore()
+			return err
+		}
+	}
+	return nil
+}
+
+func (w clientWrite) restore() error {
+	var err error
+	for i := len(w.writes) - 1; i >= 0; i-- {
+		item := w.writes[i]
+		err = errors.Join(err, restoreFile(item.path, item.original, item.exists, item.mode))
+	}
+	return err
+}
+
+func (m *Manager) planClientWrite(client Client, target string, original []byte, baseURL string, settings Settings) (clientWrite, error) {
+	_, exists, mode, err := readFile(target)
+	if err != nil {
+		return clientWrite{}, err
+	}
+	if exists && original == nil {
+		original, _, _, err = readFile(target)
+		if err != nil {
+			return clientWrite{}, err
+		}
+	}
+	plan := clientWrite{
+		configPath: target,
+		configMode: mode,
+		originals:  map[string][]byte{},
+	}
+	catalogPath := ""
+	var catalogBytes []byte
+	if client == ClientCodex {
+		catalogPath = codex.CatalogPath(target)
+		template, loadErr := codex.LoadTemplate(m.loadCodexBundledCatalog, filepath.Join(filepath.Dir(target), codex.ModelsCacheName))
+		if loadErr != nil {
+			return clientWrite{}, loadErr
+		}
+		catalogBytes, err = codex.BuildCatalog(template, settings)
+		if err != nil {
+			return clientWrite{}, err
+		}
+	}
+	modified, err := transformContent(client, original, baseURL, settings, catalogPath)
+	if err != nil {
+		return clientWrite{}, err
+	}
+	plan.configBytes = modified
+	plan.addFile(target, original, exists, mode, modified)
+	if client == ClientCodex {
+		catOriginal, catExists, catMode, catErr := readFile(catalogPath)
+		if catErr != nil {
+			return clientWrite{}, catErr
+		}
+		plan.addFile(catalogPath, catOriginal, catExists, catMode, catalogBytes)
+	}
+	return plan, nil
+}
+
+func (w *clientWrite) addFile(path string, original []byte, exists bool, mode os.FileMode, next []byte) {
+	entry := ManifestFile{Target: path, Backup: filepath.Base(path), OriginalExists: exists}
+	if exists {
+		sum := sha256.Sum256(original)
+		entry.OriginalSHA256 = hex.EncodeToString(sum[:])
+		w.originals[path] = original
+	}
+	w.files = append(w.files, entry)
+	if mode == 0 {
+		mode = 0o600
+	}
+	w.writes = append(w.writes, plannedWrite{path: path, data: next, original: original, exists: exists, mode: mode})
+}
+
+func (m *Manager) cleanupUnreferencedCodexCatalog(configPath string) {
+	owned := codex.CatalogPath(configPath)
+	data, exists, _, err := readFile(configPath)
+	if err != nil || !exists {
+		_ = os.Remove(owned)
+		return
+	}
+	doc := map[string]any{}
+	if err := toml.Unmarshal(data, &doc); err != nil {
+		return
+	}
+	path, _ := doc["model_catalog_json"].(string)
+	if filepath.Clean(path) != filepath.Clean(owned) {
+		_ = os.Remove(owned)
+	}
 }

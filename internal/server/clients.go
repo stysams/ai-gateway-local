@@ -30,8 +30,8 @@ func (s *Server) pointContext(w http.ResponseWriter, r *http.Request) (point.Cli
 // switching a route never rewrites a pointed client's file (§1.2, §7.3): the
 // gateway resolves gateway-default against the current route per request. The
 // catalog carries every enabled `<provider-id>/<model-id>` so a user can pick
-// any of them inside the agent; adapters that cannot hold a list natively
-// ignore it (§12.3, §12.4).
+// any of them inside the agent. Grok writes it into config.toml; Codex writes
+// it into ai-gateway-catalog.json; Claude still only enables gateway discovery.
 func (s *Server) clientSettings(cfg *config.Config, _ point.Client) point.Settings {
 	items := s.modelCatalog(cfg)
 	catalog := make([]clientcatalog.Entry, 0, len(items))
@@ -79,6 +79,24 @@ func (s *Server) applyClientSettingsChanges(baseURL string, changes []clientSett
 		}
 	}
 	return applied, nil
+}
+
+func (s *Server) syncClientsThenWrite(current, next *config.Config) error {
+	if current == nil || next == nil {
+		return errors.New("config not loaded")
+	}
+	baseURL := s.ClientBaseURL(current)
+	applied, err := s.applyClientSettingsChanges(baseURL, s.clientSettingsChanges(current, next))
+	if err != nil {
+		return err
+	}
+	if err := s.cfg.Write(next); err != nil {
+		if rollbackErr := s.rollbackClientSettingsChanges(baseURL, applied); rollbackErr != nil {
+			return errors.Join(err, rollbackErr)
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Server) rollbackClientSettingsChanges(baseURL string, applied []clientSettingsSync) error {
