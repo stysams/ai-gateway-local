@@ -103,11 +103,15 @@
 11. **Chat 出站工具参数是 JSON 字符串。** Responses `custom_tool_call`
     经 IR 包装后，`openai-chat` 必须把 `function.arguments` 写成字符串，
     不能嵌对象。否则 OpenCode Console Go 会 400。
+12. **Chat 出站工具结果必须紧跟 `tool_calls`。** Responses 回放常把
+    reasoning 和后续助手正文插在调用与结果之间；丢掉 reasoning 后不得
+    留下空助手消息，出站必须先配对再放其余正文。
 
 相关证据在规格 §20「2026-08-15 复核：客户端可选模型目录」、
 「2026-08-16 复核：Codex 远程压缩触发条件」、
-「2026-08-16 复核：Responses 历史回放使用 output_text」和
-「2026-08-16 复核：Chat 出站工具参数必须是 JSON 字符串」。不要重新发明 Codex 目录方案。
+「2026-08-16 复核：Responses 历史回放使用 output_text」、
+「2026-08-16 复核：Chat 出站工具参数必须是 JSON 字符串」和
+「2026-08-16 复核：Chat 出站工具结果必须紧跟 tool_calls」。不要重新发明 Codex 目录方案。
 
 ---
 

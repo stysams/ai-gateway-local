@@ -119,27 +119,35 @@ func (c *Client) Do(ctx context.Context, body []byte, stream bool) (*http.Respon
 	return resp, nil
 }
 
+type chatToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		// Chat Completions requires arguments as a JSON string
+		// whose contents are the raw argument JSON
+		// (docs/v1-scheme.md §8.1, §10, §20 2026-08-16).
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+type chatMessage struct {
+	Role       string         `json:"role"`
+	Content    any            `json:"content"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
+}
+
 // GenerateRequest renders an ir.Request as a chat/completions request body.
 // Extensions (unknown fields) are preserved when they are top-level fields
 // the IR does not model, mirroring the same-protocol passthrough behavior.
+//
+// An assistant message with tool_calls must be followed immediately by a
+// tool message for each tool_call_id (docs/v1-scheme.md §10, §20 2026-08-16).
+// Responses history often places reasoning or later assistant text between
+// the call and the result; those items are skipped or deferred so the pair
+// stays adjacent.
 func GenerateRequest(req *ir.Request) ([]byte, error) {
-	type chatToolCall struct {
-		ID       string `json:"id"`
-		Type     string `json:"type"`
-		Function struct {
-			// Chat Completions requires arguments as a JSON string
-			// whose contents are the raw argument JSON
-			// (docs/v1-scheme.md §8.1, §10, §20 2026-08-16).
-			Name      string `json:"name"`
-			Arguments string `json:"arguments"`
-		} `json:"function"`
-	}
-	type chatMessage struct {
-		Role       string         `json:"role"`
-		Content    any            `json:"content"`
-		ToolCallID string         `json:"tool_call_id,omitempty"`
-		ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
-	}
 	body := map[string]any{
 		"model":  req.Model,
 		"stream": req.Stream,
@@ -167,55 +175,48 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 		}
 		messages = append(messages, chatMessage{Role: string(ir.RoleSystem), Content: text})
 	}
-	for _, m := range req.Messages {
-		cm := chatMessage{Role: string(m.Role)}
-		var text string
-		var parts []map[string]any
-		hasImage := false
-		var toolCalls []chatToolCall
-		for _, b := range m.Content {
-			switch b.Type {
-			case ir.BlockText:
-				parts = append(parts, map[string]any{"type": "text", "text": b.Text})
-				if text != "" {
-					text += "\n\n"
-				}
-				text += b.Text
-			case ir.BlockToolCall:
-				ctc := chatToolCall{ID: b.ToolCall.ID, Type: "function"}
-				ctc.Function.Name = b.ToolCall.Name
-				ctc.Function.Arguments = string(b.ToolCall.Arguments)
-				toolCalls = append(toolCalls, ctc)
-			case ir.BlockToolResult:
-				cm.ToolCallID = b.ToolResult.ID
-				text = b.ToolResult.Content
-				if b.ToolResult.IsError {
-					text = "Error: " + text
-				}
-			case ir.BlockImage:
-				url, err := b.Image.WireURL()
-				if err != nil {
-					return nil, fmt.Errorf("invalid image block: %w", err)
-				}
-				imageURL := map[string]any{"url": url}
-				if b.Image.Detail != "" {
-					imageURL["detail"] = b.Image.Detail
-				}
-				parts = append(parts, map[string]any{"type": "image_url", "image_url": imageURL})
-				hasImage = true
-			case ir.BlockReasoning:
-				return nil, fmt.Errorf("%w: reasoning content cannot be converted to chat/completions", ir.ErrUnsupportedContent)
-			}
+	usedResults := map[string]bool{}
+	for i, m := range req.Messages {
+		if resultIDs := irToolResultIDs(m); len(resultIDs) > 0 && allIDsUsed(resultIDs, usedResults) {
+			continue
 		}
-		if hasImage {
-			cm.Content = parts
-		} else {
-			cm.Content = text
+		cm, ok, err := encodeChatMessage(m)
+		if err != nil {
+			return nil, err
 		}
-		if len(toolCalls) > 0 {
-			cm.ToolCalls = toolCalls
+		if !ok {
+			continue
 		}
 		messages = append(messages, cm)
+		if len(cm.ToolCalls) == 0 {
+			continue
+		}
+		needed := map[string]bool{}
+		for _, tc := range cm.ToolCalls {
+			if tc.ID != "" {
+				needed[tc.ID] = true
+			}
+		}
+		for j := i + 1; j < len(req.Messages) && len(needed) > 0; j++ {
+			ids := irToolResultIDs(req.Messages[j])
+			if !anyIDNeeded(ids, needed) {
+				continue
+			}
+			tm, tok, err := encodeChatMessage(req.Messages[j])
+			if err != nil {
+				return nil, err
+			}
+			if !tok {
+				continue
+			}
+			messages = append(messages, tm)
+			for _, id := range ids {
+				if needed[id] {
+					usedResults[id] = true
+					delete(needed, id)
+				}
+			}
+		}
 	}
 	body["messages"] = messages
 
@@ -239,6 +240,91 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 		}
 	}
 	return json.Marshal(body)
+}
+
+func encodeChatMessage(m ir.Message) (chatMessage, bool, error) {
+	cm := chatMessage{Role: string(m.Role)}
+	var text string
+	var parts []map[string]any
+	hasImage := false
+	var toolCalls []chatToolCall
+	for _, b := range m.Content {
+		switch b.Type {
+		case ir.BlockText:
+			parts = append(parts, map[string]any{"type": "text", "text": b.Text})
+			if text != "" {
+				text += "\n\n"
+			}
+			text += b.Text
+		case ir.BlockToolCall:
+			ctc := chatToolCall{ID: b.ToolCall.ID, Type: "function"}
+			ctc.Function.Name = b.ToolCall.Name
+			ctc.Function.Arguments = string(b.ToolCall.Arguments)
+			toolCalls = append(toolCalls, ctc)
+		case ir.BlockToolResult:
+			cm.ToolCallID = b.ToolResult.ID
+			text = b.ToolResult.Content
+			if b.ToolResult.IsError {
+				text = "Error: " + text
+			}
+		case ir.BlockImage:
+			url, err := b.Image.WireURL()
+			if err != nil {
+				return chatMessage{}, false, fmt.Errorf("invalid image block: %w", err)
+			}
+			imageURL := map[string]any{"url": url}
+			if b.Image.Detail != "" {
+				imageURL["detail"] = b.Image.Detail
+			}
+			parts = append(parts, map[string]any{"type": "image_url", "image_url": imageURL})
+			hasImage = true
+		case ir.BlockReasoning:
+			return chatMessage{}, false, fmt.Errorf("%w: reasoning content cannot be converted to chat/completions", ir.ErrUnsupportedContent)
+		}
+	}
+	if hasImage {
+		cm.Content = parts
+	} else {
+		cm.Content = text
+	}
+	if len(toolCalls) > 0 {
+		cm.ToolCalls = toolCalls
+	}
+	if !hasImage && text == "" && len(toolCalls) == 0 && cm.ToolCallID == "" {
+		return chatMessage{}, false, nil
+	}
+	return cm, true, nil
+}
+
+func irToolResultIDs(m ir.Message) []string {
+	var ids []string
+	for _, b := range m.Content {
+		if b.Type == ir.BlockToolResult && b.ToolResult != nil && b.ToolResult.ID != "" {
+			ids = append(ids, b.ToolResult.ID)
+		}
+	}
+	return ids
+}
+
+func allIDsUsed(ids []string, used map[string]bool) bool {
+	if len(ids) == 0 {
+		return false
+	}
+	for _, id := range ids {
+		if !used[id] {
+			return false
+		}
+	}
+	return true
+}
+
+func anyIDNeeded(ids []string, needed map[string]bool) bool {
+	for _, id := range ids {
+		if needed[id] {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseResponse converts a non-streaming chat.completion response into the

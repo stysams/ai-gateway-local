@@ -705,17 +705,28 @@ func dropReasoning(proto ir.Protocol, body []byte) ([]byte, error) {
 // Anthropic thinking modes and budgets do not have a lossless OpenAI mapping.
 func normalizeReasoning(req *ir.Request, outProto ir.Protocol, providerSupports bool) (bool, string) {
 	droppedBlocks := false
-	for mi := range req.Messages {
-		kept := req.Messages[mi].Content[:0]
-		for _, block := range req.Messages[mi].Content {
+	keptMessages := make([]ir.Message, 0, len(req.Messages))
+	for _, msg := range req.Messages {
+		kept := make([]ir.Block, 0, len(msg.Content))
+		droppedFromMsg := false
+		for _, block := range msg.Content {
 			if block.Type == ir.BlockReasoning {
 				droppedBlocks = true
+				droppedFromMsg = true
 				continue
 			}
 			kept = append(kept, block)
 		}
-		req.Messages[mi].Content = kept
+		msg.Content = kept
+		// A reasoning-only item becomes an empty assistant message. Chat
+		// Completions then treats it as breaking the tool_calls / tool pair
+		// (docs/v1-scheme.md §8.4, §20 2026-08-16).
+		if droppedFromMsg && len(kept) == 0 {
+			continue
+		}
+		keptMessages = append(keptMessages, msg)
 	}
+	req.Messages = keptMessages
 
 	hadConfig := !req.Reasoning.Empty()
 	if !providerSupports {

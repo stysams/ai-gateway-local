@@ -592,7 +592,7 @@ error
 ### 8.4 能力降级
 
 - 请求含图片而 provider 的 `capabilities.image_input` 为 `false` 时，网关必须在调用上游之前返回 422。
-- 请求含 reasoning，而目标协议或 provider 无法表达时，可以丢弃，但必须在该请求日志中写入 `reasoning_dropped` 警告。
+- 请求含 reasoning，而目标协议或 provider 无法表达时，可以丢弃，但必须在该请求日志中写入 `reasoning_dropped` 警告。只含 reasoning 的消息被掏空后必须整条删除，不得留下空的助手消息。
 - 客户端执行的工具必须转换，不得静默删除：`function`、`custom`、`namespace`
   内的函数 / 自定义工具属于此类。`custom` 的 grammar / text `format`
   无法带到 JSON schema 时，工具本身仍转换，并写入 `tool_dropped`
@@ -705,7 +705,9 @@ GET  /readyz
 - `openai-chat`：`POST <base_url>/chat/completions`。工具调用的
   `function.arguments` 必须是 JSON 字符串（内容是原始参数 JSON），与入站
   Chat 编码器一致。IR 里的 `ToolCall.Arguments` 是原始 JSON，出站必须再
-  编码成字符串。
+  编码成字符串。带 `tool_calls` 的助手消息之后，必须紧跟对应
+  `tool_call_id` 的 `role: tool` 消息；夹在中间的空消息（被丢弃的
+  reasoning）和后续助手正文必须挪开，不得插在这一对之间（证据见 §20）。
 - `openai-responses`：`POST <base_url>/responses`
 - `anthropic`：`POST <base_url>/v1/messages`
 
@@ -2138,6 +2140,38 @@ at line 1 column 124972
 
 结论：Chat 出站 `function.arguments` 必须是 JSON 字符串。这是官方外形，
 不是供应商私有扩展。
+
+### 2026-08-16 复核：Chat 出站工具结果必须紧跟 tool_calls
+
+实验对象：Codex Desktop 请求 `opencode/deepseek-v4-flash`（adapter
+`openai-chat`）。
+
+证据文件：`%USERPROFILE%\.ai-gateway\logs\2026-08-16\req_7c55c3b22366106dc6e581fe.jsonl`。
+
+入站 Responses `input[]` 顺序是：`function_call` → `reasoning` →
+`message`（助手 `output_text`）→ `function_call_output`。跨协议丢掉
+reasoning 后仍留下一条空助手消息。出站 Chat 变成：
+
+```text
+assistant + tool_calls
+assistant ""          // 被掏空的 reasoning
+assistant "模型ID：…"
+tool                  // function_call_output
+```
+
+OpenCode Console Go 返回 400：
+
+```text
+An assistant message with 'tool_calls' must be followed by tool
+messages responding to each 'tool_call_id'. (insufficient tool
+messages following tool_calls message)
+```
+
+这是官方 Chat Completions 配对规则，不是供应商私有扩展。
+
+结论：丢掉 reasoning 后必须删除空消息；出站 Chat 必须先写出
+`tool_calls`，再立刻写出对应的 `role: tool` 消息，其余夹在中间的
+助手正文放到这一对之后。
 
 ---
 

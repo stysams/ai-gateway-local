@@ -131,6 +131,64 @@ func TestGenerateRequestToolCallArgumentsAreJSONString(t *testing.T) {
 	}
 }
 
+func TestGenerateRequestToolResultsFollowToolCalls(t *testing.T) {
+	// Responses history can put dropped-reasoning leftovers and later
+	// assistant text between a tool call and its result. Chat Completions
+	// requires the tool message to follow the tool_calls message immediately.
+	req := &ir.Request{
+		Model: "m",
+		Messages: []ir.Message{
+			{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "你不是deepseek吗"}}},
+			{Role: ir.RoleAssistant, Content: []ir.Block{{
+				Type: ir.BlockToolCall,
+				ToolCall: &ir.ToolCall{
+					ID:        "call_00_abc",
+					Name:      "exec_command",
+					Arguments: json.RawMessage(`{"cmd":"Get-ChildItem Env:"}`),
+				},
+			}}},
+			{Role: ir.RoleAssistant, Content: nil},
+			{Role: ir.RoleAssistant, Content: []ir.Block{{Type: ir.BlockText, Text: "模型ID：Codex"}}},
+			{Role: ir.RoleTool, Content: []ir.Block{{
+				Type:       ir.BlockToolResult,
+				ToolResult: &ir.ToolResult{ID: "call_00_abc", Content: "ok"},
+			}}},
+		},
+	}
+	body, err := GenerateRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Messages []struct {
+			Role       string `json:"role"`
+			Content    string `json:"content"`
+			ToolCallID string `json:"tool_call_id"`
+			ToolCalls  []struct {
+				ID string `json:"id"`
+			} `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Messages) != 4 {
+		t.Fatalf("messages = %+v", doc.Messages)
+	}
+	if doc.Messages[0].Role != "user" || doc.Messages[0].Content != "你不是deepseek吗" {
+		t.Fatalf("user = %+v", doc.Messages[0])
+	}
+	if doc.Messages[1].Role != "assistant" || len(doc.Messages[1].ToolCalls) != 1 || doc.Messages[1].ToolCalls[0].ID != "call_00_abc" {
+		t.Fatalf("tool_calls = %+v", doc.Messages[1])
+	}
+	if doc.Messages[2].Role != "tool" || doc.Messages[2].ToolCallID != "call_00_abc" || doc.Messages[2].Content != "ok" {
+		t.Fatalf("tool = %+v", doc.Messages[2])
+	}
+	if doc.Messages[3].Role != "assistant" || doc.Messages[3].Content != "模型ID：Codex" {
+		t.Fatalf("assistant text = %+v", doc.Messages[3])
+	}
+}
+
 func TestParseResponseReasoning(t *testing.T) {
 	events, err := ParseResponse([]byte(`{"id":"c1","choices":[{"message":{"role":"assistant","reasoning_content":"considering","content":"answer"},"finish_reason":"stop"}]}`))
 	if err != nil {

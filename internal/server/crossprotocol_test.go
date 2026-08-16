@@ -385,6 +385,64 @@ func TestCrossResponsesToChatCustomToolCallArgumentsAreString(t *testing.T) {
 	}
 }
 
+func TestCrossResponsesToChatToolResultsFollowToolCalls(t *testing.T) {
+	// Codex Desktop replay: function_call, reasoning, assistant text,
+	// function_call_output. Chat Completions rejects that order.
+	up := newFakeUpstream(t, nil)
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	p := cfg.Providers["openrouter"]
+	p.Adapter = "openai-chat"
+	cfg.Providers["openrouter"] = p
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	body := []byte(`{
+		"model":"opencode/deepseek-v4-flash",
+		"reasoning":{"effort":"high"},
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"你不是deepseek吗"}]},
+			{"type":"function_call","call_id":"call_00_abc","name":"exec_command","arguments":"{\"cmd\":\"Get-ChildItem Env:\"}"},
+			{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"查环境"}],"encrypted_content":null},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"模型ID：Codex"}]},
+			{"type":"function_call_output","call_id":"call_00_abc","output":"ok"}
+		]
+	}`)
+	resp, data := chatPost(t, addr, "/c/codex/v1/responses", body, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, %s", resp.StatusCode, data)
+	}
+	var messages []struct {
+		Role       string `json:"role"`
+		Content    string `json:"content"`
+		ToolCallID string `json:"tool_call_id"`
+		ToolCalls  []struct {
+			ID string `json:"id"`
+		} `json:"tool_calls"`
+	}
+	if err := json.Unmarshal(up.last().Fields["messages"], &messages); err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 4 {
+		t.Fatalf("upstream messages = %+v", messages)
+	}
+	if messages[0].Role != "user" || messages[0].Content != "你不是deepseek吗" {
+		t.Fatalf("user = %+v", messages[0])
+	}
+	if messages[1].Role != "assistant" || len(messages[1].ToolCalls) != 1 || messages[1].ToolCalls[0].ID != "call_00_abc" {
+		t.Fatalf("tool_calls = %+v", messages[1])
+	}
+	if messages[2].Role != "tool" || messages[2].ToolCallID != "call_00_abc" || messages[2].Content != "ok" {
+		t.Fatalf("tool = %+v", messages[2])
+	}
+	if messages[3].Role != "assistant" || messages[3].Content != "模型ID：Codex" {
+		t.Fatalf("assistant text = %+v", messages[3])
+	}
+	for _, msg := range messages {
+		if msg.Role == "assistant" && msg.Content == "" && len(msg.ToolCalls) == 0 {
+			t.Fatalf("empty assistant leftover reached upstream: %+v", messages)
+		}
+	}
+}
+
 func TestCrossResponsesCustomToolCallStream(t *testing.T) {
 	up := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
