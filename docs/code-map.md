@@ -22,6 +22,7 @@
 | `/v1/models` 与客户端目录 | `dataplane.go` `modelCatalog` | `internal/server/clients.go` `clientSettings` |
 | Claude Code `/model` 选择器别名 | `internal/route/claudealias.go` | `dataplane.go` `serveModels` / `claudePickerCatalog`；`route.Resolve` 先解码 |
 | Claude Code `/model` 缓存预写 | `internal/point/claude/cache.go` | `point.go` `planClientWrite` / `cleanupUnreferencedClaudeCache` |
+| Responses 出站助手历史文本类型 | `outbound/openairesponses` `GenerateRequest` | 助手块 `output_text`，用户块 `input_text` |
 | 同协议转发 | `dataplane.go` `serveSameProtocol` | `inbound/*/Parse` + `Rewrite` |
 | 跨协议转换 | `dataplane.go` `serveCrossProtocol` | `internal/ir/ir.go`，再进 inbound / outbound |
 | 入站协议外形 | `internal/inbound/{chat,responses,messages}` | `Parse` / `ParseRequest` / `Encode*` / `WriteError` |

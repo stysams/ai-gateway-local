@@ -729,7 +729,10 @@ GET  /readyz
   编码成字符串。带 `tool_calls` 的助手消息之后，必须紧跟对应
   `tool_call_id` 的 `role: tool` 消息；夹在中间的空消息（被丢弃的
   reasoning）和后续助手正文必须挪开，不得插在这一对之间（证据见 §20）。
-- `openai-responses`：`POST <base_url>/responses`
+- `openai-responses`：`POST <base_url>/responses`。`input[]` 里用户和
+  developer 的文本块是 `input_text`；助手历史的文本块必须是 `output_text`，
+  不得写成 `input_text`。官方 Responses 对 `role: assistant` 的 content
+  type 只接受 `output_text` 和 `refusal`（证据见 §20）。
 - `anthropic`：`POST <base_url>/v1/messages`
 
 URL 拼接必须避免重复 `/v1` 或重复斜杠。`base_url` 语义以配置预设为准，不得通过字符串猜测供应商。
@@ -2277,6 +2280,22 @@ messages following tool_calls message)
 结论：丢掉 reasoning 后必须删除空消息；出站 Chat 必须先写出
 `tool_calls`，再立刻写出对应的 `role: tool` 消息，其余夹在中间的
 助手正文放到这一对之后。
+
+### 2026-08-16 复核：Responses 出站助手历史必须用 output_text
+
+实验对象：Claude Code 入站 `POST /c/claude/v1/messages`，模型
+`claude-gw-tudou--gpt-5.6-terra`，出站 adapter `openai-responses`。
+
+证据文件：`%USERPROFILE%\.ai-gateway\logs\2026-08-16\req_d54feb1ae458c3ba467bca92.jsonl`。
+
+- 入站 `messages`：`user`、`system`、`assistant`（上一轮正文）、`user`。
+- 出站 `input[]` 三项：`user` / `assistant` / `user`。助手项
+  `input[1].content[0].type` 被写成 `input_text`。
+- 上游 400：`Invalid value: 'input_text'. Supported values are:
+  'output_text' and 'refusal'.`，`param` 为 `input[1].content[0]`。
+
+这是官方 Responses 对助手 item 的 content type 约束，不是供应商私有扩展。
+用户和 developer 仍用 `input_text`；助手历史文本必须写成 `output_text`。
 
 ---
 

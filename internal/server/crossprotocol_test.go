@@ -571,6 +571,45 @@ func TestCrossMessagesToResponsesNonStream(t *testing.T) {
 	}
 }
 
+// Claude Code replays prior assistant turns as role=assistant text. The
+// Responses upstream only accepts output_text on those items
+// (req_d54feb1ae458c3ba467bca92).
+func TestCrossMessagesAssistantHistoryToResponses(t *testing.T) {
+	up := newFakeUpstream(t, responsesTextHandler(responsesTextBody))
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	p := cfg.Providers["openrouter"]
+	p.Adapter = "openai-responses"
+	cfg.Providers["openrouter"] = p
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	resp, data := chatPost(t, addr, "/c/claude/v1/messages",
+		[]byte(`{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"你是谁"},{"role":"assistant","content":"我是助手"},{"role":"user","content":"继续"}]}`), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, %s", resp.StatusCode, data)
+	}
+	captured := up.last()
+	var input []struct {
+		Type    string `json:"type"`
+		Role    string `json:"role"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(captured.Fields["input"], &input); err != nil {
+		t.Fatal(err)
+	}
+	if len(input) != 3 {
+		t.Fatalf("upstream input = %#v", input)
+	}
+	if input[1].Role != "assistant" || input[1].Content[0].Type != "output_text" || input[1].Content[0].Text != "我是助手" {
+		t.Fatalf("assistant history = %#v", input[1])
+	}
+	if input[0].Content[0].Type != "input_text" || input[2].Content[0].Type != "input_text" {
+		t.Fatalf("user items = %#v %#v", input[0], input[2])
+	}
+}
+
 // chatToMessagesStream: chat 客户端 → messages 上游，SSE 事件顺序与文本。
 func TestCrossChatToMessagesStream(t *testing.T) {
 	up := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {

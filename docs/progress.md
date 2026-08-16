@@ -116,6 +116,9 @@
     `ocx claude` 的外形预写 `cache/gateway-models.json`，`baseUrl` 等于
     `ANTHROPIC_BASE_URL`。别名不得写进启动环境变量、Codex/Grok 目录或发给上游。
 14. **桌面和管理端都是单实例。** 网关继续用 `gateway.lock`。桌面在创建窗口和托盘之前先拿 Wails 单实例锁；再次启动只激活已有窗口并退出，不再出现第二个托盘图标。桌面派生 `serve` 之前必须探测 `gateway.lock`，锁已被占用时只等待管理面就绪，不得再拉起一个网关进程。`ai-gateway-desktop serve` 仍走无头入口，只受 `gateway.lock` 约束。
+15. **Responses 出站助手历史必须用 `output_text`。** Claude Code 把上一轮
+    助手正文放进下一轮 `messages`；跨到 `openai-responses` 时不得把该块
+    写成 `input_text`，否则上游 400。用户和 developer 仍用 `input_text`。
 
 相关证据在规格 §20「2026-08-15 复核：客户端可选模型目录」、
 「2026-08-16 复核：Codex 远程压缩触发条件」、
@@ -123,7 +126,8 @@
 「2026-08-16 复核：Chat 出站工具参数必须是 JSON 字符串」和
 「2026-08-16 复核：Chat 出站工具结果必须紧跟 tool_calls」和
 「2026-08-16 复核：Claude Code `/model` 使用可逆选择器别名」和
-「2026-08-16 复核：Claude Code `/model` 必须预写 gateway-models.json」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
+「2026-08-16 复核：Claude Code `/model` 必须预写 gateway-models.json」和
+「2026-08-16 复核：Responses 出站助手历史必须用 output_text」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
 
 ---
 

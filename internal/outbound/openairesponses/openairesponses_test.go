@@ -70,6 +70,46 @@ func TestGenerateRequest(t *testing.T) {
 	}
 }
 
+func TestGenerateRequestAssistantHistoryUsesOutputText(t *testing.T) {
+	req := &ir.Request{
+		Model: "gpt-5.6-terra",
+		Messages: []ir.Message{
+			{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "你是谁"}}},
+			{Role: ir.RoleAssistant, Content: []ir.Block{{Type: ir.BlockText, Text: "我是助手"}}},
+			{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "继续"}}},
+		},
+	}
+	body, err := GenerateRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Input []struct {
+			Type    string `json:"type"`
+			Role    string `json:"role"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Input) != 3 {
+		t.Fatalf("input = %#v", doc.Input)
+	}
+	if doc.Input[0].Role != "user" || doc.Input[0].Content[0].Type != "input_text" {
+		t.Fatalf("user item = %#v", doc.Input[0])
+	}
+	if doc.Input[1].Role != "assistant" || doc.Input[1].Content[0].Type != "output_text" || doc.Input[1].Content[0].Text != "我是助手" {
+		t.Fatalf("assistant item = %#v", doc.Input[1])
+	}
+	if doc.Input[2].Role != "user" || doc.Input[2].Content[0].Type != "input_text" {
+		t.Fatalf("follow-up user item = %#v", doc.Input[2])
+	}
+}
+
 func TestGenerateRequestImageAndReasoning(t *testing.T) {
 	req := testIRRequest()
 	req.Messages = []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{

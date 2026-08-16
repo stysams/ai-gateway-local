@@ -169,7 +169,14 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 			for _, b := range m.Content {
 				switch b.Type {
 				case ir.BlockText:
-					content = append(content, map[string]any{"type": "input_text", "text": b.Text})
+					// Responses only accepts output_text/refusal on
+					// assistant items. User and developer stay input_text
+					// (docs/v1-scheme.md §10, §20 2026-08-16).
+					textType := "input_text"
+					if m.Role == ir.RoleAssistant {
+						textType = "output_text"
+					}
+					content = append(content, map[string]any{"type": textType, "text": b.Text})
 				case ir.BlockToolCall:
 					if b.ToolCall.Custom {
 						toolCalls = append(toolCalls, map[string]any{
