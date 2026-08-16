@@ -209,6 +209,11 @@ func TestPointAndRestoreWhenOriginalFileDoesNotExist(t *testing.T) {
 					t.Fatal("restore left Codex catalog sidecar")
 				}
 			}
+			if client == ClientClaude {
+				if _, err := os.Stat(claude.CachePath(target)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("restore left Claude gateway-models cache")
+				}
+			}
 		})
 	}
 }
@@ -258,7 +263,8 @@ func TestPointAppliesCatalogChangeWithoutReplacingOriginalBackup(t *testing.T) {
 				t.Fatal(err)
 			}
 			// Grok holds the catalog in config.toml. Codex holds it in the
-			// sidecar named by model_catalog_json. Claude does not land a list.
+			// sidecar named by model_catalog_json. Claude holds it in
+			// cache/gateway-models.json, not settings.json.
 			switch client {
 			case ClientGrok:
 				if !strings.Contains(string(data), "deepseek/deepseek-chat") {
@@ -284,6 +290,16 @@ func TestPointAppliesCatalogChangeWithoutReplacingOriginalBackup(t *testing.T) {
 			default:
 				if strings.Contains(string(data), "deepseek/deepseek-chat") {
 					t.Fatalf("Claude config unexpectedly contains catalog id:\n%s", data)
+				}
+				cache, err := os.ReadFile(claude.CachePath(target))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(cache), "deepseek/deepseek-chat") {
+					t.Fatalf("Claude picker cache missing catalog id:\n%s", cache)
+				}
+				if !updated.Changed {
+					t.Fatalf("Claude catalog change was not applied: %+v", updated)
 				}
 			}
 			if _, err := m.Restore(client, testBaseURL, catalog); err != nil {
@@ -381,7 +397,7 @@ func TestPointWritesPerClientCatalogContract(t *testing.T) {
 				"\"ANTHROPIC_DEFAULT_SONNET_MODEL\": \"gateway-default\"",
 				"\"ANTHROPIC_DEFAULT_HAIKU_MODEL\": \"gateway-default\"",
 			},
-			reject: []string{"openrouter/anthropic/claude-sonnet-4"},
+			reject: []string{"claude-gw-", "openrouter/anthropic/claude-sonnet-4"},
 		},
 		{
 			client: ClientGrok,
@@ -437,7 +453,165 @@ func TestPointWritesPerClientCatalogContract(t *testing.T) {
 					t.Fatalf("Codex sidecar kept model_messages:\n%s", sidecar)
 				}
 			}
+			if tc.client == ClientClaude {
+				cache, err := os.ReadFile(claude.CachePath(target))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, want := range []string{
+					`"baseUrl":"http://127.0.0.1:12600/c/claude"`,
+					`"id":"claude-gw-default"`,
+					`"display_name":"gateway-default"`,
+					`"id":"claude-gw2-openrouter--anthropic~sclaude-sonnet-4"`,
+					`"display_name":"openrouter/anthropic/claude-sonnet-4"`,
+				} {
+					if !strings.Contains(string(cache), want) {
+						t.Fatalf("Claude picker cache missing %q:\n%s", want, cache)
+					}
+				}
+			}
 		})
+	}
+}
+
+// OpenCodex pre-writes ~/.claude/cache/gateway-models.json. Point must
+// replace that picker list with this gateway's aliases, and restore must
+// give the original bytes back. A later catalog shrink must rewrite the
+// cache in place without creating a second restore point.
+func TestClaudeGatewayModelCachePointSyncRestore(t *testing.T) {
+	home := t.TempDir()
+	target := clientTarget(home, ClientClaude, nil)
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	originalSettings := []byte("{\"custom\":true,\"env\":{\"KEEP_ME\":\"yes\"}}\n")
+	if err := os.WriteFile(target, originalSettings, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalCache := []byte(`{"baseUrl":"http://127.0.0.1:10100","fetchedAt":1,"models":[{"id":"claude-ocx-old--model","display_name":"old (opencodex)"}]}`)
+	cachePath := claude.CachePath(target)
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, originalCache, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := testManager(t, home, NewMemoryEnvironment(), map[string]string{}, nil)
+	wide := Settings{PreferredModel: reservedModel, Catalog: []clientcatalog.Entry{
+		{ID: "openrouter/anthropic/claude-sonnet-4"},
+		{ID: "deepseek/deepseek-chat"},
+	}}
+	first, err := m.Point(ClientClaude, testBaseURL, wide)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.PointState != StatePointed {
+		t.Fatalf("state after point = %s", first.PointState)
+	}
+	cache, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"baseUrl":"http://127.0.0.1:12600/c/claude"`,
+		`"id":"claude-gw-default"`,
+		`"display_name":"deepseek/deepseek-chat"`,
+		`"id":"claude-gw2-openrouter--anthropic~sclaude-sonnet-4"`,
+	} {
+		if !strings.Contains(string(cache), want) {
+			t.Fatalf("pointed cache missing %q:\n%s", want, cache)
+		}
+	}
+	if strings.Contains(string(cache), "claude-ocx-") {
+		t.Fatalf("OpenCodex aliases survived point:\n%s", cache)
+	}
+	settings, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(settings), "claude-gw-") {
+		t.Fatalf("picker alias leaked into settings.json:\n%s", settings)
+	}
+	narrow := Settings{PreferredModel: reservedModel, Catalog: []clientcatalog.Entry{{ID: "deepseek/deepseek-chat"}}}
+	manifestsBefore, _ := filepath.Glob(filepath.Join(m.dataRoot, "backups", "claude", "*", "manifest.json"))
+	changed, err := m.SyncSettings(ClientClaude, testBaseURL, narrow)
+	if err != nil || !changed {
+		t.Fatalf("shrink sync changed=%v err=%v", changed, err)
+	}
+	manifestsAfter, _ := filepath.Glob(filepath.Join(m.dataRoot, "backups", "claude", "*", "manifest.json"))
+	if len(manifestsAfter) != len(manifestsBefore) {
+		t.Fatal("cache shrink created a new restore point")
+	}
+	cache, err = os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(cache), "openrouter/anthropic/claude-sonnet-4") {
+		t.Fatalf("removed model still in picker cache:\n%s", cache)
+	}
+	if !strings.Contains(string(cache), "deepseek/deepseek-chat") {
+		t.Fatalf("remaining model missing from picker cache:\n%s", cache)
+	}
+	if state := m.Check(ClientClaude, testBaseURL, narrow).PointState; state != StatePointed {
+		t.Fatalf("state after shrink = %s", state)
+	}
+	if state := m.Check(ClientClaude, testBaseURL, wide).PointState; state == StatePointed {
+		t.Fatal("stale Claude picker cache reported as pointed")
+	}
+	if _, err := m.Restore(ClientClaude, testBaseURL, narrow); err != nil {
+		t.Fatal(err)
+	}
+	restoredSettings, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(restoredSettings) != string(originalSettings) {
+		t.Fatalf("settings restore = %q, want %q", restoredSettings, originalSettings)
+	}
+	restoredCache, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(restoredCache) != string(originalCache) {
+		t.Fatalf("cache restore = %q, want %q", restoredCache, originalCache)
+	}
+}
+
+func TestClaudeMissingCacheIsRepairedWithoutNewBackup(t *testing.T) {
+	home := t.TempDir()
+	target := clientTarget(home, ClientClaude, nil)
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := testManager(t, home, NewMemoryEnvironment(), map[string]string{}, nil)
+	settings := Settings{PreferredModel: reservedModel, Catalog: []clientcatalog.Entry{{ID: "zhipu/glm-5"}}}
+	if _, err := m.Point(ClientClaude, testBaseURL, settings); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(claude.CachePath(target)); err != nil {
+		t.Fatal(err)
+	}
+	if state := m.Check(ClientClaude, testBaseURL, settings).PointState; state != StateDrifted {
+		t.Fatalf("missing cache state = %s", state)
+	}
+	manifestsBefore, _ := filepath.Glob(filepath.Join(m.dataRoot, "backups", "claude", "*", "manifest.json"))
+	result, err := m.Point(ClientClaude, testBaseURL, settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestsAfter, _ := filepath.Glob(filepath.Join(m.dataRoot, "backups", "claude", "*", "manifest.json"))
+	if result.BackupDir != "" || len(manifestsAfter) != len(manifestsBefore) {
+		t.Fatalf("repairing the picker cache replaced the restore point: %+v", result)
+	}
+	if result.PointState != StatePointed || !result.Changed {
+		t.Fatalf("repair result = %+v", result)
+	}
+	ok, err := claude.CacheMatches(claude.CachePath(target), testBaseURL, settings)
+	if err != nil || !ok {
+		t.Fatalf("repaired cache still mismatches: ok=%v err=%v", ok, err)
 	}
 }
 

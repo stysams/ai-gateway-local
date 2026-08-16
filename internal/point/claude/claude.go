@@ -25,7 +25,10 @@ var modelKeys = []string{
 // /c/claude/v1/models exposes reversible claude-gw* picker aliases and
 // keeps display_name as the real selectable id. The four startup env slots
 // stay gateway-default; route.Resolve decodes an alias before §7.4.
-// See docs/v1-scheme.md §12.4 and the 2026-08-16 evidence in §20.
+// Discovery is not enough on its own: a stale or foreign
+// cache/gateway-models.json, or CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,
+// leaves /model empty. Point/sync therefore also pre-writes that cache
+// the same way OpenCodex's `ocx claude` does (docs/v1-scheme.md §12.4).
 const discoveryKey = "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
 
 // Transform merges the gateway's env slots into Claude Code's user settings,

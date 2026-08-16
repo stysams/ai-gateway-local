@@ -450,8 +450,9 @@ generic
 
 客户端配置文件中落地完整目录只在客户端原生支持、且不破坏系统提示词时进行。
 依据 §20 的 2026-08-16 复核，Codex 通过克隆 bundled 模板写入 `model_catalog_json`
-sidecar；Grok Build 在配置里追加条目。Claude Code 仍只写首选模型；它的完整
-可选目录由 `/c/claude/v1/models` 以可逆选择器别名提供，见 §7.5。
+sidecar；Grok Build 在配置里追加条目。Claude Code 的完整可选目录由
+`/c/claude/v1/models` 以可逆选择器别名提供，并在指向/同步时预写
+`<CLAUDE_CONFIG_DIR>/cache/gateway-models.json`，见 §7.5 与 §12.4。
 
 管理面切换客户端路由时只影响下一次请求。切换路由不得替换最初 point 创建的恢复点。
 若某客户端配置中写的是 `gateway-default`，切换路由不得改写该客户端配置文件。
@@ -1077,6 +1078,17 @@ Codex 只在该字段严格等于 `OpenAI` 时才会向网关发送
 - `/c/claude/v1/models` 必须返回 §7.5 的可逆选择器别名，使 `/model` 列出全部
   已启用模型；`display_name` 仍是真实可选 id。四个启动环境变量保持
   `gateway-default`，禁止把别名写入 `settings.json` 的启动槽。
+- 指向和目录同步还必须预写 `<CLAUDE_CONFIG_DIR>/cache/gateway-models.json`，
+  外形与 Claude Code 自己缓存的文件一致：
+  `{ "baseUrl", "fetchedAt", "models": [{ "id", "display_name" }] }`。
+  `baseUrl` 必须等于 `ANTHROPIC_BASE_URL`（即 `<gateway>/c/claude`），`id` 是
+  选择器别名，`display_name` 是真实可选 id。这是 `/model` 的落地目录；发现
+  被 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` 关闭、或缓存里仍是其它代理
+  的 `baseUrl` 时，没有这份文件选择器就是空的。证据见 §20。
+- 该缓存文件纳入 point 事务的 `files`。第一次指向必须备份原文件；原文件不存在
+  则 restore 删除它。已经托管的配置同步目录时就地改写缓存，不得新建还原点。
+  旧还原点没有记录该文件时，restore 只删除 `baseUrl` 属于本网关的缓存，不得
+  删除 OpenCodex 或其它产品的缓存。
 - `claude --model <provider-id>/<model-id>` 与选择器别名都必须可用。上游收到的
   模型名必须是解码后的真实模型，不得把别名交给上游。证据见 §20。
 - 只改用户级配置，禁止改项目内 `.claude/settings.json`。
@@ -2016,9 +2028,9 @@ bundled 模板时拒绝指向。完整目录同时由 sidecar 与 `/c/codex/v1/m
 - 客户端路由从「客户端唯一可用模型」改为「客户端启动首选模型」，语义见 §7.3。
 - 完整的已启用 `<provider-id>/<model-id>` 目录一律由 `/c/{client}/v1/models` 提供，
   这是三个客户端唯一共同可用的入口。
-- 只有 Grok Build 在配置文件里落地完整目录；Codex 通过 sidecar 落地；Claude Code
-  只写首选模型，完整目录走 `/c/claude/v1/models` 的可逆选择器别名（见下一条
-  2026-08-16 复核）。
+- 只有 Grok Build 在主配置文件里落地完整目录；Codex 通过 sidecar 落地；Claude
+  Code 通过 `cache/gateway-models.json` 落地，完整 HTTP 目录仍走
+  `/c/claude/v1/models` 的可逆选择器别名（见后续 2026-08-16 复核）。
 - `/v1/models` 以及 Codex / Grok / generic 前缀版本每项的 `display_name` 必须
   等于该项 `id`。`/c/claude/v1/models` 的 `id` 是选择器别名，`display_name`
   仍等于真实可选 id。
@@ -2054,6 +2066,42 @@ bundled 模板时拒绝指向。完整目录同时由 sidecar 与 `/c/codex/v1/m
   `/c/{codex,grok,generic}/v1/models`。
 - 禁止把别名作为上游模型名发出。
 - 禁止为了让测试通过而弱化「别名必须可逆」或「display_name 必须是真实 id」。
+
+### 2026-08-16 复核：Claude Code `/model` 必须预写 gateway-models.json
+
+本次在已落地 `claude-gw*` 别名之后复测本机 Claude Code 选择器，结论是只改
+`/c/claude/v1/models` 不够。
+
+1. 本机 `%USERPROFILE%\.claude\settings.json` 已指向
+   `http://127.0.0.1:12600/c/claude`，并打开了
+   `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`。同文件里用户自己的
+   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` 按官方文档会跳过网关发现。
+   规格 §12.4 禁止覆盖 `env` 中的无关变量，因此不得删这个开关来“修好”
+   选择器。
+2. 同目录 `cache/gateway-models.json` 仍是 OpenCodex 留下的文件：
+   `baseUrl` 为 `http://127.0.0.1:10100`，条目 id 为 `claude-ocx-*`。
+   Claude Code 只在 `baseUrl === ANTHROPIC_BASE_URL` 时使用该缓存，因此
+   这份文件被完整忽略，`/model` 看不到本网关已启用供应商。
+3. OpenCodex 的 `ocx claude`（本机安装
+   `@bitkyc08/opencodex`，源码 `src/cli/claude.ts` 与
+   `src/claude/gateway-cache.ts`）在拉起 Claude Code 之前主动预写同一份
+   缓存：先请求本地代理的 `/v1/models?limit=1000`，再写成
+   `{ baseUrl, fetchedAt, models: [{ id, display_name }] }`，`baseUrl`
+   钉死为本次注入的 `ANTHROPIC_BASE_URL`。注释写明 Claude Code 2.1.207
+   在没有凭证时不会自己刷新该文件。
+4. 因此本网关的 point / `SyncSettings` 必须按同一外形写入
+   `cache/gateway-models.json`，`id` 用本网关的 `claude-gw*` 别名，
+   `display_name` 仍是真实可选 id。不得依赖用户重启后的发现请求，也不得
+   覆盖 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`。
+
+禁止事项（新冻结）：
+
+- 禁止把别名写进 `settings.json` 的四个启动环境变量。
+- 第一次 point 必须把当时磁盘上的 `gateway-models.json` 作为原始字节纳入
+  还原点。已经托管的配置同步目录时可以就地覆盖该文件，不得为此新建还原点。
+  restore 按还原点恢复原字节；旧还原点没有该文件时，只删除 `baseUrl` 属于
+  本网关的缓存，不得删除 OpenCodex 或其它产品的缓存。
+- 禁止为了让选择器出现条目而清空用户已有的无关 `env` 变量。
 
 ### 2026-08-16 复核：Codex 远程压缩触发条件
 

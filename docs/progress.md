@@ -112,8 +112,9 @@
 13. **Claude Code `/model` 列出全部已启用模型。** `/c/claude/v1/models` 把
     `id` 写成可逆 `claude-gw*` 选择器别名，以通过客户端
     `/(claude|anthropic)/i` 过滤器；`display_name` 仍是真实可选 id。
-    `route.Resolve` 先解码再走 §7.4。别名不得写进启动环境变量、Codex/Grok
-    目录或发给上游。
+    `route.Resolve` 先解码再走 §7.4。指向和目录同步还按 OpenCodex
+    `ocx claude` 的外形预写 `cache/gateway-models.json`，`baseUrl` 等于
+    `ANTHROPIC_BASE_URL`。别名不得写进启动环境变量、Codex/Grok 目录或发给上游。
 14. **桌面和管理端都是单实例。** 网关继续用 `gateway.lock`。桌面在创建窗口和托盘之前先拿 Wails 单实例锁；再次启动只激活已有窗口并退出，不再出现第二个托盘图标。桌面派生 `serve` 之前必须探测 `gateway.lock`，锁已被占用时只等待管理面就绪，不得再拉起一个网关进程。`ai-gateway-desktop serve` 仍走无头入口，只受 `gateway.lock` 约束。
 
 相关证据在规格 §20「2026-08-15 复核：客户端可选模型目录」、
@@ -121,7 +122,8 @@
 「2026-08-16 复核：Responses 历史回放使用 output_text」、
 「2026-08-16 复核：Chat 出站工具参数必须是 JSON 字符串」和
 「2026-08-16 复核：Chat 出站工具结果必须紧跟 tool_calls」和
-「2026-08-16 复核：Claude Code `/model` 使用可逆选择器别名」。不要重新发明 Codex 目录方案。
+「2026-08-16 复核：Claude Code `/model` 使用可逆选择器别名」和
+「2026-08-16 复核：Claude Code `/model` 必须预写 gateway-models.json」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
 
 ---
 
@@ -130,7 +132,7 @@
 | 客户端 | 配置里写什么 | 用户怎么选其它模型 | 禁止事项 |
 |---|---|---|---|
 | Codex | 首选 `model = "gateway-default"`；根键 `model_catalog_json` 指向同目录 `ai-gateway-catalog.json` | `/model`、`codex debug models`、`codex -m <provider-id>/<model-id>`，或 `/c/codex/v1/models` | 目录条目必须从本机 `codex debug models --bundled` 克隆，保留 `base_instructions`，删除 `model_messages`。禁止手写短提示词。找不到模板则拒绝指向。 |
-| Claude Code | 四个模型环境变量都是 `gateway-default`；`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` | 启动时拉 `/c/claude/v1/models?limit=1000`；`/model` 按 `display_name` 列出全部已启用 `供应商/模型 ID`；或 `claude --model <provider-id>/<model-id>` | `/c/claude/v1/models` 的 `id` 必须是可逆 `claude-gw*` 别名。禁止把别名写进启动环境变量、Codex/Grok 目录或发给上游。 |
+| Claude Code | 四个模型环境变量都是 `gateway-default`；`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`；`<CLAUDE_CONFIG_DIR>/cache/gateway-models.json` 写入全部已启用模型 | `/model` 读这份缓存（`display_name` 为 `供应商/模型 ID`）；启动时若发现未被关掉也会刷新同一文件；或 `claude --model <provider-id>/<model-id>` | `/c/claude/v1/models` 与缓存里的 `id` 必须是可逆 `claude-gw*` 别名。禁止把别名写进启动环境变量、Codex/Grok 目录或发给上游。不得覆盖用户已有的无关 `env`（包括 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`）。 |
 | Grok Build | `[models] default = "ai-gateway"`；每个已启用模型一条 `ai-gateway:` 前缀表 | 配置目录与内置模型并存 | restore 只删网关写过的条目，必须保留用户自己的模型。 |
 
 切换路由只改网关配置。客户端文件里只要还是 `gateway-default`，就不要去改它。

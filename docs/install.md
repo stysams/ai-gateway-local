@@ -139,12 +139,15 @@ and is shown in that form:
   or changing availability. Some Codex Desktop builds still filter non-official
   ids; CLI and TUI `/model` follow the sidecar.
 - Claude Code is pointed with
-  `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` so its picker queries
-  `/c/claude/v1/models`. That list uses reversible `claude-gw*` ids so every
-  enabled model survives Claude Code's `claude`/`anthropic` filter; the picker
-  label (`display_name`) stays the real `供应商/模型 ID`. Restart Claude Code
-  after pointing or changing availability so it refreshes
-  `%USERPROFILE%\.claude\cache\gateway-models.json`.
+  `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` and a pre-written
+  `%USERPROFILE%\.claude\cache\gateway-models.json` (or
+  `$CLAUDE_CONFIG_DIR\cache\gateway-models.json`). The cache uses reversible
+  `claude-gw*` ids so every enabled model survives Claude Code's
+  `claude`/`anthropic` filter; the picker label (`display_name`) stays the
+  real `供应商/模型 ID`. Point and availability sync rewrite that file in
+  place. Restart Claude Code after pointing or changing availability so the
+  in-memory picker reloads the cache. A leftover OpenCodex cache that still
+  names `127.0.0.1:10100` is ignored until this rewrite.
 - Grok Build additionally receives one native
   `[model."ai-gateway:<provider-id>/<model-id>"]` entry per enabled model, so
   its own picker lists the whole catalog. Restore removes only the entries the

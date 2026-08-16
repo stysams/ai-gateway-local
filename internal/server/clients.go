@@ -31,7 +31,8 @@ func (s *Server) pointContext(w http.ResponseWriter, r *http.Request) (point.Cli
 // gateway resolves gateway-default against the current route per request. The
 // catalog carries every enabled `<provider-id>/<model-id>` so a user can pick
 // any of them inside the agent. Grok writes it into config.toml; Codex writes
-// it into ai-gateway-catalog.json; Claude still only enables gateway discovery.
+// it into ai-gateway-catalog.json; Claude writes cache/gateway-models.json
+// and still enables gateway discovery.
 func (s *Server) clientSettings(cfg *config.Config, client point.Client) point.Settings {
 	items := s.modelCatalog(cfg)
 	catalog := make([]clientcatalog.Entry, 0, len(items))

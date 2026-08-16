@@ -182,7 +182,7 @@ func (m *Manager) check(client Client, baseURL string, settings Settings) Status
 		status.Message = err.Error()
 		return status
 	}
-	pointed, err := checkContent(client, data, baseURL, settings)
+	pointed, err := checkContent(client, data, baseURL, settings, target)
 	if err != nil {
 		status.PointState = StateDrifted
 		status.Message = err.Error()
@@ -351,7 +351,7 @@ func (m *Manager) syncSettingsLocked(client Client, baseURL string, settings Set
 			return false, nil
 		}
 	}
-	current, err := checkContent(client, original, baseURL, settings)
+	current, err := checkContent(client, original, baseURL, settings, target)
 	if err != nil {
 		return false, err
 	}
@@ -368,7 +368,7 @@ func (m *Manager) syncSettingsLocked(client Client, baseURL string, settings Set
 	if client == ClientCodex {
 		codex.InvalidateModelsCache(filepath.Join(filepath.Dir(target), codex.ModelsCacheName))
 	}
-	verified, err := checkContent(client, planned.configBytes, baseURL, settings)
+	verified, err := checkContent(client, planned.configBytes, baseURL, settings, target)
 	if err != nil || !verified {
 		rollbackErr := planned.restore()
 		if err == nil {
@@ -482,6 +482,9 @@ func (m *Manager) Restore(client Client, baseURL string, settings Settings) (Res
 		m.cleanupUnreferencedCodexCatalog(target)
 		codex.InvalidateModelsCache(filepath.Join(filepath.Dir(target), codex.ModelsCacheName))
 	}
+	if client == ClientClaude {
+		m.cleanupUnreferencedClaudeCache(target, baseURL, manifest.Files)
+	}
 	status := m.checkUnlocked(client, baseURL, settings)
 	return Result{Status: status, BackupDir: backupDir, Changed: true}, nil
 }
@@ -584,12 +587,16 @@ func transformContent(client Client, data []byte, baseURL string, settings Setti
 	return nil, errors.New("unknown client")
 }
 
-func checkContent(client Client, data []byte, baseURL string, settings Settings) (bool, error) {
+func checkContent(client Client, data []byte, baseURL string, settings Settings, target string) (bool, error) {
 	switch client {
 	case ClientCodex:
 		return codex.Check(data, baseURL, settings)
 	case ClientClaude:
-		return claude.Check(data, baseURL, settings)
+		ok, err := claude.Check(data, baseURL, settings)
+		if err != nil || !ok {
+			return ok, err
+		}
+		return claude.CacheMatches(claude.CachePath(target), baseURL, settings)
 	case ClientGrok:
 		return grok.Check(data, baseURL, settings)
 	}
@@ -675,6 +682,15 @@ func (m *Manager) planClientWrite(client Client, target string, original []byte,
 			return clientWrite{}, err
 		}
 	}
+	var claudeCache []byte
+	var claudeCachePath string
+	if client == ClientClaude {
+		claudeCachePath = claude.CachePath(target)
+		claudeCache, err = claude.BuildCache(baseURL, settings, m.now())
+		if err != nil {
+			return clientWrite{}, err
+		}
+	}
 	modified, err := transformContent(client, original, baseURL, settings, catalogPath)
 	if err != nil {
 		return clientWrite{}, err
@@ -687,6 +703,13 @@ func (m *Manager) planClientWrite(client Client, target string, original []byte,
 			return clientWrite{}, catErr
 		}
 		plan.addFile(catalogPath, catOriginal, catExists, catMode, catalogBytes)
+	}
+	if client == ClientClaude {
+		cacheOriginal, cacheExists, cacheMode, cacheErr := readFile(claudeCachePath)
+		if cacheErr != nil {
+			return clientWrite{}, cacheErr
+		}
+		plan.addFile(claudeCachePath, cacheOriginal, cacheExists, cacheMode, claudeCache)
 	}
 	return plan, nil
 }
@@ -703,6 +726,16 @@ func (w *clientWrite) addFile(path string, original []byte, exists bool, mode os
 		mode = 0o600
 	}
 	w.writes = append(w.writes, plannedWrite{path: path, data: next, original: original, exists: exists, mode: mode})
+}
+
+func (m *Manager) cleanupUnreferencedClaudeCache(settingsPath, baseURL string, files []ManifestFile) {
+	owned := claude.CachePath(settingsPath)
+	for _, file := range files {
+		if filepath.Clean(file.Target) == filepath.Clean(owned) {
+			return
+		}
+	}
+	_ = claude.RemoveOwnedCache(owned, baseURL)
 }
 
 func (m *Manager) cleanupUnreferencedCodexCatalog(configPath string) {

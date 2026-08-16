@@ -175,9 +175,11 @@ pointed clients keep the provider-neutral `gateway-default` model in that slot,
 so route changes apply at request time without rewriting the pointed client or
 replacing the original restore point. Every enabled
 `<provider-id>/<model-id>` stays selectable inside the client — through
-`/c/{client}/v1/models` for all three clients, and additionally as native
-`[model."ai-gateway:<provider-id>/<model-id>"]` entries in Grok Build's
-configuration, the only one of the three that can hold a catalog itself. Client status, point, restore, and doctor APIs are covered by
+`/c/{client}/v1/models` for all three clients, as a cloned
+`model_catalog_json` sidecar for Codex, as
+`<CLAUDE_CONFIG_DIR>/cache/gateway-models.json` for Claude Code, and as
+native `[model."ai-gateway:<provider-id>/<model-id>"]` entries in Grok
+Build. Client status, point, restore, and doctor APIs are covered by
 unit and HTTP integration tests. See [docs/install.md](docs/install.md) for the
 operator flow and the required Windows client compatibility check.
 
