@@ -157,15 +157,25 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 				if b.Type != ir.BlockToolResult {
 					return nil, fmt.Errorf("cannot convert %s block to responses", b.Type)
 				}
-				input = append(input, map[string]any{
-					"type":    "function_call_output",
-					"call_id": b.ToolResult.ID,
-					"output":  b.ToolResult.Content,
-				})
+				input = append(input, functionCallOutputItem(b.ToolResult))
 			}
 		default:
+			// Claude Code keeps tool_result on a user turn, sometimes next
+			// to later user text. Dropping that block leaves a bare
+			// function_call and the upstream returns 400
+			// (docs/v1-scheme.md §10, §20 2026-08-16).
 			var content []map[string]any
-			var toolCalls []map[string]any
+			flushContent := func() {
+				if len(content) == 0 {
+					return
+				}
+				input = append(input, map[string]any{
+					"type":    "message",
+					"role":    string(m.Role),
+					"content": content,
+				})
+				content = nil
+			}
 			for _, b := range m.Content {
 				switch b.Type {
 				case ir.BlockText:
@@ -178,8 +188,9 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 					}
 					content = append(content, map[string]any{"type": textType, "text": b.Text})
 				case ir.BlockToolCall:
+					flushContent()
 					if b.ToolCall.Custom {
-						toolCalls = append(toolCalls, map[string]any{
+						input = append(input, map[string]any{
 							"type":    "custom_tool_call",
 							"call_id": b.ToolCall.ID,
 							"name":    b.ToolCall.Name,
@@ -187,12 +198,15 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 						})
 						break
 					}
-					toolCalls = append(toolCalls, map[string]any{
+					input = append(input, map[string]any{
 						"type":      "function_call",
 						"call_id":   b.ToolCall.ID,
 						"name":      b.ToolCall.Name,
 						"arguments": string(b.ToolCall.Arguments),
 					})
+				case ir.BlockToolResult:
+					flushContent()
+					input = append(input, functionCallOutputItem(b.ToolResult))
 				case ir.BlockImage:
 					url, err := b.Image.WireURL()
 					if err != nil {
@@ -207,14 +221,7 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 					return nil, fmt.Errorf("%w: reasoning history cannot be converted to a responses input item", ir.ErrUnsupportedContent)
 				}
 			}
-			if len(content) > 0 {
-				input = append(input, map[string]any{
-					"type":    "message",
-					"role":    string(m.Role),
-					"content": content,
-				})
-			}
-			input = append(input, toolCalls...)
+			flushContent()
 		}
 	}
 	body["input"] = input
@@ -240,6 +247,19 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 		body["tools"] = tools
 	}
 	return json.Marshal(body)
+}
+
+func functionCallOutputItem(result *ir.ToolResult) map[string]any {
+	item := map[string]any{
+		"type":    "function_call_output",
+		"call_id": "",
+		"output":  "",
+	}
+	if result != nil {
+		item["call_id"] = result.ID
+		item["output"] = result.Content
+	}
+	return item
 }
 
 // ParseResponse converts a non-streaming Response into ir events.

@@ -214,8 +214,12 @@ func ParseRequest(body []byte) (*ir.Request, error) {
 // Code may place deferred-tool guidance in a system-role message even though
 // the public Messages shape normally uses the top-level system field. Those
 // messages join the IR system blocks so cross-protocol routing preserves them.
-// Tool results stay on their user message; tool_use blocks become assistant
-// tool calls.
+//
+// Claude Code puts tool_result blocks on a user message and may mix them
+// with later text (ToolSearch emits a tool_reference part plus "Tool
+// loaded."). Cross-protocol adapters need RoleTool for pairing, so each
+// tool_result becomes its own tool message; leftover user blocks stay
+// RoleUser (docs/v1-scheme.md §8.1, §10, §20 2026-08-16).
 func parseMessages(rawMsgs []json.RawMessage) ([]ir.Block, []ir.Message, error) {
 	var system []ir.Block
 	var messages []ir.Message
@@ -278,28 +282,10 @@ func parseMessages(rawMsgs []json.RawMessage) ([]ir.Block, []ir.Message, error) 
 					ToolCall: &ir.ToolCall{ID: b.ID, Name: b.Name, Arguments: b.Input},
 				})
 			case "tool_result":
-				result := &ir.ToolResult{ID: b.ToolUseID, IsError: b.IsError}
-				if b.Content != nil {
-					var s string
-					if err := json.Unmarshal(b.Content, &s); err == nil {
-						result.Content = s
-					} else {
-						var parts []struct {
-							Type string `json:"type"`
-							Text string `json:"text"`
-						}
-						if err := json.Unmarshal(b.Content, &parts); err == nil {
-							var sb strings.Builder
-							for _, p := range parts {
-								if p.Type == "text" {
-									sb.WriteString(p.Text)
-								}
-							}
-							result.Content = sb.String()
-						}
-					}
-				}
-				content = append(content, ir.Block{Type: ir.BlockToolResult, ToolResult: result})
+				content = append(content, ir.Block{
+					Type:       ir.BlockToolResult,
+					ToolResult: &ir.ToolResult{ID: b.ToolUseID, IsError: b.IsError, Content: parseToolResultContent(b.Content)},
+				})
 			case "image":
 				image, err := parseImageSource(b.Source)
 				if err != nil {
@@ -320,13 +306,71 @@ func parseMessages(rawMsgs []json.RawMessage) ([]ir.Block, []ir.Message, error) 
 		}
 		role := ir.Role(m.Role)
 		if role == ir.RoleUser {
-			// tool_result 块属于 user 消息，但语义上是工具结果。
-			messages = append(messages, ir.Message{Role: role, Content: content})
+			messages = append(messages, splitUserToolResults(content)...)
 			continue
 		}
 		messages = append(messages, ir.Message{Role: role, Content: content})
 	}
 	return system, messages, nil
+}
+
+// splitUserToolResults turns Claude Code's mixed user turn into IR tool
+// messages followed by any leftover user blocks. Responses and Chat both
+// require the result to sit next to its call, not inside a user text item.
+func splitUserToolResults(content []ir.Block) []ir.Message {
+	var out []ir.Message
+	var pending []ir.Block
+	flushUser := func() {
+		if len(pending) == 0 {
+			return
+		}
+		out = append(out, ir.Message{Role: ir.RoleUser, Content: pending})
+		pending = nil
+	}
+	for _, block := range content {
+		if block.Type == ir.BlockToolResult {
+			flushUser()
+			out = append(out, ir.Message{Role: ir.RoleTool, Content: []ir.Block{block}})
+			continue
+		}
+		pending = append(pending, block)
+	}
+	flushUser()
+	return out
+}
+
+// parseToolResultContent keeps a string or all-text array as text. Mixed or
+// structured parts (Claude Code tool_reference) stay as the original JSON
+// so the model still sees what loaded. Empty / null content is "".
+func parseToolResultContent(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err == nil {
+		allText := true
+		var sb strings.Builder
+		for _, p := range parts {
+			if p.Type == "text" {
+				sb.WriteString(p.Text)
+				continue
+			}
+			if p.Type != "" {
+				allText = false
+			}
+		}
+		if allText {
+			return sb.String()
+		}
+	}
+	return string(raw)
 }
 
 // parseSystemContent accepts the two text-only system forms used by the

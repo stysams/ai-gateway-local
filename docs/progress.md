@@ -119,6 +119,12 @@
 15. **Responses 出站助手历史必须用 `output_text`。** Claude Code 把上一轮
     助手正文放进下一轮 `messages`；跨到 `openai-responses` 时不得把该块
     写成 `input_text`，否则上游 400。用户和 developer 仍用 `input_text`。
+16. **Claude Code 用户消息里的 `tool_result` 必须转成工具结果。** ToolSearch
+    会把 `tool_reference` 和后续文本放在同一条 `role: user` 消息里。入站
+    拆成 IR `RoleTool` + 剩余 `RoleUser`，结构化内容保留为 JSON 字符串。
+    出站 Responses 必须紧跟 `function_call` 写出 `function_call_output`，
+    出站 Chat 必须紧跟 `tool_calls` 写出 `role: tool`。丢掉结果只留
+    `Tool loaded.` 会让上游 400。
 
 相关证据在规格 §20「2026-08-15 复核：客户端可选模型目录」、
 「2026-08-16 复核：Codex 远程压缩触发条件」、
@@ -127,7 +133,8 @@
 「2026-08-16 复核：Chat 出站工具结果必须紧跟 tool_calls」和
 「2026-08-16 复核：Claude Code `/model` 使用可逆选择器别名」和
 「2026-08-16 复核：Claude Code `/model` 必须预写 gateway-models.json」和
-「2026-08-16 复核：Responses 出站助手历史必须用 output_text」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
+「2026-08-16 复核：Responses 出站助手历史必须用 output_text」和
+「2026-08-16 复核：Claude Code 用户消息里的 tool_result 必须转成 function_call_output」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
 
 ---
 

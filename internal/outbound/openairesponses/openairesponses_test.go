@@ -70,6 +70,65 @@ func TestGenerateRequest(t *testing.T) {
 	}
 }
 
+func TestGenerateRequestUserToolResultEmitsFunctionCallOutput(t *testing.T) {
+	// Claude Code keeps tool_result on the user turn, mixed with later
+	// text. Responses rejects a function_call that has no matching output
+	// (docs/v1-scheme.md §20 2026-08-16, req_028fc2898f548d37d54f89be).
+	req := &ir.Request{
+		Model: "gpt-5.6-terra",
+		Messages: []ir.Message{
+			{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "成都双流今日天气如何"}}},
+			{Role: ir.RoleAssistant, Content: []ir.Block{{
+				Type: ir.BlockToolCall,
+				ToolCall: &ir.ToolCall{
+					ID:        "call_qIj90apTNbh1A1zQOxjoYiex",
+					Name:      "ToolSearch",
+					Arguments: json.RawMessage(`{"query":"select:WebSearch"}`),
+				},
+			}}},
+			{Role: ir.RoleUser, Content: []ir.Block{
+				{Type: ir.BlockToolResult, ToolResult: &ir.ToolResult{
+					ID:      "call_qIj90apTNbh1A1zQOxjoYiex",
+					Content: `[{"type":"tool_reference","tool_name":"WebSearch"}]`,
+				}},
+				{Type: ir.BlockText, Text: "Tool loaded."},
+			}},
+		},
+	}
+	body, err := GenerateRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Input []struct {
+			Type    string `json:"type"`
+			Role    string `json:"role"`
+			CallID  string `json:"call_id"`
+			Name    string `json:"name"`
+			Output  string `json:"output"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Input) != 4 {
+		t.Fatalf("input = %#v", doc.Input)
+	}
+	if doc.Input[1].Type != "function_call" || doc.Input[1].CallID != "call_qIj90apTNbh1A1zQOxjoYiex" || doc.Input[1].Name != "ToolSearch" {
+		t.Fatalf("function_call = %#v", doc.Input[1])
+	}
+	if doc.Input[2].Type != "function_call_output" || doc.Input[2].CallID != "call_qIj90apTNbh1A1zQOxjoYiex" || doc.Input[2].Output != `[{"type":"tool_reference","tool_name":"WebSearch"}]` {
+		t.Fatalf("function_call_output = %#v", doc.Input[2])
+	}
+	if doc.Input[3].Type != "message" || doc.Input[3].Role != "user" || len(doc.Input[3].Content) != 1 || doc.Input[3].Content[0].Text != "Tool loaded." {
+		t.Fatalf("leftover user = %#v", doc.Input[3])
+	}
+}
+
 func TestGenerateRequestAssistantHistoryUsesOutputText(t *testing.T) {
 	req := &ir.Request{
 		Model: "gpt-5.6-terra",

@@ -39,12 +39,52 @@ func TestParseRequestBlocks(t *testing.T) {
 	if string(assistant.Content[0].ToolCall.Arguments) != `{"a": 1}` {
 		t.Errorf("tool input = %s", assistant.Content[0].ToolCall.Arguments)
 	}
+	if req.Messages[2].Role != ir.RoleTool {
+		t.Errorf("tool result role = %s, want tool", req.Messages[2].Role)
+	}
 	toolResult := req.Messages[2].Content[0].ToolResult
 	if toolResult == nil || toolResult.ID != "toolu_1" || toolResult.Content != "ok" {
 		t.Errorf("tool_result = %+v", req.Messages[2].Content)
 	}
 	if len(req.Tools) != 1 || req.Tools[0].Name != "f" {
 		t.Errorf("tools = %+v", req.Tools)
+	}
+}
+
+func TestParseRequestClaudeToolSearchResult(t *testing.T) {
+	// Claude Code ToolSearch: user message holds a tool_reference result
+	// plus a sibling "Tool loaded." text block
+	// (docs/v1-scheme.md §20 2026-08-16, req_028fc2898f548d37d54f89be).
+	body := []byte(`{
+		"model": "m",
+		"messages": [
+			{"role": "user", "content": "成都双流今日天气如何"},
+			{"role": "assistant", "content": [{"type": "tool_use", "id": "call_qIj90apTNbh1A1zQOxjoYiex", "name": "ToolSearch", "input": {"query": "select:WebSearch"}}]},
+			{"role": "user", "content": [
+				{"type": "tool_result", "tool_use_id": "call_qIj90apTNbh1A1zQOxjoYiex", "content": [{"type":"tool_reference","tool_name":"WebSearch"}]},
+				{"type": "text", "text": "Tool loaded."}
+			]}
+		]
+	}`)
+	req, err := ParseRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Messages) != 4 {
+		t.Fatalf("messages = %+v", req.Messages)
+	}
+	if req.Messages[2].Role != ir.RoleTool {
+		t.Fatalf("tool result role = %s", req.Messages[2].Role)
+	}
+	tr := req.Messages[2].Content[0].ToolResult
+	if tr == nil || tr.ID != "call_qIj90apTNbh1A1zQOxjoYiex" {
+		t.Fatalf("tool result = %+v", req.Messages[2].Content)
+	}
+	if tr.Content != `[{"type":"tool_reference","tool_name":"WebSearch"}]` {
+		t.Fatalf("structured tool result = %q", tr.Content)
+	}
+	if req.Messages[3].Role != ir.RoleUser || len(req.Messages[3].Content) != 1 || req.Messages[3].Content[0].Text != "Tool loaded." {
+		t.Fatalf("leftover user = %+v", req.Messages[3])
 	}
 }
 

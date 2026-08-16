@@ -23,6 +23,7 @@
 | Claude Code `/model` 选择器别名 | `internal/route/claudealias.go` | `dataplane.go` `serveModels` / `claudePickerCatalog`；`route.Resolve` 先解码 |
 | Claude Code `/model` 缓存预写 | `internal/point/claude/cache.go` | `point.go` `planClientWrite` / `cleanupUnreferencedClaudeCache` |
 | Responses 出站助手历史文本类型 | `outbound/openairesponses` `GenerateRequest` | 助手块 `output_text`，用户块 `input_text` |
+| Claude Code `tool_result` / `tool_reference` | `inbound/messages` `parseMessages` | 拆成 `RoleTool`；出站 Responses 写 `function_call_output` |
 | 同协议转发 | `dataplane.go` `serveSameProtocol` | `inbound/*/Parse` + `Rewrite` |
 | 跨协议转换 | `dataplane.go` `serveCrossProtocol` | `internal/ir/ir.go`，再进 inbound / outbound |
 | 入站协议外形 | `internal/inbound/{chat,responses,messages}` | `Parse` / `ParseRequest` / `Encode*` / `WriteError` |
@@ -236,6 +237,8 @@ HTTP 请求
 | Messages | `inbound/messages` | `messages.go` `Parse`/`Rewrite` | `ParseRequest` | `Encode*` |
 
 Claude Code 会在 `messages` 数组里发 `role: system`。合并逻辑在 `inbound/messages` 的 `parseMessages`，测试是 `TestParseRequestMergesClaudeCodeSystemRoleMessages`。不要再拒这种请求。
+
+Claude Code 的 `tool_result` 可以是 `tool_reference` 等结构化块，并与后续文本共存于同一条 user 消息。`parseMessages` 必须把结构化内容保留为 JSON 字符串，并把 `tool_result` 拆成 IR `RoleTool`，剩余文本仍是 `RoleUser`。测试是 `TestParseRequestClaudeToolSearchResult`。
 
 `DropContextManagement` 只在 Messages 入站。`InspectFeatures` / `DropReasoning` 三个协议都有。
 

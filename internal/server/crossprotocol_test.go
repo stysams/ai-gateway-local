@@ -1091,6 +1091,111 @@ func TestCrossConcurrentIsolation(t *testing.T) {
 	}
 }
 
+// Claude Code ToolSearch puts tool_result (tool_reference) and "Tool loaded."
+// on the same user turn. Responses requires a matching function_call_output
+// (req_028fc2898f548d37d54f89be).
+func TestCrossClaudeToolSearchResultToResponses(t *testing.T) {
+	up := newFakeUpstream(t, responsesTextHandler(responsesTextBody))
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	p := cfg.Providers["openrouter"]
+	p.Adapter = "openai-responses"
+	cfg.Providers["openrouter"] = p
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	body := []byte(`{
+		"model":"m",
+		"max_tokens":100,
+		"messages":[
+			{"role":"user","content":"成都双流今日天气如何"},
+			{"role":"assistant","content":[{"type":"tool_use","id":"call_qIj90apTNbh1A1zQOxjoYiex","name":"ToolSearch","input":{"query":"select:WebSearch"}}]},
+			{"role":"user","content":[
+				{"type":"tool_result","tool_use_id":"call_qIj90apTNbh1A1zQOxjoYiex","content":[{"type":"tool_reference","tool_name":"WebSearch"}]},
+				{"type":"text","text":"Tool loaded."}
+			]}
+		]
+	}`)
+	resp, data := chatPost(t, addr, "/c/claude/v1/messages", body, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, %s", resp.StatusCode, data)
+	}
+	captured := up.last()
+	var input []struct {
+		Type    string `json:"type"`
+		Role    string `json:"role"`
+		CallID  string `json:"call_id"`
+		Name    string `json:"name"`
+		Output  string `json:"output"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(captured.Fields["input"], &input); err != nil {
+		t.Fatal(err)
+	}
+	if len(input) != 4 {
+		t.Fatalf("upstream input = %#v", input)
+	}
+	if input[1].Type != "function_call" || input[1].CallID != "call_qIj90apTNbh1A1zQOxjoYiex" || input[1].Name != "ToolSearch" {
+		t.Fatalf("function_call = %#v", input[1])
+	}
+	if input[2].Type != "function_call_output" || input[2].CallID != "call_qIj90apTNbh1A1zQOxjoYiex" ||
+		input[2].Output != `[{"type":"tool_reference","tool_name":"WebSearch"}]` {
+		t.Fatalf("function_call_output = %#v", input[2])
+	}
+	if input[3].Type != "message" || input[3].Role != "user" || len(input[3].Content) != 1 || input[3].Content[0].Text != "Tool loaded." {
+		t.Fatalf("leftover user = %#v", input[3])
+	}
+}
+
+func TestCrossClaudeToolSearchResultToChat(t *testing.T) {
+	up := newFakeUpstream(t, nil)
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	body := []byte(`{
+		"model":"m",
+		"max_tokens":100,
+		"messages":[
+			{"role":"user","content":"成都双流今日天气如何"},
+			{"role":"assistant","content":[{"type":"tool_use","id":"call_qIj90apTNbh1A1zQOxjoYiex","name":"ToolSearch","input":{"query":"select:WebSearch"}}]},
+			{"role":"user","content":[
+				{"type":"tool_result","tool_use_id":"call_qIj90apTNbh1A1zQOxjoYiex","content":[{"type":"tool_reference","tool_name":"WebSearch"}]},
+				{"type":"text","text":"Tool loaded."}
+			]}
+		]
+	}`)
+	resp, data := chatPost(t, addr, "/c/claude/v1/messages", body, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, %s", resp.StatusCode, data)
+	}
+	captured := up.last()
+	var messages []struct {
+		Role       string `json:"role"`
+		Content    string `json:"content"`
+		ToolCallID string `json:"tool_call_id"`
+		ToolCalls  []struct {
+			ID string `json:"id"`
+		} `json:"tool_calls"`
+	}
+	if err := json.Unmarshal(captured.Fields["messages"], &messages); err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 4 {
+		t.Fatalf("upstream messages = %#v", messages)
+	}
+	if messages[1].Role != "assistant" || len(messages[1].ToolCalls) != 1 || messages[1].ToolCalls[0].ID != "call_qIj90apTNbh1A1zQOxjoYiex" {
+		t.Fatalf("tool_calls = %#v", messages[1])
+	}
+	if messages[2].Role != "tool" || messages[2].ToolCallID != "call_qIj90apTNbh1A1zQOxjoYiex" ||
+		messages[2].Content != `[{"type":"tool_reference","tool_name":"WebSearch"}]` {
+		t.Fatalf("tool = %#v", messages[2])
+	}
+	if messages[3].Role != "user" || messages[3].Content != "Tool loaded." {
+		t.Fatalf("leftover user = %#v", messages[3])
+	}
+}
+
 // TestCrossToolResultContinuation: 工具结果续轮（chat 请求含结果 → responses
 // 上游收到 function_call_output）。
 func TestCrossToolResultContinuation(t *testing.T) {

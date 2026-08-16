@@ -732,7 +732,10 @@ GET  /readyz
 - `openai-responses`：`POST <base_url>/responses`。`input[]` 里用户和
   developer 的文本块是 `input_text`；助手历史的文本块必须是 `output_text`，
   不得写成 `input_text`。官方 Responses 对 `role: assistant` 的 content
-  type 只接受 `output_text` 和 `refusal`（证据见 §20）。
+  type 只接受 `output_text` 和 `refusal`（证据见 §20）。`input[]` 里每
+  个 `function_call` 必须紧跟对应 `call_id` 的 `function_call_output`。
+  Claude Code 把 `tool_result` 放在 `role: user` 消息里，并可与后续文本
+  共存；跨协议不得丢掉该块，也不得只留下旁边的用户文本（证据见 §20）。
 - `anthropic`：`POST <base_url>/v1/messages`
 
 URL 拼接必须避免重复 `/v1` 或重复斜杠。`base_url` 语义以配置预设为准，不得通过字符串猜测供应商。
@@ -2296,6 +2299,31 @@ messages following tool_calls message)
 
 这是官方 Responses 对助手 item 的 content type 约束，不是供应商私有扩展。
 用户和 developer 仍用 `input_text`；助手历史文本必须写成 `output_text`。
+
+### 2026-08-16 复核：Claude Code 用户消息里的 tool_result 必须转成 function_call_output
+
+实验对象：Claude Code 入站 `POST /c/claude/v1/messages`，模型
+`claude-gw-tudou--gpt-5.6-terra`，出站 adapter `openai-responses`。
+
+证据文件：`%USERPROFILE%\.ai-gateway\logs\2026-08-16\req_028fc2898f548d37d54f89be.jsonl`。
+
+- 入站 `messages[6]`：`assistant` + `tool_use`，`id` 为
+  `call_qIj90apTNbh1A1zQOxjoYiex`，`name` 为 `ToolSearch`。
+- 入站 `messages[7]`：同一条 `user` 消息里先是 `tool_result`
+  （`tool_use_id` 同上，`content` 为
+  `[{"type":"tool_reference","tool_name":"WebSearch"}]`），随后是文本
+  `Tool loaded.`。
+- 出站 `input[]` 七项：前五项对话文本、`function_call`
+  （`call_id=call_qIj90apTNbh1A1zQOxjoYiex`）、`message` 用户文本
+  `Tool loaded.`。没有 `function_call_output`。
+- 上游 400：`No tool output found for function call
+  fc_qIj90apTNbh1A1zQOxjoYiex.`，`param` 为 `input`。
+
+这是官方 Responses 对 `function_call` / `function_call_output` 配对的
+约束，不是供应商私有扩展。`tool_reference` 是 Claude Code ToolSearch
+的结构化结果，跨协议必须作为工具结果文本保留（JSON 字符串），不得当成
+空字符串丢掉。入站要把该 `tool_result` 拆成 IR `RoleTool`，剩余用户
+文本仍是 `RoleUser`。
 
 ---
 
