@@ -2,7 +2,7 @@
 
 > 状态：发布候选，第一期尚未验收完成  
 > 文档日期：2026-08-16  
-> 当前提交：`d97ca983b73ee4ba593fb3431c026d2e02c343e9`（撰写当日；之后以仓库 HEAD 为准）  
+> 当前提交：`b5faadaabe99a332cec8ef4fa6e73a0185caac46`（撰写当日；之后以仓库 HEAD 为准）  
 > 当前发布：`0.1.0-rc1`（`dist/ai-gateway-0.1.0-rc1-windows-amd64.zip`）  
 > 第一验收平台：Windows 11
 
@@ -256,8 +256,8 @@ npm --prefix desktop run test:e2e -- --project=desktop-light
 5. 打完用包内 `ai-gateway.exe version` 核对版本、提交、Go、平台；核对压缩包含两个二进制、`LICENSE`、`README.md`、`docs/install.md`。告知用户必须替换并重启已在运行的网关，新包才会生效。
 
 当前包：`dist/ai-gateway-0.1.0-rc1-windows-amd64.zip`  
-提交：`d97ca983b73ee4ba593fb3431c026d2e02c343e9`  
-SHA-256：`75EE7E4EE8571357D5D44CB046D223D263D035C3905F3117C3C149813DA0524B`
+提交：`b5faadaabe99a332cec8ef4fa6e73a0185caac46`  
+SHA-256：`AE7D420B4F6EF59ED09C080ADCE8ADF6CAE3F501F676ACF960CE0AC933AEC425`
 
 ---
 
