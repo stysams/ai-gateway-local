@@ -13,13 +13,13 @@ import (
 const trayRefreshTimeout = 4 * time.Second
 
 type trayText struct {
-	running, stopped, open, refresh, logging, autostart string
-	start, stop, quit, routeSuffix, errorText           string
+	running, stopped, open, refresh, logging, body, autostart string
+	start, stop, quit, routeSuffix, errorText                 string
 }
 
 var trayTexts = map[string]trayText{
-	"zh-CN": {running: "网关：运行中", stopped: "网关：未运行", open: "打开主窗口", refresh: "刷新", logging: "正文日志", autostart: "登录时启动", start: "启动网关", stop: "停止网关", quit: "退出桌面", routeSuffix: "路由", errorText: "托盘操作失败"},
-	"en-US": {running: "Gateway: running", stopped: "Gateway: stopped", open: "Open main window", refresh: "Refresh", logging: "Body logging", autostart: "Start at login", start: "Start gateway", stop: "Stop gateway", quit: "Quit desktop", routeSuffix: "route", errorText: "Tray action failed"},
+	"zh-CN": {running: "网关：运行中", stopped: "网关：未运行", open: "打开主窗口", refresh: "刷新", logging: "日志", body: "正文", autostart: "登录时启动", start: "启动网关", stop: "停止网关", quit: "退出桌面", routeSuffix: "路由", errorText: "托盘操作失败"},
+	"en-US": {running: "Gateway: running", stopped: "Gateway: stopped", open: "Open main window", refresh: "Refresh", logging: "Logging", body: "Body", autostart: "Start at login", start: "Start gateway", stop: "Stop gateway", quit: "Quit desktop", routeSuffix: "route", errorText: "Tray action failed"},
 }
 
 type trayController struct {
@@ -93,6 +93,10 @@ func (c *trayController) refresh() {
 	logging := menu.AddCheckbox(text.logging, running && status.LoggingEnabled)
 	logging.SetEnabled(running).OnClick(func(*application.Context) {
 		c.perform(func(ctx context.Context) error { return c.api.setLogging(ctx, !status.LoggingEnabled) }, text)
+	})
+	body := menu.AddCheckbox(text.body, running && status.LoggingEnabled && status.LoggingBodyEnabled)
+	body.SetEnabled(running && status.LoggingEnabled).OnClick(func(*application.Context) {
+		c.perform(func(ctx context.Context) error { return c.api.setLoggingBody(ctx, !status.LoggingBodyEnabled) }, text)
 	})
 	autostart := menu.AddCheckbox(text.autostart, running && status.AutostartEnabled)
 	autostart.SetEnabled(running).OnClick(func(*application.Context) {

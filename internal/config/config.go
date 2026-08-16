@@ -79,11 +79,14 @@ func (l Listen) PortValue() int {
 	return DefaultPort
 }
 
-// Logging controls per-request JSONL body logging.
+// Logging controls per-request JSONL request logging and optional body persistence.
 type Logging struct {
 	// Enabled uses a pointer to distinguish "absent" (default true) from an
 	// explicit false.
 	Enabled *bool `yaml:"enabled,omitempty"`
+	// Body uses a pointer to distinguish "absent" (default true) from an
+	// explicit false. It only takes effect when Enabled is true.
+	Body *bool `yaml:"body,omitempty"`
 	// Dir is relative to the data root; empty means DefaultLogDir.
 	Dir string `yaml:"dir,omitempty"`
 }
@@ -92,6 +95,15 @@ type Logging struct {
 func (l Logging) EnabledValue() bool {
 	if l.Enabled != nil {
 		return *l.Enabled
+	}
+	return true
+}
+
+// BodyValue returns whether request and response bodies are persisted
+// (default true). The flag is ignored when logging is disabled.
+func (l Logging) BodyValue() bool {
+	if l.Body != nil {
+		return *l.Body
 	}
 	return true
 }
@@ -184,7 +196,7 @@ func Defaults() *Config {
 	return &Config{
 		Version:   1,
 		Listen:    Listen{Port: IntPtr(DefaultPort)},
-		Logging:   Logging{Enabled: BoolPtr(true), Dir: DefaultLogDir},
+		Logging:   Logging{Enabled: BoolPtr(true), Body: BoolPtr(true), Dir: DefaultLogDir},
 		UI:        UI{Language: DefaultLanguage},
 		Autostart: Autostart{Enabled: false},
 		Providers: map[string]Provider{
@@ -232,6 +244,10 @@ func (c *Config) clone() *Config {
 	if c.Logging.Enabled != nil {
 		b := *c.Logging.Enabled
 		out.Logging.Enabled = &b
+	}
+	if c.Logging.Body != nil {
+		b := *c.Logging.Body
+		out.Logging.Body = &b
 	}
 	if c.Providers != nil {
 		out.Providers = make(map[string]Provider, len(c.Providers))

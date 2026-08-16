@@ -137,6 +137,57 @@ func TestLoggingSwitchStopsNewFilesAndMissingUsageIsNotEstimated(t *testing.T) {
 	}
 }
 
+func TestLoggingBodySwitchOmitsPromptButKeepsRequestRecord(t *testing.T) {
+	up := newFakeUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"chatcmpl-log","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"logged answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}`)
+	})
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	cfg.Logging.Body = config.BoolPtr(false)
+	s, addr := startWithStore(t, cfg, secret.NewMemStore())
+	resp, body := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"m","messages":[{"role":"user","content":"private prompt text"}]}`), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	requestID := resp.Header.Get("X-Request-Id")
+	if requestID == "" {
+		t.Fatal("response omitted X-Request-Id")
+	}
+	detailResp, detail := httpJSON(t, addr, http.MethodGet, "/api/v1/logs/"+requestID, nil)
+	if detailResp.StatusCode != http.StatusOK {
+		t.Fatalf("detail: %d %s", detailResp.StatusCode, detail)
+	}
+	text := string(detail)
+	for _, required := range []string{`"type":"request"`, `"type":"route"`, `"type":"upstream_request"`, `"type":"result"`, `"body_omitted":true`} {
+		if !strings.Contains(text, required) {
+			t.Errorf("detail missing %q: %s", required, detail)
+		}
+	}
+	for _, forbidden := range []string{"private prompt text", "logged answer", `"type":"upstream_event"`, `"type":"client_event"`} {
+		if strings.Contains(text, forbidden) {
+			t.Errorf("detail unexpectedly contains %q: %s", forbidden, detail)
+		}
+	}
+	_, usageBody := httpJSON(t, addr, http.MethodGet, "/api/v1/usage", nil)
+	var usage logstore.UsageReport
+	if err := json.Unmarshal(usageBody, &usage); err != nil {
+		t.Fatal(err)
+	}
+	if usage.Total.Usage == nil || usage.Total.Usage.TotalTokens != 18 {
+		t.Fatalf("usage without body logging = %+v", usage.Total)
+	}
+	putResp, putBody := httpJSON(t, addr, http.MethodPut, "/api/v1/logging", map[string]bool{"body": true})
+	if putResp.StatusCode != http.StatusOK {
+		t.Fatalf("enable body: %d %s", putResp.StatusCode, putBody)
+	}
+	if !s.cfg.Snapshot().Logging.BodyValue() {
+		t.Fatal("body switch was not persisted in the active config")
+	}
+	if !s.cfg.Snapshot().Logging.EnabledValue() {
+		t.Fatal("enabling body logging disabled request logging")
+	}
+}
+
 func TestStreamingLogsAreSplitBySSEEventAndCaptureExplicitUsage(t *testing.T) {
 	up := newFakeUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

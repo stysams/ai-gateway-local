@@ -225,6 +225,7 @@ listen:
 
 logging:
   enabled: true
+  body: true
   dir: logs
 
 ui:
@@ -288,7 +289,8 @@ routes:
 
 #### `logging`
 
-- `enabled`：默认 `true`。
+- `enabled`：默认 `true`。关闭后，新请求不得创建日志文件。
+- `body`：默认 `true`。仅在 `enabled` 为 `true` 时生效；关闭后仍记录请求元数据、路由和用量，但不保存提示词等正文。
 - `dir`：默认 `logs`；相对路径相对数据根目录解析。
 - 第一阶段不接受日志级别、轮转或脱敏字段。
 
@@ -779,6 +781,7 @@ GET  /api/v1/doctor
   "pid": 1234,
   "listen": "127.0.0.1:12600",
   "logging_enabled": true,
+  "logging_body_enabled": true,
   "autostart_enabled": false,
   "clients": {
     "codex": {"point_state": "pointed"},
@@ -908,6 +911,12 @@ GET /api/v1/logs
 GET /api/v1/logs/{request_id}
 GET /api/v1/usage
 PUT /api/v1/logging
+```
+
+请求可只传 `enabled`、只传 `body`，或两者都传。`enabled` 控制是否记录请求；`body` 控制是否保存提示词等正文。
+
+```json
+{"enabled": true, "body": false}
 ```
 
 最低查询参数：
@@ -1164,8 +1173,10 @@ Model: gateway-default，或 provider-id/model-name
 ### 13.1 日志开关
 
 - `logging.enabled` 默认 `true`。
-- `false` 时，新请求不得创建正文日志文件。
-- 关闭日志不删除历史文件。
+- `false` 时，新请求不得创建日志文件。
+- `logging.body` 默认 `true`。
+- `body` 为 `false` 时，仍创建请求日志并记录元数据、路由、警告和用量，但不得保存入站正文、上游正文、流式事件或客户端正文。
+- 关闭日志或正文不删除历史文件。
 - 首次打开桌面必须确认风险说明后才进入主界面。
 - 无头 `serve` 每次启动在 stderr 输出一次风险说明。
 
@@ -1333,7 +1344,7 @@ ai-gateway version
 - 显示网关运行状态。
 - 打开主窗口。
 - 分别切换三个一等客户端的当前路由。
-- 开关正文日志。
+- 分别开关请求日志和正文保存。
 - 启动或停止网关。
 - 退出桌面。
 

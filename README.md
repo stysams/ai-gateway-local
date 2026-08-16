@@ -197,7 +197,7 @@ layouts, and automated 1440×900 and 390×844 browser tests.
 
 **Task package J (tray, login start, and release) is implemented.** The native
 tray reports gateway state, opens the main window, independently switches the
-Codex, Claude, and Grok routes through management HTTP, toggles body logging
+Codex, Claude, and Grok routes through management HTTP, toggles request logging, body persistence
 and login start, starts or stops the gateway, and exits the desktop without
 stopping the separate gateway process. A second desktop launch focuses the
 existing window and does not create another process or tray icon. Closing the

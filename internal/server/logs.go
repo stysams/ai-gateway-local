@@ -72,6 +72,7 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 
 type loggingRequest struct {
 	Enabled *bool `json:"enabled"`
+	Body    *bool `json:"body"`
 }
 
 func (s *Server) handleLogging(w http.ResponseWriter, r *http.Request) {
@@ -79,8 +80,8 @@ func (s *Server) handleLogging(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.Enabled == nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid_request", "enabled is required", map[string]string{"enabled": "required"})
+	if req.Enabled == nil && req.Body == nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "enabled or body is required", map[string]string{"enabled": "required"})
 		return
 	}
 	s.txMu.Lock()
@@ -90,12 +91,17 @@ func (s *Server) handleLogging(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "config_unavailable", "config not loaded", nil)
 		return
 	}
-	cfg.Logging.Enabled = config.BoolPtr(*req.Enabled)
+	if req.Enabled != nil {
+		cfg.Logging.Enabled = config.BoolPtr(*req.Enabled)
+	}
+	if req.Body != nil {
+		cfg.Logging.Body = config.BoolPtr(*req.Body)
+	}
 	if err := s.cfg.Write(cfg); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "config_write_failed", err.Error(), nil)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"enabled": *req.Enabled})
+	writeJSON(w, http.StatusOK, map[string]bool{"enabled": cfg.Logging.EnabledValue(), "body": cfg.Logging.BodyValue()})
 }
 
 func parseLogQuery(w http.ResponseWriter, r *http.Request, withPage bool) (logstore.Query, bool) {

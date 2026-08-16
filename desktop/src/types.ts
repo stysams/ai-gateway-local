@@ -7,6 +7,7 @@ export interface Status {
   pid: number;
   listen: string;
   logging_enabled: boolean;
+  logging_body_enabled: boolean;
   autostart_enabled: boolean;
   clients: Record<ClientID, { point_state: string }>;
   routes: Record<ClientID, Route>;
@@ -42,7 +43,7 @@ export interface DiscoveredProviderModel {
 export interface Config {
   version: number;
   listen: { host?: string; port: number };
-  logging: { enabled: boolean; dir: string };
+  logging: { enabled: boolean; body: boolean; dir: string };
   ui: { language: string; logging_notice_accepted: boolean };
   autostart: { enabled: boolean };
   providers: Record<string, Omit<Provider, "id" | "has_secret"> & { secret_ref?: string }>;

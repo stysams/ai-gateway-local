@@ -42,6 +42,7 @@ export const api = {
   logs: () => request<{ items: LogSummary[]; next_cursor?: string }>("/api/v1/logs?limit=50"),
   logDetail: (id: string) => request<{ request_id: string; events: unknown[] }>(`/api/v1/logs/${id}`),
   usage: () => request<UsageReport>("/api/v1/usage"),
-  setLogging: (enabled: boolean) => request<{ enabled: boolean }>("/api/v1/logging", { method: "PUT", body: JSON.stringify({ enabled }) }),
+  setLogging: (enabled: boolean) => request<{ enabled: boolean; body: boolean }>("/api/v1/logging", { method: "PUT", body: JSON.stringify({ enabled }) }),
+  setLoggingBody: (body: boolean) => request<{ enabled: boolean; body: boolean }>("/api/v1/logging", { method: "PUT", body: JSON.stringify({ body }) }),
   setAutostart: (enabled: boolean) => request<{ enabled: boolean; valid: boolean; executable?: string }>("/api/v1/autostart", { method: "PUT", body: JSON.stringify({ enabled }) }),
 };

@@ -1,11 +1,11 @@
 import { expect, test } from "@playwright/test";
 
-const status = { version: "0.1.0", pid: 4242, listen: "127.0.0.1:12600", logging_enabled: true, autostart_enabled: false, clients: { codex: { point_state: "pointed" }, claude: { point_state: "not_pointed" }, grok: { point_state: "drifted" }, generic: { point_state: "unknown" } }, routes: { codex: { provider: "openrouter", model: "gpt-5" }, claude: { provider: "anthropic", model: "claude-sonnet" }, grok: { provider: "openrouter", model: "grok-4" }, generic: { provider: "ollama", model: "qwen3" } } };
+const status = { version: "0.1.0", pid: 4242, listen: "127.0.0.1:12600", logging_enabled: true, logging_body_enabled: true, autostart_enabled: false, clients: { codex: { point_state: "pointed" }, claude: { point_state: "not_pointed" }, grok: { point_state: "drifted" }, generic: { point_state: "unknown" } }, routes: { codex: { provider: "openrouter", model: "gpt-5" }, claude: { provider: "anthropic", model: "claude-sonnet" }, grok: { provider: "openrouter", model: "grok-4" }, generic: { provider: "ollama", model: "qwen3" } } };
 const providerModels = [
   { id: "gpt-5", name: "GPT-5", context_window: 400000, max_output_tokens: 128000 },
   { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4", context_window: 200000, max_output_tokens: 64000 },
 ];
-const config = { version: 1, listen: { port: 12600 }, logging: { enabled: true, dir: "logs" }, ui: { language: "en-US", logging_notice_accepted: true }, autostart: { enabled: false }, providers: { openrouter: { name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", models: providerModels, capabilities: { image_input: true, reasoning: true } } }, routes: status.routes };
+const config = { version: 1, listen: { port: 12600 }, logging: { enabled: true, body: true, dir: "logs" }, ui: { language: "en-US", logging_notice_accepted: true }, autostart: { enabled: false }, providers: { openrouter: { name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", models: providerModels, capabilities: { image_input: true, reasoning: true } } }, routes: status.routes };
 
 test.beforeEach(async ({ page }) => {
   await page.route("http://127.0.0.1:12600/**", async (route) => {

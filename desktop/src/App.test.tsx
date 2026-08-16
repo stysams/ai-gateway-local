@@ -3,8 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 
-const status = { version: "test", pid: 42, listen: "127.0.0.1:12600", logging_enabled: false, autostart_enabled: false, clients: { codex: { point_state: "not_pointed" }, claude: { point_state: "client_not_installed" }, grok: { point_state: "drifted" }, generic: { point_state: "unknown" } }, routes: { codex: { provider: "ollama", model: "qwen3" }, claude: { provider: "ollama", model: "qwen3" }, grok: { provider: "ollama", model: "qwen3" }, generic: { provider: "ollama", model: "qwen3" } } };
-const config = { version: 1, listen: { port: 12600 }, logging: { enabled: false, dir: "logs" }, ui: { language: "en-US", logging_notice_accepted: true }, autostart: { enabled: false }, providers: { ollama: { name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", models: [{ id: "qwen3", name: "Qwen 3", context_window: 32768, max_output_tokens: 8192 }], capabilities: { image_input: false, reasoning: false } }, openrouter: { name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", models: [{ id: "gpt-5", name: "GPT-5", context_window: 400000, max_output_tokens: 128000 }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4", context_window: 200000, max_output_tokens: 64000 }], capabilities: { image_input: true, reasoning: true } } }, routes: status.routes };
+const status = { version: "test", pid: 42, listen: "127.0.0.1:12600", logging_enabled: false, logging_body_enabled: false, autostart_enabled: false, clients: { codex: { point_state: "not_pointed" }, claude: { point_state: "client_not_installed" }, grok: { point_state: "drifted" }, generic: { point_state: "unknown" } }, routes: { codex: { provider: "ollama", model: "qwen3" }, claude: { provider: "ollama", model: "qwen3" }, grok: { provider: "ollama", model: "qwen3" }, generic: { provider: "ollama", model: "qwen3" } } };
+const config = { version: 1, listen: { port: 12600 }, logging: { enabled: false, body: false, dir: "logs" }, ui: { language: "en-US", logging_notice_accepted: true }, autostart: { enabled: false }, providers: { ollama: { name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", models: [{ id: "qwen3", name: "Qwen 3", context_window: 32768, max_output_tokens: 8192 }], capabilities: { image_input: false, reasoning: false } }, openrouter: { name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", models: [{ id: "gpt-5", name: "GPT-5", context_window: 400000, max_output_tokens: 128000 }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4", context_window: 200000, max_output_tokens: 64000 }], capabilities: { image_input: true, reasoning: true } } }, routes: status.routes };
 const providers = [
   { id: "ollama", name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", models: [{ id: "qwen3", name: "Qwen 3", context_window: 32768, max_output_tokens: 8192 }], has_secret: false, capabilities: { image_input: false, reasoning: false } },
   { id: "openrouter", name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", models: [{ id: "gpt-5", name: "GPT-5", context_window: 400000, max_output_tokens: 128000 }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4", context_window: 200000, max_output_tokens: 64000 }], has_secret: true, capabilities: { image_input: true, reasoning: true } },
@@ -26,7 +26,7 @@ beforeEach(() => {
     if (url.endsWith("/api/v1/usage")) return Response.json({ total: { requests: 0, success: 0, failed: 0, cancelled: 0, usage: null, incomplete: true }, by_provider: {}, by_model: {}, by_client: {}, by_date: {} });
     for (const client of ["codex", "claude", "grok"]) if (url.endsWith(`/api/v1/clients/${client}`)) return Response.json(pointStatus(client));
     if (url.includes("/api/v1/routes/codex") && init?.method === "PUT") return Response.json({ client: "codex", provider: "openrouter", model: "anthropic/claude-sonnet-4" });
-    if (url.endsWith("/api/v1/logging") && init?.method === "PUT") return Response.json({ enabled: true });
+    if (url.endsWith("/api/v1/logging") && init?.method === "PUT") return Response.json({ enabled: true, body: true });
     if (url.endsWith("/api/v1/autostart") && init?.method === "PUT") return Response.json({ enabled: true, valid: true });
     if (url.endsWith("/api/v1/clients/codex/point")) return Response.json({ ...pointStatus("codex"), point_state: "pointed", changed: true });
     if (url.endsWith("/api/v1/clients/codex/remote-compaction") && init?.method === "PUT") return Response.json({ ...pointStatus("codex"), remote_compaction: true });
@@ -82,8 +82,9 @@ describe("desktop workflow", () => {
 
   it("shows logging disabled state and can enable it", async () => {
     const user = userEvent.setup(); render(<App />); await ready(); await user.click(screen.getByRole("button", { name: "Logs" }));
-    expect(screen.getAllByText("Disabled").length).toBeGreaterThan(0); await user.click(screen.getByRole("checkbox"));
+    expect(screen.getAllByText("Disabled").length).toBeGreaterThan(0); await user.click(screen.getByRole("checkbox", { name: "Logging" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/logging"), expect.objectContaining({ method: "PUT", body: "{\"enabled\":true}" })));
+    expect(screen.getByRole("checkbox", { name: "Body" })).toBeDisabled();
   });
 
   it("copies the complete request log from the detail drawer", async () => {

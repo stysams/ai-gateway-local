@@ -23,6 +23,7 @@ type ConfigListenPayload struct {
 }
 type ConfigLoggingPayload struct {
 	Enabled bool   `json:"enabled"`
+	Body    *bool  `json:"body,omitempty"`
 	Dir     string `json:"dir"`
 }
 type ConfigUIPayload struct {
@@ -54,7 +55,7 @@ func configPayload(cfg *config.Config) ConfigPayload {
 	out := ConfigPayload{
 		Version:   cfg.Version,
 		Listen:    ConfigListenPayload{Port: cfg.Listen.PortValue()},
-		Logging:   ConfigLoggingPayload{Enabled: cfg.Logging.EnabledValue(), Dir: cfg.Logging.Dir},
+		Logging:   ConfigLoggingPayload{Enabled: cfg.Logging.EnabledValue(), Body: config.BoolPtr(cfg.Logging.BodyValue()), Dir: cfg.Logging.Dir},
 		UI:        ConfigUIPayload{Language: cfg.UI.Language, LoggingNoticeAccepted: cfg.UI.LoggingNoticeAccepted},
 		Autostart: ConfigAutostartPayload{Enabled: cfg.Autostart.Enabled},
 		Providers: make(map[string]ConfigProviderPayload, len(cfg.Providers)),
@@ -94,7 +95,7 @@ func (p ConfigPayload) toConfig() *config.Config {
 	return &config.Config{
 		Version:   p.Version,
 		Listen:    config.Listen{Host: p.Listen.Host, Port: config.IntPtr(p.Listen.Port)},
-		Logging:   config.Logging{Enabled: config.BoolPtr(p.Logging.Enabled), Dir: p.Logging.Dir},
+		Logging:   config.Logging{Enabled: config.BoolPtr(p.Logging.Enabled), Body: p.Logging.Body, Dir: p.Logging.Dir},
 		UI:        config.UI{Language: p.UI.Language, LoggingNoticeAccepted: p.UI.LoggingNoticeAccepted},
 		Autostart: config.Autostart{Enabled: p.Autostart.Enabled},
 		Providers: providers,
@@ -134,6 +135,10 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := payload.toConfig()
+	if payload.Logging.Body == nil && current.Logging.Body != nil {
+		body := *current.Logging.Body
+		next.Logging.Body = &body
+	}
 	next.Extra = current.Extra
 	// Client preferences have dedicated endpoints so a settings save cannot
 	// silently drop them (same reason autostart cannot change here).

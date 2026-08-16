@@ -340,7 +340,7 @@ Codex 的占位环境变量在 `point/environment_windows.go`。非 Windows 上�
 | `server/logs.go` | 管理查询 API |
 | `server/doctor.go` | 配置、钥匙、日志目录、指向状态、登录启动 |
 
-日志路径：`<data root>/logs/<本地日期>/<request-id>.jsonl`。`logging.enabled == false` 时新请求不得建文件。
+日志路径：`<data root>/logs/<本地日期>/<request-id>.jsonl`。`logging.enabled == false` 时新请求不得建文件。 `logging.body == false` 时仍建文件，但不写入提示词等正文。
 
 禁止写入：`Authorization`、`x-api-key`、Cookie、token、secret。省略的敏感头只记数量。用量只信上游 `result.usage`，缺失标 `incomplete`，禁止估算。
 

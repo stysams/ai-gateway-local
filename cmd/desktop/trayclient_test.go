@@ -46,6 +46,9 @@ func TestTrayClientUsesOnlyManagementEndpoints(t *testing.T) {
 	if err := client.setLogging(ctx, false); err != nil {
 		t.Fatal(err)
 	}
+	if err := client.setLoggingBody(ctx, false); err != nil {
+		t.Fatal(err)
+	}
 	if err := client.setAutostart(ctx, true); err != nil {
 		t.Fatal(err)
 	}

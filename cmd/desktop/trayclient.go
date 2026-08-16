@@ -17,9 +17,10 @@ type trayRoute struct {
 }
 
 type trayStatus struct {
-	LoggingEnabled   bool                 `json:"logging_enabled"`
-	AutostartEnabled bool                 `json:"autostart_enabled"`
-	Routes           map[string]trayRoute `json:"routes"`
+	LoggingEnabled     bool                 `json:"logging_enabled"`
+	LoggingBodyEnabled bool                 `json:"logging_body_enabled"`
+	AutostartEnabled   bool                 `json:"autostart_enabled"`
+	Routes             map[string]trayRoute `json:"routes"`
 }
 
 type trayProvider struct {
@@ -74,6 +75,10 @@ func (c *trayAPI) setRoute(ctx context.Context, client string, route trayRoute) 
 
 func (c *trayAPI) setLogging(ctx context.Context, enabled bool) error {
 	return c.request(ctx, http.MethodPut, "/api/v1/logging", map[string]bool{"enabled": enabled}, nil)
+}
+
+func (c *trayAPI) setLoggingBody(ctx context.Context, body bool) error {
+	return c.request(ctx, http.MethodPut, "/api/v1/logging", map[string]bool{"body": body}, nil)
 }
 
 func (c *trayAPI) setAutostart(ctx context.Context, enabled bool) error {

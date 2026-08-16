@@ -21,10 +21,11 @@ import (
 )
 
 type requestTrace struct {
-	session *logstore.Session
-	start   time.Time
-	usage   *logstore.TokenUsage
-	errText string
+	session     *logstore.Session
+	start       time.Time
+	usage       *logstore.TokenUsage
+	errText     string
+	bodyEnabled bool
 }
 
 func (s *Server) startTrace(cfg *config.Config, client route.ClientID, proto ir.Protocol, r *http.Request, body []byte) (*requestTrace, error) {
@@ -40,11 +41,15 @@ func (s *Server) startTrace(cfg *config.Config, client route.ClientID, proto ir.
 	if err != nil {
 		return nil, err
 	}
-	t := &requestTrace{session: session, start: start}
+	t := &requestTrace{session: session, start: start, bodyEnabled: cfg.Logging.BodyValue()}
 	fields := requestLogFields(r)
 	fields["protocol"] = proto
 	fields["client"] = client
-	fields["body"] = json.RawMessage(append([]byte(nil), body...))
+	if t.bodyEnabled {
+		fields["body"] = json.RawMessage(append([]byte(nil), body...))
+	} else {
+		fields["body_omitted"] = true
+	}
 	if err := session.Append("request", fields); err != nil {
 		return nil, err
 	}
@@ -93,7 +98,11 @@ func (t *requestTrace) upstreamRequest(proto ir.Protocol, p providerInfo, body [
 	fields := map[string]any{
 		"method": http.MethodPost, "url": endpoint,
 		"headers": upstreamLogHeaders(proto, stream),
-		"body":    json.RawMessage(append([]byte(nil), body...)),
+	}
+	if t.bodyEnabled {
+		fields["body"] = json.RawMessage(append([]byte(nil), body...))
+	} else {
+		fields["body_omitted"] = true
 	}
 	if p.secretRef != "" {
 		fields["omitted_sensitive_header_count"] = 1
@@ -201,13 +210,13 @@ func upstreamLogHeaders(proto ir.Protocol, stream bool) http.Header {
 }
 
 func (t *requestTrace) upstreamEvent(value any) {
-	if t != nil {
+	if t != nil && t.bodyEnabled {
 		_ = t.session.Append("upstream_event", map[string]any{"event": value})
 	}
 }
 
 func (t *requestTrace) clientEvent(value any) {
-	if t != nil {
+	if t != nil && t.bodyEnabled {
 		_ = t.session.Append("client_event", map[string]any{"event": value})
 	}
 }

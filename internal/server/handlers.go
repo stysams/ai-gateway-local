@@ -11,13 +11,14 @@ import (
 
 // StatusResponse is the GET /api/v1/status payload (docs/v1-scheme.md §11.1).
 type StatusResponse struct {
-	Version          string                  `json:"version"`
-	PID              int                     `json:"pid"`
-	Listen           string                  `json:"listen"`
-	LoggingEnabled   bool                    `json:"logging_enabled"`
-	AutostartEnabled bool                    `json:"autostart_enabled"`
-	Clients          map[string]ClientStatus `json:"clients"`
-	Routes           map[string]RouteStatus  `json:"routes"`
+	Version            string                  `json:"version"`
+	PID                int                     `json:"pid"`
+	Listen             string                  `json:"listen"`
+	LoggingEnabled     bool                    `json:"logging_enabled"`
+	LoggingBodyEnabled bool                    `json:"logging_body_enabled"`
+	AutostartEnabled   bool                    `json:"autostart_enabled"`
+	Clients            map[string]ClientStatus `json:"clients"`
+	Routes             map[string]RouteStatus  `json:"routes"`
 }
 
 // ClientStatus reports the point state of one first-class client.
@@ -121,11 +122,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	claudeState := s.points.Check("claude", baseURL, s.clientSettings(cfg, "claude"))
 	grokState := s.points.Check("grok", baseURL, s.clientSettings(cfg, "grok"))
 	st := StatusResponse{
-		Version:          s.version,
-		PID:              s.pid,
-		Listen:           s.ListenString(cfg),
-		LoggingEnabled:   cfg.Logging.EnabledValue(),
-		AutostartEnabled: cfg.Autostart.Enabled,
+		Version:            s.version,
+		PID:                s.pid,
+		Listen:             s.ListenString(cfg),
+		LoggingEnabled:     cfg.Logging.EnabledValue(),
+		LoggingBodyEnabled: cfg.Logging.BodyValue(),
+		AutostartEnabled:   cfg.Autostart.Enabled,
 		Clients: map[string]ClientStatus{
 			"codex":   {PointState: string(codexState.PointState)},
 			"claude":  {PointState: string(claudeState.PointState)},
