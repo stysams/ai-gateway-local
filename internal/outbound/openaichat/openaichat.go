@@ -93,6 +93,11 @@ func CompletionURL(baseURL string) string {
 // are sent; inbound client headers never reach the upstream. The returned
 // response's Body is owned by the caller. Errors never carry key material.
 func (c *Client) Do(ctx context.Context, body []byte, stream bool) (*http.Response, error) {
+	return c.DoWithHeaders(ctx, body, stream, nil)
+}
+
+// DoWithHeaders sends a request with validated provider headers.
+func (c *Client) DoWithHeaders(ctx context.Context, body []byte, stream bool, extraHeaders map[string]string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, CompletionURL(c.baseURL), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
@@ -104,6 +109,7 @@ func (c *Client) Do(ctx context.Context, body []byte, stream bool) (*http.Respon
 		req.Header.Set("Accept", "application/json")
 	}
 	req.Header.Set("User-Agent", "ai-gateway")
+	upstream.ApplyExtraHeaders(req.Header, extraHeaders)
 	if c.secretRef != "" && c.secrets != nil {
 		cred, err := upstream.Bearer(ctx, c.secrets, c.secretRef)
 		if err != nil {

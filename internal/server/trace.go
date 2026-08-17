@@ -71,11 +71,15 @@ func (t *requestTrace) sessionRequestID() string {
 	return t.session.RequestID()
 }
 
-func (t *requestTrace) route(provider, model, adapter string) error {
+func (t *requestTrace) route(provider, model, adapter string, inbound, outbound ir.Protocol) error {
 	if t == nil {
 		return nil
 	}
-	return t.session.Append("route", map[string]any{"provider": provider, "model": model, "adapter": adapter})
+	return t.session.Append("route", map[string]any{
+		"provider": provider, "model": model, "adapter": adapter,
+		"inbound_protocol": inbound, "outbound_protocol": outbound,
+		"converted": inbound != outbound,
+	})
 }
 
 func (t *requestTrace) upstreamRequest(proto ir.Protocol, p providerInfo, body []byte, stream bool, compact bool) error {
@@ -97,15 +101,19 @@ func (t *requestTrace) upstreamRequest(proto ir.Protocol, p providerInfo, body [
 	}
 	fields := map[string]any{
 		"method": http.MethodPost, "url": endpoint,
-		"headers": upstreamLogHeaders(proto, stream),
 	}
+	headers, omittedHeaders := safeLogHeaders(upstreamLogHeaders(proto, stream, p.extraHeaders))
+	fields["headers"] = headers
 	if t.bodyEnabled {
 		fields["body"] = json.RawMessage(append([]byte(nil), body...))
 	} else {
 		fields["body_omitted"] = true
 	}
-	if p.secretRef != "" {
-		fields["omitted_sensitive_header_count"] = 1
+	if p.secretRef != "" || omittedHeaders > 0 {
+		fields["omitted_sensitive_header_count"] = omittedHeaders
+		if p.secretRef != "" {
+			fields["omitted_sensitive_header_count"] = omittedHeaders + 1
+		}
 	}
 	return t.session.Append("upstream_request", fields)
 }
@@ -193,7 +201,7 @@ func sensitiveLogName(name string) bool {
 		strings.Contains(normalized, "secret")
 }
 
-func upstreamLogHeaders(proto ir.Protocol, stream bool) http.Header {
+func upstreamLogHeaders(proto ir.Protocol, stream bool, extraHeaders map[string]string) http.Header {
 	headers := http.Header{
 		"Content-Type": {"application/json"},
 		"User-Agent":   {"ai-gateway"},
@@ -205,6 +213,9 @@ func upstreamLogHeaders(proto ir.Protocol, stream bool) http.Header {
 	}
 	if proto == ir.ProtocolMessages {
 		headers["Anthropic-Version"] = []string{anthropic.APIVersion}
+	}
+	for name, value := range extraHeaders {
+		headers.Set(name, value)
 	}
 	return headers
 }

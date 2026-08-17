@@ -1,6 +1,10 @@
 import type { ProviderModel } from "./types";
 
-export interface ProviderFormValue { id: string; name: string; adapter: string; base_url: string; models_url?: string; default_model: string; models: ProviderModel[]; api_key: string }
+export interface RequestHeader { name: string; value: string }
+export interface ProviderFormValue { id: string; name: string; adapter: string; base_url: string; models_url?: string; extra_headers: RequestHeader[]; default_model: string; models: ProviderModel[]; api_key: string }
+
+const headerNamePattern = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const forbiddenHeaders = new Set(["api-key", "authorization", "connection", "content-length", "cookie", "host", "proxy-authorization", "proxy-connection", "set-cookie", "te", "trailer", "transfer-encoding", "upgrade", "x-api-key"]);
 
 export function validateProvider(value: ProviderFormValue, editing = false): Record<string, string> {
   const errors: Record<string, string> = {};
@@ -8,6 +12,16 @@ export function validateProvider(value: ProviderFormValue, editing = false): Rec
   if (!value.name.trim()) errors.name = "required";
   if (!value.default_model.trim()) errors.default_model = "required";
   if (!["openai-chat", "openai-responses", "anthropic"].includes(value.adapter)) errors.adapter = "invalid_adapter";
+  const headerNames = new Set<string>();
+  value.extra_headers.forEach((header, index) => {
+    const name = header.name.trim();
+    const normalized = name.toLowerCase();
+    if (!name || !headerNamePattern.test(name)) errors[`extra_headers.${index}.name`] = "invalid_header_name";
+    else if (forbiddenHeaders.has(normalized)) errors[`extra_headers.${index}.name`] = "managed_header";
+    else if (headerNames.has(normalized)) errors[`extra_headers.${index}.name`] = "duplicate_header";
+    else headerNames.add(normalized);
+    if (header.value.length > 8192 || /[\r\n\0]/.test(header.value)) errors[`extra_headers.${index}.value`] = "invalid_header_value";
+  });
   const modelIDs = new Set<string>();
   value.models.forEach((model, index) => {
     const id = model.id.trim();

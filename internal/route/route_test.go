@@ -120,37 +120,105 @@ func TestResolveProviderPrefixOverride(t *testing.T) {
 	}
 }
 
-func TestResolveUnknownPrefixPassedThrough(t *testing.T) {
+func TestResolveGenericUsesUniqueModelOwner(t *testing.T) {
 	cfg := testConfig()
-	// anthropic 不是已配置 provider id：模型完整交给当前路由 provider，
-	// 即使它含斜杠也不得报"未知供应商"（docs/v1-scheme.md §7.4 step 4）。
-	res, err := Resolve(Codex, "anthropic/claude-sonnet-4", cfg)
-	if err != nil {
-		t.Fatalf("model with '/' must not be rejected: %v", err)
-	}
-	if res.Provider != "openrouter" || res.Model != "anthropic/claude-sonnet-4" {
-		t.Errorf("passthrough = %+v, want provider=openrouter model=anthropic/claude-sonnet-4", res)
+	cfg.Providers["agentrouter"] = config.Provider{
+		Name: "AgentRouter", Adapter: "anthropic", BaseURL: "https://agentrouter.org",
+		DefaultModel: "claude-opus-5",
+		Models:       []config.ProviderModel{{ID: "claude-opus-5"}},
 	}
 
-	// 单段模型同样完整转发。
-	res, err = Resolve(Generic, "qwen2.5", cfg)
+	res, err := Resolve(Generic, "claude-opus-5", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Provider != "ollama" || res.Model != "qwen2.5" {
-		t.Errorf("single segment = %+v", res)
+	if res.Provider != "agentrouter" || res.Model != "claude-opus-5" {
+		t.Errorf("unique model owner = %+v, want provider=agentrouter model=claude-opus-5", res)
+	}
+}
+
+func TestResolveUniqueModelOwnerOnlyAppliesToGeneric(t *testing.T) {
+	cfg := testConfig()
+	// qwen3 只登记在 ollama。generic 会按唯一归属转到 ollama；
+	// 一等客户端不得因此改走别家，也不得把该名字透传给当前路由。
+	_, err := Resolve(Codex, "qwen3", cfg)
+	if err == nil || err.Error() != UnmatchedModelMessage("qwen3") {
+		t.Fatalf("codex unattributed model = %v, want unmatched", err)
+	}
+	res, err := Resolve(Generic, "qwen3", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Provider != "ollama" || res.Model != "qwen3" {
+		t.Errorf("generic unique owner = %+v, want provider=ollama model=qwen3", res)
+	}
+}
+
+func TestResolveGenericAmbiguousModelOwnership(t *testing.T) {
+	cfg := testConfig()
+	for _, id := range []string{"agent-a", "agent-b"} {
+		cfg.Providers[id] = config.Provider{
+			Name: id, Adapter: "anthropic", BaseURL: "https://example.com",
+			DefaultModel: "shared-model",
+		}
+	}
+
+	_, err := Resolve(Generic, "shared-model", cfg)
+	if err == nil || !strings.Contains(err.Error(), "multiple providers (agent-a, agent-b)") {
+		t.Fatalf("ambiguous model error = %v", err)
+	}
+
+	ollama := cfg.Providers["ollama"]
+	ollama.Models = []config.ProviderModel{{ID: "shared-model"}}
+	ollama.DefaultModel = "shared-model"
+	cfg.Providers["ollama"] = ollama
+	res, err := Resolve(Generic, "shared-model", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Provider != "ollama" {
+		t.Errorf("route owner did not break ambiguity: %+v", res)
+	}
+}
+
+func TestResolveListedRouteModelKeepsSlash(t *testing.T) {
+	cfg := testConfig()
+	// anthropic 不是已配置 provider id，但该完整名字是当前路由
+	// openrouter 的 default_model：含斜杠也不得报“未知供应商”。
+	res, err := Resolve(Codex, "anthropic/claude-sonnet-4", cfg)
+	if err != nil {
+		t.Fatalf("listed route model with '/' must not be rejected: %v", err)
+	}
+	if res.Provider != "openrouter" || res.Model != "anthropic/claude-sonnet-4" {
+		t.Errorf("listed route model = %+v, want provider=openrouter model=anthropic/claude-sonnet-4", res)
+	}
+}
+
+func TestResolveRejectsUnattributedModel(t *testing.T) {
+	cfg := testConfig()
+	for _, tc := range []struct {
+		client    ClientID
+		requested string
+	}{
+		{Generic, "qwen2.5"},
+		{Generic, "vendor/unknown-model"},
+		{Generic, "unknown/"},
+		{Codex, "openai/gpt-4o"},
+		{Codex, "ollama"},
+	} {
+		_, err := Resolve(tc.client, tc.requested, cfg)
+		if err == nil || err.Error() != UnmatchedModelMessage(tc.requested) {
+			t.Errorf("Resolve(%s, %q) = %v, want unmatched", tc.client, tc.requested, err)
+		}
 	}
 }
 
 func TestResolveModelIsExactlyProviderID(t *testing.T) {
 	cfg := testConfig()
-	// 模型恰好等于 provider id（无斜杠）不触发前缀覆盖：完整转发。
-	res, err := Resolve(Codex, "ollama", cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Provider != "openrouter" || res.Model != "ollama" {
-		t.Errorf("exact id model = %+v, want route provider with full model", res)
+	// 模型恰好等于 provider id（无斜杠）不触发前缀覆盖，也没有登记归属。
+	_, err := Resolve(Codex, "ollama", cfg)
+	if err == nil || err.Error() != UnmatchedModelMessage("ollama") {
+		t.Fatalf("exact provider id as model = %v, want unmatched", err)
 	}
 }
 
@@ -168,13 +236,10 @@ func TestResolveRejectsEmptyRestAfterProviderPrefix(t *testing.T) {
 			t.Errorf("Resolve(%q) error unclear: %v", m, err)
 		}
 	}
-	// 前缀未命中时空 rest 不是错误：完整透传（如 "foo/" 交给当前 provider）。
-	res, err := Resolve(Generic, "unknown/", cfg)
-	if err != nil {
-		t.Fatalf("unknown prefix with empty rest: %v", err)
-	}
-	if res.Provider != "ollama" || res.Model != "unknown/" {
-		t.Errorf("passthrough = %+v", res)
+	// 前缀未命中时空 rest 不再透传：模型没有可归属供应商。
+	_, err := Resolve(Generic, "unknown/", cfg)
+	if err == nil || err.Error() != UnmatchedModelMessage("unknown/") {
+		t.Fatalf("unknown prefix with empty rest = %v, want unmatched", err)
 	}
 }
 

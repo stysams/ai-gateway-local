@@ -1,13 +1,35 @@
 package openairesponses
 
 import (
+	"context"
 	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"ai-gateway/internal/ir"
 )
+
+func TestDoCompactWithHeaders(t *testing.T) {
+	var got http.Header
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, path = r.Header.Clone(), r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	resp, err := NewPool(nil).Client(server.URL, "").DoCompactWithHeaders(context.Background(), []byte(`{}`), map[string]string{"Originator": "codex_cli_rs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if path != "/responses/compact" || got.Get("Originator") != "codex_cli_rs" {
+		t.Fatalf("path = %q, headers = %v", path, got)
+	}
+}
 
 func testIRRequest() *ir.Request {
 	return &ir.Request{

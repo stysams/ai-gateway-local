@@ -15,6 +15,15 @@ import (
 	"ai-gateway/internal/secret"
 )
 
+// ApplyExtraHeaders overlays validated provider headers on adapter defaults.
+// Authentication and transport-managed headers are rejected by config
+// validation and are therefore never expected here.
+func ApplyExtraHeaders(target http.Header, extra map[string]string) {
+	for name, value := range extra {
+		target.Set(name, value)
+	}
+}
+
 // ErrSecretMissing reports a provider that declares a secret_ref but has no
 // readable secret in the key store. The gateway must fail the request
 // instead of sending it without authentication (docs/v1-scheme.md §6.2).
@@ -29,7 +38,7 @@ var ErrSecretStore = errors.New("system key store error")
 // upstream's response headers. It never bounds the streaming body:
 // long-running reasoning streams must not be cut off (docs/v1-scheme.md
 // §9.4). A timeout here maps to 504.
-const DefaultResponseHeaderTimeout = 60 * time.Second
+const DefaultResponseHeaderTimeout = 5 * time.Minute
 
 // NewTransport returns a safely configured transport with a shared
 // connection pool, a bounded response-header timeout and no overall

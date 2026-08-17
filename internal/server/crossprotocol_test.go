@@ -56,13 +56,13 @@ func messagesTextHandler(body string) http.HandlerFunc {
 }
 
 const responsesTextBody = `{
-	"id":"resp_1","object":"response","status":"completed","model":"m",
+	"id":"resp_1","object":"response","status":"completed","model":"gateway-default",
 	"output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hello from responses","annotations":[]}]}],
 	"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}
 }`
 
 const messagesTextBody = `{
-	"id":"msg_1","type":"message","role":"assistant","model":"m",
+	"id":"msg_1","type":"message","role":"assistant","model":"gateway-default",
 	"content":[{"type":"text","text":"hello from messages"}],
 	"stop_reason":"end_turn","stop_sequence":null,
 	"usage":{"input_tokens":3,"output_tokens":4}
@@ -78,7 +78,7 @@ func TestCrossChatToResponsesNonStream(t *testing.T) {
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/v1/chat/completions",
-		[]byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`), nil)
+		[]byte(`{"model":"gateway-default","messages":[{"role":"user","content":"hi"}]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, %s", resp.StatusCode, data)
 	}
@@ -109,7 +109,7 @@ func TestCrossResponsesToChatNonStream(t *testing.T) {
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/v1/responses",
-		[]byte(`{"model":"m","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`), nil)
+		[]byte(`{"model":"gateway-default","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, %s", resp.StatusCode, data)
 	}
@@ -141,7 +141,7 @@ func TestCrossResponsesToChatReplaysAssistantOutputText(t *testing.T) {
 	cfg.Providers["openrouter"] = p
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
-	body := []byte(`{"model":"opencode/deepseek-v4-flash","input":[
+	body := []byte(`{"model":"gateway-default","input":[
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"你师祖"}]},
 		{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"闲聊"}],"encrypted_content":null},
 		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"我是 Codex"}]}
@@ -181,7 +181,7 @@ func TestCrossMessagesToChatNonStream(t *testing.T) {
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/v1/messages",
-		[]byte(`{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`), nil)
+		[]byte(`{"model":"gateway-default","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, %s", resp.StatusCode, data)
 	}
@@ -259,7 +259,7 @@ func TestCrossResponsesCodexDesktopToolsToMessages(t *testing.T) {
 	s, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	body := []byte(`{
-		"model":"aa/claude-opus-4-6",
+		"model":"gateway-default",
 		"instructions":"You are Codex",
 		"input":[
 			{"type":"message","role":"developer","content":[{"type":"input_text","text":"app context"}]},
@@ -342,7 +342,7 @@ func TestCrossResponsesToChatCustomToolCallArgumentsAreString(t *testing.T) {
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	body := []byte(`{
-		"model":"opencode/deepseek-v4-flash",
+		"model":"gateway-default",
 		"input":[
 			{"type":"message","role":"user","content":[{"type":"input_text","text":"你不是deepseek吗"}]},
 			{"type":"custom_tool_call","call_id":"call_00_abc","name":"exec","input":"{\"cmd\": \"Get-ChildItem Env:\"}"},
@@ -396,7 +396,7 @@ func TestCrossResponsesToChatToolResultsFollowToolCalls(t *testing.T) {
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	body := []byte(`{
-		"model":"opencode/deepseek-v4-flash",
+		"model":"gateway-default",
 		"reasoning":{"effort":"high"},
 		"input":[
 			{"type":"message","role":"user","content":[{"type":"input_text","text":"你不是deepseek吗"}]},
@@ -448,7 +448,7 @@ func TestCrossResponsesCustomToolCallStream(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, `event: message_start
-data: {"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"m","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}
+data: {"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"gateway-default","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}
 
 event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_exec","name":"exec","input":{}}}
@@ -471,7 +471,7 @@ data: {"type":"message_stop"}
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	body := []byte(`{
-		"model":"m","stream":true,
+		"model":"gateway-default","stream":true,
 		"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],
 		"tools":[{"type":"custom","name":"exec","description":"Run JS"}]
 	}`)
@@ -501,7 +501,7 @@ func TestCrossResponsesChatToolCallIndexStream(t *testing.T) {
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 	body := []byte(`{
-		"model":"m","stream":true,
+		"model":"gateway-default","stream":true,
 		"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],
 		"tools":[{"type":"custom","name":"exec","description":"Run JS"}]
 	}`)
@@ -531,7 +531,7 @@ func TestCrossResponsesToMessagesNonStream(t *testing.T) {
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/c/codex/v1/responses",
-		[]byte(`{"model":"m","input":"hi"}`), nil)
+		[]byte(`{"model":"gateway-default","input":"hi"}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, %s", resp.StatusCode, data)
 	}
@@ -555,7 +555,7 @@ func TestCrossMessagesToResponsesNonStream(t *testing.T) {
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/c/codex/v1/messages",
-		[]byte(`{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`), nil)
+		[]byte(`{"model":"gateway-default","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, %s", resp.StatusCode, data)
 	}
@@ -583,7 +583,7 @@ func TestCrossMessagesAssistantHistoryToResponses(t *testing.T) {
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/c/claude/v1/messages",
-		[]byte(`{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"你是谁"},{"role":"assistant","content":"我是助手"},{"role":"user","content":"继续"}]}`), nil)
+		[]byte(`{"model":"gateway-default","max_tokens":100,"messages":[{"role":"user","content":"你是谁"},{"role":"assistant","content":"我是助手"},{"role":"user","content":"继续"}]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, %s", resp.StatusCode, data)
 	}
@@ -616,7 +616,7 @@ func TestCrossChatToMessagesStream(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		body := `event: message_start
-data: {"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"m","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}
+data: {"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"gateway-default","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}
 
 event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
@@ -645,7 +645,7 @@ data: {"type":"message_stop"}
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/v1/chat/completions",
-		[]byte(`{"model":"m","messages":[],"stream":true}`), nil)
+		[]byte(`{"model":"gateway-default","messages":[],"stream":true}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, %s", resp.StatusCode, data)
 	}
@@ -697,7 +697,7 @@ data: {"type":"response.completed","response":{"id":"r"}}
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/v1/chat/completions",
-		[]byte(`{"model":"m","messages":[],"stream":true}`), nil)
+		[]byte(`{"model":"gateway-default","messages":[],"stream":true}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, %s", resp.StatusCode, data)
 	}
@@ -743,7 +743,7 @@ data: {"type":"response.completed","response":{"id":"r"}}
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/v1/messages",
-		[]byte(`{"model":"m","max_tokens":100,"messages":[],"stream":true}`), nil)
+		[]byte(`{"model":"gateway-default","max_tokens":100,"messages":[],"stream":true}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, %s", resp.StatusCode, data)
 	}
@@ -767,7 +767,7 @@ func TestCrossImageRejected(t *testing.T) {
 	cfg.Providers["ollama"] = p
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
-	body := `{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"x"},{"type":"image_url","image_url":{"url":"https://x/i.png"}}]}]}`
+	body := `{"model":"gateway-default","messages":[{"role":"user","content":[{"type":"text","text":"x"},{"type":"image_url","image_url":{"url":"https://x/i.png"}}]}]}`
 	resp, data := chatPost(t, addr, "/v1/chat/completions", []byte(body), nil)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("status %d, want 422, body %s", resp.StatusCode, data)
@@ -782,7 +782,7 @@ func TestCrossImageRejected(t *testing.T) {
 	p2.Adapter = "openai-chat"
 	cfg2.Providers["ollama"] = p2
 	_, addr2 := startWithStore(t, cfg2, secret.NewMemStore())
-	body2 := `{"model":"m","messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]}]}`
+	body2 := `{"model":"gateway-default","messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]}]}`
 	resp2, data2 := chatPost(t, addr2, "/v1/messages", []byte(body2), nil)
 	if resp2.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("messages image: status %d, want 422, body %s", resp2.StatusCode, data2)
@@ -806,7 +806,7 @@ func TestCrossImageSupportedPreservesURLAndBase64(t *testing.T) {
 	cfg.Providers["ollama"] = p
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
-	body := `{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"x"},{"type":"image_url","image_url":{"url":"https://x/i.png"}}]}]}`
+	body := `{"model":"gateway-default","messages":[{"role":"user","content":[{"type":"text","text":"x"},{"type":"image_url","image_url":{"url":"https://x/i.png"}}]}]}`
 	resp, data := chatPost(t, addr, "/v1/chat/completions", []byte(body), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("URL image: status %d, body %s", resp.StatusCode, data)
@@ -823,7 +823,7 @@ func TestCrossImageSupportedPreservesURLAndBase64(t *testing.T) {
 	p2.Capabilities.ImageInput = true
 	cfg2.Providers["ollama"] = p2
 	_, addr2 := startWithStore(t, cfg2, secret.NewMemStore())
-	body2 := `{"model":"m","messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]}]}`
+	body2 := `{"model":"gateway-default","messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]}]}`
 	resp2, data2 := chatPost(t, addr2, "/v1/messages", []byte(body2), nil)
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("base64 image: status %d, body %s", resp2.StatusCode, data2)
@@ -843,7 +843,7 @@ func TestReasoningPreservedBetweenOpenAIProtocols(t *testing.T) {
 	cfg.Providers["ollama"] = p
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
-	body := `{"model":"m","reasoning_effort":"high","messages":[{"role":"user","content":"solve"}]}`
+	body := `{"model":"gateway-default","reasoning_effort":"high","messages":[{"role":"user","content":"solve"}]}`
 	resp, data := chatPost(t, addr, "/v1/chat/completions", []byte(body), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, body %s", resp.StatusCode, data)
@@ -858,7 +858,7 @@ func TestReasoningDowngradeWritesWarning(t *testing.T) {
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
 	// Generic provider keeps reasoning=false and uses the same Chat protocol.
 	s, addr := startWithStore(t, cfg, secret.NewMemStore())
-	body := `{"model":"m","reasoning_effort":"high","messages":[{"role":"user","content":"solve"}]}`
+	body := `{"model":"gateway-default","reasoning_effort":"high","messages":[{"role":"user","content":"solve"}]}`
 	resp, data := chatPost(t, addr, "/v1/chat/completions", []byte(body), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, body %s", resp.StatusCode, data)
@@ -889,7 +889,7 @@ func TestReasoningDowngradeWhenTargetProtocolCannotExpress(t *testing.T) {
 	p.Capabilities.Reasoning = true
 	cfg.Providers["ollama"] = p
 	s, addr := startWithStore(t, cfg, secret.NewMemStore())
-	body := `{"model":"m","thinking":{"type":"enabled","budget_tokens":2048},"messages":[{"role":"user","content":"solve"}]}`
+	body := `{"model":"gateway-default","thinking":{"type":"enabled","budget_tokens":2048},"messages":[{"role":"user","content":"solve"}]}`
 	resp, data := chatPost(t, addr, "/v1/messages", []byte(body), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, body %s", resp.StatusCode, data)
@@ -919,7 +919,7 @@ func TestCrossStreamBrokenUpstream(t *testing.T) {
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/v1/chat/completions",
-		[]byte(`{"model":"m","messages":[],"stream":true}`), nil)
+		[]byte(`{"model":"gateway-default","messages":[],"stream":true}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
@@ -953,7 +953,7 @@ func TestCrossStreamClientCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+"/v1/chat/completions",
-		strings.NewReader(`{"model":"m","messages":[],"stream":true}`))
+		strings.NewReader(`{"model":"gateway-default","messages":[],"stream":true}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -979,7 +979,7 @@ func TestCrossSameProtocolPassthroughResponses(t *testing.T) {
 	cfg.Providers["ollama"] = p
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
-	body := `{"model":"m","input":"hi","temperature":0.7,"x-custom":{"a":1}}`
+	body := `{"model":"gateway-default","input":"hi","temperature":0.7,"x-custom":{"a":1}}`
 	resp, data := chatPost(t, addr, "/v1/responses", []byte(body), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, %s", resp.StatusCode, data)
@@ -1064,14 +1064,14 @@ func TestCrossConcurrentIsolation(t *testing.T) {
 			if i%2 == 0 {
 				// codex → chat 上游（带 key）。
 				resp, _ := chatPost(t, addr, "/c/codex/v1/chat/completions",
-					[]byte(`{"model":"m","messages":[]}`), nil)
+					[]byte(`{"model":"gateway-default","messages":[]}`), nil)
 				if resp.StatusCode != http.StatusOK {
 					t.Errorf("chat req %d: %d", i, resp.StatusCode)
 				}
 			} else {
 				// generic → messages 上游（无 key）。
 				resp, _ := chatPost(t, addr, "/v1/messages",
-					[]byte(`{"model":"m","max_tokens":10,"messages":[]}`), nil)
+					[]byte(`{"model":"gateway-default","max_tokens":10,"messages":[]}`), nil)
 				if resp.StatusCode != http.StatusOK {
 					t.Errorf("messages req %d: %d", i, resp.StatusCode)
 				}
@@ -1103,7 +1103,7 @@ func TestCrossClaudeToolSearchResultToResponses(t *testing.T) {
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	body := []byte(`{
-		"model":"m",
+		"model":"gateway-default",
 		"max_tokens":100,
 		"messages":[
 			{"role":"user","content":"成都双流今日天气如何"},
@@ -1154,7 +1154,7 @@ func TestCrossClaudeToolSearchResultToChat(t *testing.T) {
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	body := []byte(`{
-		"model":"m",
+		"model":"gateway-default",
 		"max_tokens":100,
 		"messages":[
 			{"role":"user","content":"成都双流今日天气如何"},
@@ -1206,7 +1206,7 @@ func TestCrossToolResultContinuation(t *testing.T) {
 	cfg.Providers["ollama"] = p
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
-	body := `{"model":"m","messages":[
+	body := `{"model":"gateway-default","messages":[
 		{"role":"assistant","content":null,"tool_calls":[{"id":"call_9","type":"function","function":{"name":"f","arguments":"{\"a\":1}"}}]},
 		{"role":"tool","tool_call_id":"call_9","content":"result text"}
 	]}`

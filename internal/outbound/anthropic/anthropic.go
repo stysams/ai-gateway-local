@@ -85,6 +85,11 @@ func CompletionURL(baseURL string) string {
 
 // Do sends a messages body upstream with the Anthropic auth headers.
 func (c *Client) Do(ctx context.Context, body []byte, stream bool) (*http.Response, error) {
+	return c.DoWithHeaders(ctx, body, stream, nil)
+}
+
+// DoWithHeaders sends a request with validated provider headers.
+func (c *Client) DoWithHeaders(ctx context.Context, body []byte, stream bool, extraHeaders map[string]string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, CompletionURL(c.baseURL), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
@@ -97,6 +102,7 @@ func (c *Client) Do(ctx context.Context, body []byte, stream bool) (*http.Respon
 	}
 	req.Header.Set("User-Agent", "ai-gateway")
 	req.Header.Set("anthropic-version", APIVersion)
+	upstream.ApplyExtraHeaders(req.Header, extraHeaders)
 	if c.secretRef != "" && c.secrets != nil {
 		cred, err := upstream.XAPIKey(ctx, c.secrets, c.secretRef)
 		if err != nil {

@@ -18,6 +18,18 @@ var providerIDRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 // are tested.
 var validSecretRefRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
+// validHeaderNameRe implements the RFC 9110 token grammar used by HTTP field
+// names. Header values are checked separately for newline injection.
+var validHeaderNameRe = regexp.MustCompile(`^[!#$%&'*+\-.^_` + "`" + `|~0-9A-Za-z]+$`)
+
+var forbiddenExtraHeaders = map[string]bool{
+	"api-key": true, "authorization": true, "connection": true,
+	"content-length": true, "cookie": true, "host": true,
+	"proxy-authorization": true, "proxy-connection": true,
+	"set-cookie": true, "te": true, "trailer": true,
+	"transfer-encoding": true, "upgrade": true, "x-api-key": true,
+}
+
 // validAdapters is the closed set of upstream adapters.
 var validAdapters = map[string]bool{
 	"openai-chat":      true,
@@ -96,6 +108,29 @@ func validateProvider(id string, p Provider) []FieldError {
 			Field:  "providers." + id + ".models_url",
 			Reason: "must be an absolute http(s) URL without query string or fragment",
 		})
+	}
+	if len(p.ExtraHeaders) > 64 {
+		errs = append(errs, FieldError{Field: "providers." + id + ".extra_headers", Reason: "must contain at most 64 headers"})
+	}
+	seenHeaders := make(map[string]bool, len(p.ExtraHeaders))
+	for name, value := range p.ExtraHeaders {
+		field := "providers." + id + ".extra_headers." + name
+		normalized := strings.ToLower(strings.TrimSpace(name))
+		switch {
+		case name != strings.TrimSpace(name) || !validHeaderNameRe.MatchString(name):
+			errs = append(errs, FieldError{Field: field, Reason: "name must be a valid HTTP header field name without surrounding whitespace"})
+		case forbiddenExtraHeaders[normalized]:
+			errs = append(errs, FieldError{Field: field, Reason: "header is managed by the gateway and cannot be customized"})
+		case seenHeaders[normalized]:
+			errs = append(errs, FieldError{Field: field, Reason: "duplicates another header name ignoring case"})
+		default:
+			seenHeaders[normalized] = true
+		}
+		if len(value) > 8192 {
+			errs = append(errs, FieldError{Field: field, Reason: "value must be at most 8192 bytes"})
+		} else if strings.ContainsAny(value, "\r\n\x00") {
+			errs = append(errs, FieldError{Field: field, Reason: "value must not contain newlines or NUL bytes"})
+		}
 	}
 	if strings.TrimSpace(p.DefaultModel) == "" {
 		errs = append(errs, FieldError{Field: "providers." + id + ".default_model", Reason: "must not be empty"})

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ai-gateway/internal/config"
+	"ai-gateway/internal/route"
 	"ai-gateway/internal/secret"
 )
 
@@ -226,7 +227,7 @@ func TestChatRoutingEmptyModelUsesRouteModel(t *testing.T) {
 	}
 }
 
-func TestChatRoutingPrefixOverrideAndPassthrough(t *testing.T) {
+func TestChatRoutingPrefixOverrideModelOwnerAndUnmatched(t *testing.T) {
 	up1 := newFakeUpstream(t, nil)
 	up2 := newFakeUpstream(t, nil)
 	_, addr := startDataPlane(t, up1.URL, up2.URL, false, nil)
@@ -243,23 +244,145 @@ func TestChatRoutingPrefixOverrideAndPassthrough(t *testing.T) {
 		t.Errorf("override model = %q, want anthropic/claude-sonnet-4", req.Model)
 	}
 
-	// 前缀未命中（anthropic 不是 provider id）：模型完整交给当前 provider
-	//（generic → ollama），即使含斜杠也不报未知供应商。
+	// 前缀未命中，但完整模型名由 openrouter 唯一登记：generic 请求仍应
+	// 按模型归属到达 openrouter，且不得剥离模型名中的 anthropic/。
 	resp, data = chatPost(t, addr, "/c/generic/v1/chat/completions",
 		[]byte(`{"model":"anthropic/claude-sonnet-4","messages":[]}`), nil)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("passthrough: status %d, %s", resp.StatusCode, data)
+		t.Fatalf("model owner: status %d, %s", resp.StatusCode, data)
 	}
-	req = up2.last()
+	req = up1.last()
 	if req.Model != "anthropic/claude-sonnet-4" {
-		t.Errorf("passthrough model = %q, want the full model on the route provider", req.Model)
+		t.Errorf("owned model = %q, want the full model on the owning provider", req.Model)
+	}
+
+	// 未命中 provider 前缀、也未被任何 provider 登记的模型不得透传，
+	// 必须在接触上游之前返回明确的选择错误。
+	beforeUnknown := len(up2.requests())
+	resp, data = chatPost(t, addr, "/c/generic/v1/chat/completions",
+		[]byte(`{"model":"vendor/unknown-model","messages":[]}`), nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unmatched: status %d, %s", resp.StatusCode, data)
+	}
+	if !strings.Contains(string(data), route.UnmatchedModelMessage("vendor/unknown-model")) {
+		t.Fatalf("unmatched body = %s", data)
+	}
+	if got := len(up2.requests()); got != beforeUnknown {
+		t.Fatalf("unmatched model reached generic upstream: %d requests, want %d", got, beforeUnknown)
+	}
+}
+
+func TestMessagesGenericRejectsUnattributedModel(t *testing.T) {
+	up := newFakeUpstream(t, nil)
+	_, addr := startDataPlane(t, up.URL, up.URL, false, nil)
+
+	resp, data := chatPost(t, addr, "/v1/messages",
+		[]byte(`{"model":"claude-opus-5","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`), nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status %d, body %s", resp.StatusCode, data)
+	}
+	if !strings.Contains(string(data), route.UnmatchedModelMessage("claude-opus-5")) {
+		t.Fatalf("body = %s", data)
+	}
+	if got := len(up.requests()); got != 0 {
+		t.Fatalf("unmatched model reached upstream %d times", got)
+	}
+}
+
+func TestMessagesGenericRoutesUniqueModelToOwningProvider(t *testing.T) {
+	agentrouter := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-opus-5","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	})
+	opencode := newFakeUpstream(t, nil)
+	cfg := dataPlaneConfig(agentrouter.URL, opencode.URL, false)
+	cfg.Providers["agentrouter"] = config.Provider{
+		Name: "AgentRouter", Adapter: "anthropic", BaseURL: agentrouter.URL,
+		DefaultModel: "claude-opus-5",
+		Models:       []config.ProviderModel{{ID: "claude-opus-5"}},
+	}
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	resp, data := chatPost(t, addr, "/v1/messages",
+		[]byte(`{"model":"claude-opus-5","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, body %s", resp.StatusCode, data)
+	}
+	request := agentrouter.last()
+	if request.Path != "/v1/messages" || request.Model != "claude-opus-5" {
+		t.Errorf("agentrouter request = %+v", request)
+	}
+	if len(opencode.requests()) != 0 {
+		t.Fatal("unique agentrouter model was sent to the generic route provider")
+	}
+}
+
+func TestGenericModelOwnerConvertsOpenAIProtocolsToProviderAdapter(t *testing.T) {
+	cases := []struct {
+		name       string
+		path       string
+		body       string
+		responseID string
+	}{
+		{
+			name: "chat completions", path: "/v1/chat/completions",
+			body:       `{"model":"claude-opus-5","messages":[{"role":"user","content":"hi"}]}`,
+			responseID: `"object":"chat.completion"`,
+		},
+		{
+			name: "responses", path: "/v1/responses",
+			body:       `{"model":"claude-opus-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`,
+			responseID: `"object":"response"`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			agentrouter := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-opus-5","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+			})
+			opencode := newFakeUpstream(t, nil)
+			cfg := dataPlaneConfig(agentrouter.URL, opencode.URL, false)
+			cfg.Providers["agentrouter"] = config.Provider{
+				Name: "AgentRouter", Adapter: "anthropic", BaseURL: agentrouter.URL,
+				DefaultModel: "claude-opus-5",
+				Models:       []config.ProviderModel{{ID: "claude-opus-5"}},
+			}
+			_, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+			resp, data := chatPost(t, addr, tc.path, []byte(tc.body), nil)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status %d, body %s", resp.StatusCode, data)
+			}
+			if !strings.Contains(string(data), tc.responseID) {
+				t.Errorf("response was not converted back to the inbound protocol: %s", data)
+			}
+			request := agentrouter.last()
+			if request.Path != "/v1/messages" || request.Model != "claude-opus-5" {
+				t.Errorf("agentrouter request = %+v", request)
+			}
+			if _, ok := request.Fields["max_tokens"]; !ok {
+				t.Errorf("upstream body is not Anthropic Messages: %v", request.Fields)
+			}
+			if len(opencode.requests()) != 0 {
+				t.Fatal("request reached the generic route provider instead of the model owner")
+			}
+			requestID := resp.Header.Get("X-Request-Id")
+			_, detail := httpJSON(t, addr, http.MethodGet, "/api/v1/logs/"+requestID, nil)
+			logText := string(detail)
+			if !strings.Contains(logText, `"outbound_protocol":"messages"`) ||
+				!strings.Contains(logText, `"converted":true`) {
+				t.Errorf("route log did not record protocol conversion: %s", detail)
+			}
+		})
 	}
 }
 
 func TestChatUnknownClientAndPath404(t *testing.T) {
 	up := newFakeUpstream(t, nil)
 	_, addr := startDataPlane(t, up.URL, up.URL, false, nil)
-	body := []byte(`{"model":"m","messages":[]}`)
+	body := []byte(`{"model":"gateway-default","messages":[]}`)
 
 	for _, path := range []string{
 		"/c/bogus/v1/chat/completions",
@@ -304,7 +427,7 @@ func TestChatRequestValidation(t *testing.T) {
 		t.Errorf("bad stream: status %d", resp.StatusCode)
 	}
 	// 超过 128 MiB → 413。
-	big := []byte(`{"model":"m","name":"` + strings.Repeat("x", 129<<20) + `"}`)
+	big := []byte(`{"model":"gateway-default","name":"` + strings.Repeat("x", 129<<20) + `"}`)
 	resp, data = chatPost(t, addr, "/v1/chat/completions", big, nil)
 	if resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("big body: status %d, %s", resp.StatusCode, data)
@@ -366,7 +489,7 @@ func TestMessagesDropsUnsupportedContextManagement(t *testing.T) {
 	p.Capabilities = config.Capabilities{Reasoning: true}
 	cfg.Providers["openrouter"] = p
 	s, addr := startWithStore(t, cfg, secret.NewMemStore())
-	body := []byte(`{"model":"m","stream":true,"messages":[],"context_management":{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}}`)
+	body := []byte(`{"model":"gateway-default","stream":true,"messages":[],"context_management":{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}}`)
 	resp, data := chatPost(t, addr, "/c/claude/v1/messages", body, nil)
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(data), "message_start") {
 		t.Fatalf("response status=%d body=%s", resp.StatusCode, data)
@@ -404,7 +527,7 @@ func TestMessagesPreservesSupportedContextManagement(t *testing.T) {
 	p.Capabilities = config.Capabilities{Reasoning: true, ContextManagement: true}
 	cfg.Providers["openrouter"] = p
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
-	body := []byte(`{"model":"m","stream":true,"messages":[],"context_management":{"edits":[]}}`)
+	body := []byte(`{"model":"gateway-default","stream":true,"messages":[],"context_management":{"edits":[]}}`)
 	resp, _ := chatPost(t, addr, "/c/claude/v1/messages", body, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d", resp.StatusCode)
@@ -423,7 +546,7 @@ func TestChatInboundAuthDropped(t *testing.T) {
 		"x-api-key":       "client-x-api-key-value",
 		"X-Custom-Header": "must-not-forward",
 	}
-	resp, data := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"m","messages":[]}`), headers)
+	resp, data := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), headers)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, %s", resp.StatusCode, data)
 	}
@@ -448,7 +571,7 @@ func TestChatAuthInjectedFromKeyStore(t *testing.T) {
 	_, addr := startDataPlane(t, up.URL, up.URL, true, store)
 
 	// 有 secret_ref 的 provider（openrouter，经 codex 路由）：注入 Bearer。
-	resp, data := chatPost(t, addr, "/c/codex/v1/chat/completions", []byte(`{"model":"m","messages":[]}`), nil)
+	resp, data := chatPost(t, addr, "/c/codex/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, %s", resp.StatusCode, data)
 	}
@@ -456,7 +579,7 @@ func TestChatAuthInjectedFromKeyStore(t *testing.T) {
 		t.Errorf("Authorization = %q, want Bearer sk-upstream-secret-1", auth)
 	}
 	// 无钥匙的 provider（ollama，generic）：不发认证。
-	resp, data = chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"m","messages":[]}`), nil)
+	resp, data = chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, %s", resp.StatusCode, data)
 	}
@@ -473,7 +596,7 @@ func TestChatAuthMissingSecretFails(t *testing.T) {
 	up := newFakeUpstream(t, nil)
 	_, addr := startDataPlane(t, up.URL, up.URL, true, secret.NewMemStore()) // 空 store
 
-	resp, data := chatPost(t, addr, "/c/codex/v1/chat/completions", []byte(`{"model":"m","messages":[]}`), nil)
+	resp, data := chatPost(t, addr, "/c/codex/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("status %d, want 500, body %s", resp.StatusCode, data)
 	}
@@ -494,7 +617,7 @@ func TestChatNonStreamingForwarded(t *testing.T) {
 	})
 	_, addr := startDataPlane(t, up.URL, up.URL, false, nil)
 
-	resp, data := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"m","messages":[]}`), nil)
+	resp, data := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
@@ -526,7 +649,7 @@ func TestChatUpstreamErrorsPreserved(t *testing.T) {
 				w.Write(fixture(t, tc.fixture))
 			})
 			_, addr := startDataPlane(t, up.URL, up.URL, false, nil)
-			resp, data := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"m","messages":[]}`), nil)
+			resp, data := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
 			if resp.StatusCode != tc.status {
 				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.status)
 			}
@@ -542,7 +665,7 @@ func TestChatUpstreamUnreachable502(t *testing.T) {
 	dead := "http://127.0.0.1:1"
 	up := newFakeUpstream(t, nil)
 	_, addr := startDataPlane(t, dead, up.URL, false, nil)
-	resp, data := chatPost(t, addr, "/c/codex/v1/chat/completions", []byte(`{"model":"m","messages":[]}`), nil)
+	resp, data := chatPost(t, addr, "/c/codex/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502, body %s", resp.StatusCode, data)
 	}
@@ -561,7 +684,7 @@ func TestChatUpstreamTimeout504(t *testing.T) {
 	s.upstreamsChat.SetResponseHeaderTimeout(200 * time.Millisecond)
 
 	start := time.Now()
-	resp, data := chatPost(t, addr, "/c/codex/v1/chat/completions", []byte(`{"model":"m","messages":[]}`), nil)
+	resp, data := chatPost(t, addr, "/c/codex/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
 	if resp.StatusCode != http.StatusGatewayTimeout {
 		t.Fatalf("status = %d, want 504, body %s", resp.StatusCode, data)
 	}
@@ -590,7 +713,7 @@ func TestChatStreamingFlushIsPrompt(t *testing.T) {
 	_, addr := startDataPlane(t, up.URL, up.URL, false, nil)
 
 	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/v1/chat/completions",
-		strings.NewReader(`{"model":"m","messages":[],"stream":true}`))
+		strings.NewReader(`{"model":"gateway-default","messages":[],"stream":true}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +766,7 @@ func TestChatStreamingClientCancelCancelsUpstream(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+"/v1/chat/completions",
-		strings.NewReader(`{"model":"m","messages":[],"stream":true}`))
+		strings.NewReader(`{"model":"gateway-default","messages":[],"stream":true}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -696,7 +819,7 @@ func TestChatConcurrentNoCrossTalk(t *testing.T) {
 			if i%2 == 0 {
 				path = "/c/codex/v1/chat/completions" // → A, Bearer sk-secret-A
 			}
-			resp, _ := chatPost(t, addr, path, []byte(`{"model":"m","messages":[]}`), nil)
+			resp, _ := chatPost(t, addr, path, []byte(`{"model":"gateway-default","messages":[]}`), nil)
 			if resp.StatusCode != http.StatusOK {
 				t.Errorf("request %d: status %d", i, resp.StatusCode)
 			}
@@ -900,7 +1023,7 @@ func TestChatToMessagesCrossProtocolDispatch(t *testing.T) {
 	up := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"id":"msg_fake","type":"message","role":"assistant","model":"m","content":[{"type":"text","text":"pong"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}`))
+		w.Write([]byte(`{"id":"msg_fake","type":"message","role":"assistant","model":"gateway-default","content":[{"type":"text","text":"pong"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}`))
 	})
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
 	p := cfg.Providers["openrouter"]
@@ -909,7 +1032,7 @@ func TestChatToMessagesCrossProtocolDispatch(t *testing.T) {
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/c/codex/v1/chat/completions",
-		[]byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`), nil)
+		[]byte(`{"model":"gateway-default","messages":[{"role":"user","content":"hi"}]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, body %s", resp.StatusCode, data)
 	}
@@ -935,7 +1058,7 @@ func TestChatContentTypeValidation(t *testing.T) {
 
 	// 缺失或非 JSON Content-Type → 415 原生客户端错误。
 	for _, ct := range []string{"", "text/plain", "application/xml", "multipart/form-data"} {
-		resp, data := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"m","messages":[]}`), map[string]string{"Content-Type": ct})
+		resp, data := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), map[string]string{"Content-Type": ct})
 		if resp.StatusCode != http.StatusUnsupportedMediaType {
 			t.Errorf("Content-Type %q: status %d, want 415 (%s)", ct, resp.StatusCode, data)
 			continue
@@ -946,7 +1069,7 @@ func TestChatContentTypeValidation(t *testing.T) {
 	}
 	// 合法 JSON media type 通过：带参数与 +json 后缀。
 	for _, ct := range []string{"application/json", "application/json; charset=utf-8", "application/problem+json"} {
-		resp, data := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"m","messages":[]}`), map[string]string{"Content-Type": ct})
+		resp, data := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), map[string]string{"Content-Type": ct})
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("Content-Type %q: status %d, want 200 (%s)", ct, resp.StatusCode, data)
 		}
@@ -964,7 +1087,7 @@ func TestChatSecretStoreErrorIsInternal(t *testing.T) {
 	cfg := dataPlaneConfig(up.URL, up.URL, true) // openrouter 声明 secret_ref
 	_, addr := startWithStore(t, cfg, brokenStore{})
 
-	resp, data := chatPost(t, addr, "/c/codex/v1/chat/completions", []byte(`{"model":"m","messages":[]}`), nil)
+	resp, data := chatPost(t, addr, "/c/codex/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500, body %s", resp.StatusCode, data)
 	}
@@ -1035,7 +1158,7 @@ func TestChatForwardedHeadersWhitelist(t *testing.T) {
 	})
 	_, addr := startDataPlane(t, up.URL, up.URL, false, nil)
 
-	resp, _ := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"m","messages":[]}`), nil)
+	resp, _ := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want 429", resp.StatusCode)
 	}
@@ -1077,7 +1200,7 @@ func TestChatRedirectForwardedNotFollowed(t *testing.T) {
 		return http.ErrUseLastResponse
 	}}
 	req, _ := http.NewRequest(http.MethodPost, "http://"+addr+"/c/codex/v1/chat/completions",
-		strings.NewReader(`{"model":"m","messages":[]}`))
+		strings.NewReader(`{"model":"gateway-default","messages":[]}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -1101,11 +1224,11 @@ func TestChatAcceptHeaderByStreaming(t *testing.T) {
 	up := newFakeUpstream(t, nil)
 	_, addr := startDataPlane(t, up.URL, up.URL, false, nil)
 
-	chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"m","messages":[]}`), nil)
+	chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
 	if a := up.last().Accept; a != "application/json" {
 		t.Errorf("non-streaming Accept = %q, want application/json", a)
 	}
-	chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"m","messages":[],"stream":true}`), nil)
+	chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[],"stream":true}`), nil)
 	if a := up.last().Accept; a != "text/event-stream" {
 		t.Errorf("streaming Accept = %q, want text/event-stream", a)
 	}
@@ -1138,7 +1261,7 @@ func TestChatStreamingUsesFixture(t *testing.T) {
 	_, addr := startDataPlane(t, up.URL, up.URL, false, nil)
 
 	req, _ := http.NewRequest(http.MethodPost, "http://"+addr+"/v1/chat/completions",
-		strings.NewReader(`{"model":"m","messages":[],"stream":true}`))
+		strings.NewReader(`{"model":"gateway-default","messages":[],"stream":true}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

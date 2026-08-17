@@ -42,6 +42,7 @@ type ProviderRequest struct {
 	Adapter      string                 `json:"adapter"`
 	BaseURL      string                 `json:"base_url"`
 	ModelsURL    string                 `json:"models_url"`
+	ExtraHeaders map[string]string      `json:"extra_headers"`
 	DefaultModel string                 `json:"default_model"`
 	Enabled      *bool                  `json:"enabled"`
 	Models       []ProviderModelPayload `json:"models"`
@@ -74,6 +75,7 @@ type ProviderResponse struct {
 	Adapter      string                 `json:"adapter"`
 	BaseURL      string                 `json:"base_url"`
 	ModelsURL    string                 `json:"models_url,omitempty"`
+	ExtraHeaders map[string]string      `json:"extra_headers"`
 	DefaultModel string                 `json:"default_model"`
 	Enabled      bool                   `json:"enabled"`
 	Models       []ProviderModelPayload `json:"models"`
@@ -141,6 +143,7 @@ func providerFromRequest(id string, req ProviderRequest) (config.Provider, error
 		Adapter:      req.Adapter,
 		BaseURL:      req.BaseURL,
 		ModelsURL:    req.ModelsURL,
+		ExtraHeaders: cloneStringMap(req.ExtraHeaders),
 		DefaultModel: req.DefaultModel,
 		Models:       providerModelsFromPayload(req.Models),
 		Enabled:      req.Enabled,
@@ -156,6 +159,17 @@ func providerFromRequest(id string, req ProviderRequest) (config.Provider, error
 		return p, err
 	}
 	return p, nil
+}
+
+func cloneStringMap(source map[string]string) map[string]string {
+	if len(source) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(source))
+	for key, value := range source {
+		out[key] = value
+	}
+	return out
 }
 
 func providerModelsFromPayload(models []ProviderModelPayload) []config.ProviderModel {
@@ -293,6 +307,7 @@ func (s *Server) providerResponse(ctx context.Context, id string, p config.Provi
 		Adapter:      p.Adapter,
 		BaseURL:      p.BaseURL,
 		ModelsURL:    p.ModelsURL,
+		ExtraHeaders: cloneStringMap(p.ExtraHeaders),
 		DefaultModel: p.DefaultModel,
 		Enabled:      p.EnabledValue(),
 		Models:       providerModelsPayload(p.Models),

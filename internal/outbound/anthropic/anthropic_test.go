@@ -34,6 +34,24 @@ func testIRRequest() *ir.Request {
 	}
 }
 
+func TestDoWithHeadersOverlaysAnthropicDefaults(t *testing.T) {
+	var got http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	resp, err := NewPool(nil).Client(server.URL, "").DoWithHeaders(context.Background(), []byte(`{}`), false, map[string]string{"User-Agent": "claude-cli/2.1.228 (external, cli)", "Anthropic-Beta": "claude-code-20250219"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got.Get("User-Agent") != "claude-cli/2.1.228 (external, cli)" || got.Get("Anthropic-Beta") != "claude-code-20250219" || got.Get("Anthropic-Version") != APIVersion {
+		t.Fatalf("custom headers = %v", got)
+	}
+}
+
 func TestGenerateRequest(t *testing.T) {
 	body, err := GenerateRequest(testIRRequest())
 	if err != nil {

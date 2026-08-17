@@ -39,6 +39,7 @@ export interface Provider {
   adapter: string;
   base_url: string;
   models_url?: string;
+  extra_headers?: Record<string, string>;
   default_model: string;
   enabled?: boolean;
   models: ProviderModel[];

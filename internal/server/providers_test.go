@@ -551,3 +551,23 @@ func TestProviderCapabilitiesRoundtrip(t *testing.T) {
 		t.Errorf("capabilities = %+v, want both true", p.Capabilities)
 	}
 }
+
+func TestProviderExtraHeadersRoundTrip(t *testing.T) {
+	s, addr := startWithStore(t, config.Defaults(), secret.NewMemStore())
+	req := map[string]any{
+		"id": "custom", "name": "Custom", "adapter": "openai-responses",
+		"base_url": "https://example.com/v1", "default_model": "model",
+		"extra_headers": map[string]string{"User-Agent": "codex_cli_rs/0.147.0", "Originator": "codex_cli_rs"},
+	}
+	resp, data := httpJSON(t, addr, http.MethodPost, "/api/v1/providers", req)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+	}
+	p := decodeProvider(t, data)
+	if p.ExtraHeaders["Originator"] != "codex_cli_rs" || p.ExtraHeaders["User-Agent"] != "codex_cli_rs/0.147.0" {
+		t.Fatalf("response extra_headers = %v", p.ExtraHeaders)
+	}
+	if got := s.cfg.Snapshot().Providers["custom"].ExtraHeaders["Originator"]; got != "codex_cli_rs" {
+		t.Fatalf("persisted Originator = %q", got)
+	}
+}

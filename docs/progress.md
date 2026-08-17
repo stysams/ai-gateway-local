@@ -1,9 +1,9 @@
 # ai-gateway 第一期进度与接续
 
 > 状态：发布候选，第一期尚未验收完成  
-> 文档日期：2026-08-16  
-> 当前提交：`3d029b31e88b66f0717fdad6bc2d606ecc98fbf8`（发布包内二进制提交）  
-> 当前发布：`0.1.0-rc1`（`dist/ai-gateway-0.1.0-rc1-windows-amd64.zip`，SHA-256 `73751348263C33939AE27D7F518BB2EC3F27802866ADC2564318633D5064B004`）  
+> 文档日期：2026-08-17
+> 当前提交：`faf8fc8df5ba7950b8f09ed60625f1d253168460-dirty`（发布包内二进制提交）
+> 当前发布：`0.1.0-rc1`（`dist/ai-gateway-0.1.0-rc1-windows-amd64.zip`，SHA-256 `90989B9628BB7DA585E4BDD3FB2E5F7C75E60BBF996116E201C7821A3B6F7297`）
 > 第一验收平台：Windows 11
 
 本文给后续 Agent（含 Grok）接续工作。本文记录进度、权威边界、已落地增量和下一步，**不是新的工程合同**。
@@ -125,6 +125,10 @@
     出站 Responses 必须紧跟 `function_call` 写出 `function_call_output`，
     出站 Chat 必须紧跟 `tool_calls` 写出 `role: tool`。丢掉结果只留
     `Tool loaded.` 会让上游 400。
+17. **未归属模型不得透传。** 请求模型没有供应商前缀、也不是任何已启用
+    provider 已登记模型时，数据面 400，错误为
+    `未匹配当前选择的[<model>],请选择正确的 供应商/模型ID`，零上游接触。
+    显式 `<provider-id>/<model-id>` 和当前路由已登记模型仍可解析。
 
 相关证据在规格 §20「2026-08-15 复核：客户端可选模型目录」、
 「2026-08-16 复核：Codex 远程压缩触发条件」、
@@ -134,7 +138,8 @@
 「2026-08-16 复核：Claude Code `/model` 使用可逆选择器别名」和
 「2026-08-16 复核：Claude Code `/model` 必须预写 gateway-models.json」和
 「2026-08-16 复核：Responses 出站助手历史必须用 output_text」和
-「2026-08-16 复核：Claude Code 用户消息里的 tool_result 必须转成 function_call_output」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
+「2026-08-16 复核：Claude Code 用户消息里的 tool_result 必须转成 function_call_output」和
+「2026-08-17 复核：未归属模型不得透传到当前路由」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
 
 ---
 
@@ -248,7 +253,7 @@ docs/progress.md     本文
 1. Content-Type 必须是 JSON，否则 415；体超过 128 MiB 则 413。
 2. 只为路由解析 `model` 和 `stream`。
 3. `startTrace` 打开 JSONL，设置 `X-Request-Id`。
-4. `route.Resolve`：先解码 Claude 选择器别名 → 路由默认 → 空或 `gateway-default` → 命中已配置 provider 前缀则覆盖 → 否则整段模型名交给当前路由的 provider。含 `/` 的模型名不得报“未知供应商”。
+4. `route.Resolve`：先解码 Claude 选择器别名 → 路由默认 → 空或 `gateway-default` → 命中已配置 provider 前缀则覆盖 → `generic` 唯一已登记归属 → 当前路由已登记模型 → 否则 400 且零上游。含 `/` 的已登记模型名不得报“未知供应商”。
 5. 能力门：不支持图片则 422 且零上游；无 `context_management` 则剥离；reasoning 不可表达则删除并记警告。
 6. 同协议只改写后原样转发；跨协议经 `ir.Sequencer` 再编码回入站协议。
 
@@ -296,8 +301,8 @@ npm --prefix desktop run test:e2e -- --project=desktop-light
 5. 打完用包内 `ai-gateway.exe version` 核对版本、提交、Go、平台；核对压缩包含两个二进制、`LICENSE`、`README.md`、`docs/install.md`。告知用户必须替换并重启已在运行的网关，新包才会生效。
 
 当前包：`dist/ai-gateway-0.1.0-rc1-windows-amd64.zip`  
-提交：`3d029b31e88b66f0717fdad6bc2d606ecc98fbf8`  
-SHA-256：`73751348263C33939AE27D7F518BB2EC3F27802866ADC2564318633D5064B004`
+提交：`faf8fc8df5ba7950b8f09ed60625f1d253168460-dirty`
+SHA-256：`90989B9628BB7DA585E4BDD3FB2E5F7C75E60BBF996116E201C7821A3B6F7297`
 
 ---
 

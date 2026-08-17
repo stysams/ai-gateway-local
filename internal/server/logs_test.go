@@ -58,7 +58,7 @@ func TestRequestLogsQueriesUsageAndSecretSafety(t *testing.T) {
 		t.Fatalf("detail: %d %s", detailResp.StatusCode, detail)
 	}
 	text := string(detail)
-	for _, required := range []string{`"type":"request"`, `"type":"route"`, `"type":"upstream_request"`, `"type":"upstream_event"`, `"type":"client_event"`, `"type":"result"`, `"path":"/c/codex/v1/chat/completions"`, `"request_uri":"/c/codex/v1/chat/completions?debug=true"`, `"X-Debug-Trace":["trace-value"]`, `"Accept":["application/json"]`, `"User-Agent":["ai-gateway"]`, `"omitted_sensitive_header_count":3`, `"omitted_sensitive_header_count":1`, `"omitted_sensitive_query_count":1`, "private prompt text"} {
+	for _, required := range []string{`"type":"request"`, `"type":"route"`, `"type":"upstream_request"`, `"type":"upstream_event"`, `"type":"client_event"`, `"type":"result"`, `"path":"/c/codex/v1/chat/completions"`, `"request_uri":"/c/codex/v1/chat/completions?debug=true"`, `"inbound_protocol":"chat"`, `"outbound_protocol":"chat"`, `"converted":false`, `"X-Debug-Trace":["trace-value"]`, `"Accept":["application/json"]`, `"User-Agent":["ai-gateway"]`, `"omitted_sensitive_header_count":3`, `"omitted_sensitive_header_count":1`, `"omitted_sensitive_query_count":1`, "private prompt text"} {
 		if !strings.Contains(text, required) {
 			t.Errorf("detail missing %q: %s", required, detail)
 		}
@@ -101,7 +101,7 @@ func TestLoggingSwitchStopsNewFilesAndMissingUsageIsNotEstimated(t *testing.T) {
 	up := newFakeUpstream(t, nil) // default response intentionally has no usage
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
 	s, addr := startWithStore(t, cfg, secret.NewMemStore())
-	resp, _ := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"m","messages":[]}`), nil)
+	resp, _ := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("first request status = %d", resp.StatusCode)
 	}
@@ -124,7 +124,7 @@ func TestLoggingSwitchStopsNewFilesAndMissingUsageIsNotEstimated(t *testing.T) {
 	if putResp.StatusCode != http.StatusOK {
 		t.Fatalf("disable logging: %d %s", putResp.StatusCode, putBody)
 	}
-	resp, _ = chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"m","messages":[]}`), nil)
+	resp, _ = chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("second request status = %d", resp.StatusCode)
 	}
@@ -145,7 +145,7 @@ func TestLoggingBodySwitchOmitsPromptButKeepsRequestRecord(t *testing.T) {
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
 	cfg.Logging.Body = config.BoolPtr(false)
 	s, addr := startWithStore(t, cfg, secret.NewMemStore())
-	resp, body := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"m","messages":[{"role":"user","content":"private prompt text"}]}`), nil)
+	resp, body := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[{"role":"user","content":"private prompt text"}]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
 	}
@@ -197,7 +197,7 @@ func TestStreamingLogsAreSplitBySSEEventAndCaptureExplicitUsage(t *testing.T) {
 	})
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
-	resp, body := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"m","messages":[],"stream":true}`), nil)
+	resp, body := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[],"stream":true}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("stream status = %d, body = %s", resp.StatusCode, body)
 	}
@@ -237,7 +237,7 @@ func TestConcurrentRequestsUseIndependentLogFiles(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			resp, _ := chatPost(t, addr, "/v1/chat/completions", []byte(fmt.Sprintf(`{"model":"m","messages":[{"role":"user","content":"request-%d"}]}`, i)), nil)
+			resp, _ := chatPost(t, addr, "/v1/chat/completions", []byte(fmt.Sprintf(`{"model":"gateway-default","messages":[{"role":"user","content":"request-%d"}]}`, i)), nil)
 			if resp.StatusCode == http.StatusOK {
 				ids <- resp.Header.Get("X-Request-Id")
 			}

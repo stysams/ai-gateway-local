@@ -31,7 +31,7 @@ export const api = {
   saveProvider: (value: Record<string, unknown>, editing?: string) => request<Provider>(editing ? `/api/v1/providers/${editing}` : "/api/v1/providers", { method: editing ? "PUT" : "POST", body: JSON.stringify(value) }),
   deleteProvider: (id: string) => request<{ deleted: boolean; warning?: string }>(`/api/v1/providers/${id}`, { method: "DELETE" }),
   probeProvider: (id: string) => request<{ ok: boolean; status: number; latency_ms: number; models?: number; error?: string; response?: string }>(`/api/v1/providers/${id}/probe`, { method: "POST" }),
-  discoverProviderModels: (value: { provider_id: string; adapter: string; base_url: string; models_url?: string; api_key?: string }) =>
+  discoverProviderModels: (value: { provider_id: string; adapter: string; base_url: string; models_url?: string; extra_headers?: Record<string, string>; api_key?: string }) =>
     request<{ object: "list"; provider: string; data: DiscoveredProviderModel[] }>("/api/v1/provider-models/discover", { method: "POST", body: JSON.stringify(value) }),
   updateProviderAvailability: (id: string, value: { enabled?: boolean; models?: Record<string, boolean> }) =>
     request<Provider>(`/api/v1/providers/${id}/availability`, { method: "PUT", body: JSON.stringify(value) }),

@@ -79,15 +79,25 @@ func CompactURL(baseURL string) string {
 
 // Do sends a responses body upstream. stream selects Accept.
 func (c *Client) Do(ctx context.Context, body []byte, stream bool) (*http.Response, error) {
-	return c.do(ctx, CompletionURL(c.baseURL), body, stream)
+	return c.DoWithHeaders(ctx, body, stream, nil)
+}
+
+// DoWithHeaders sends a Responses request with validated provider headers.
+func (c *Client) DoWithHeaders(ctx context.Context, body []byte, stream bool, extraHeaders map[string]string) (*http.Response, error) {
+	return c.do(ctx, CompletionURL(c.baseURL), body, stream, extraHeaders)
 }
 
 // DoCompact posts a unary compact request to /responses/compact.
 func (c *Client) DoCompact(ctx context.Context, body []byte) (*http.Response, error) {
-	return c.do(ctx, CompactURL(c.baseURL), body, false)
+	return c.DoCompactWithHeaders(ctx, body, nil)
 }
 
-func (c *Client) do(ctx context.Context, url string, body []byte, stream bool) (*http.Response, error) {
+// DoCompactWithHeaders posts a compact request with provider headers.
+func (c *Client) DoCompactWithHeaders(ctx context.Context, body []byte, extraHeaders map[string]string) (*http.Response, error) {
+	return c.do(ctx, CompactURL(c.baseURL), body, false, extraHeaders)
+}
+
+func (c *Client) do(ctx context.Context, url string, body []byte, stream bool, extraHeaders map[string]string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
@@ -99,6 +109,7 @@ func (c *Client) do(ctx context.Context, url string, body []byte, stream bool) (
 		req.Header.Set("Accept", "application/json")
 	}
 	req.Header.Set("User-Agent", "ai-gateway")
+	upstream.ApplyExtraHeaders(req.Header, extraHeaders)
 	if c.secretRef != "" && c.secrets != nil {
 		cred, err := upstream.Bearer(ctx, c.secrets, c.secretRef)
 		if err != nil {

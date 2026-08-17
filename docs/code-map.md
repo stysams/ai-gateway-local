@@ -208,7 +208,7 @@ HTTP 请求
 |---|---|---|
 | 钥匙库失败 | 500 | 不是 502 |
 | 上游不可达 | 502 | |
-| 上游响应头超时 | 504 | 只有 `ResponseHeaderTimeout`，没有总流时限 |
+| 上游响应头超时 | 504 | 数据面 `ResponseHeaderTimeout` 为五分钟，没有总流时限；供应商探测使用独立短超时 |
 | 能力不够 | 422 | 上游零请求 |
 | 未知客户端 / 非法路径 | 404 | |
 
@@ -254,7 +254,7 @@ Claude Code 的 `tool_result` 可以是 `tool_reference` 等结构化块，并�
 
 认证和传输在 `outbound/internal/upstream`：
 
-- `NewTransport`：连接池 + `ResponseHeaderTimeout` 60s，无总 deadline
+- `NewTransport`：连接池 + `ResponseHeaderTimeout` 五分钟，无总 deadline
 - `NoRedirectClient`
 - `Bearer` / `XAPIKey`：读钥匙、用完 `Zero`
 - `ErrSecretMissing`、`ErrSecretStore` → 数据面 500
@@ -298,9 +298,9 @@ OpenAI 系用 Bearer。Anthropic 用 `x-api-key` + 固定 `anthropic-version: 20
 | `ReservedModel` | `"gateway-default"`，必须与 `clientcatalog.ReservedModel` 相等（`clients_test.go` 有守卫） |
 | `ParseClientID` | 非法客户端 → 404 |
 | `RouteFor` | 读该客户端当前路由 |
-| `Resolve` | §7.4 四步，并检查 provider / 模型 `enabled` |
+| `Resolve` | §7.4：默认路由、显式 provider 前缀、`generic` 唯一模型归属、当前路由已登记模型，未归属则拒绝，并检查 provider / 模型 `enabled` |
 
-`enabled == false` 的供应商或模型不能被解析到。前缀覆盖只在 `<prefix>` **正好是**已配置 provider id 时生效。`anthropic/claude-...` 在没有名为 `anthropic` 的 provider 时，整段交给当前路由的供应商。
+`enabled == false` 的供应商或模型不能被解析到。前缀覆盖只在 `<prefix>` **正好是**已配置 provider id 时生效。对 `generic`，未命中 provider 前缀的模型若唯一匹配已登记模型，则转到该模型所属 provider；同名归属有歧义且当前路由不能消歧时返回错误。当前路由 provider 已登记的模型（包括含 `/` 的上游名）仍走该 provider。未命中前缀、也无法归属到任何已登记模型时，必须在接触上游之前返回 `未匹配当前选择的[<model>],请选择正确的 供应商/模型ID`。
 
 ---
 

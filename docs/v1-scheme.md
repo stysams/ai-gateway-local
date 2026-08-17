@@ -300,6 +300,7 @@ routes:
 - `name`：非空显示名称。
 - `adapter`：只允许 `openai-chat`、`openai-responses`、`anthropic`。
 - `base_url`：必须是绝对 HTTP 或 HTTPS URL，不得包含查询字符串或片段。
+- `extra_headers`：可选的上游请求头名称到值映射，最多 64 项；用于正常请求、远程压缩、模型发现和连接探测。名称必须符合 HTTP 字段名语法，值不得包含换行或 NUL 字节。`Authorization`、`x-api-key`、Cookie、Host、Content-Length 和逐跳传输字段由网关管理，不允许配置。
 - `default_model`：非空。
 - `models`：可选模型目录；每项包含非空且在同一 provider 内唯一的 `id`，以及可选 `name`、`context_window` 和 `max_output_tokens`。
 - `context_window` 和 `max_output_tokens`：分别是非负整数；`0` 表示上游未提供且用户尚未填写，不得按模型名称推测。协议不假定两个字段之间存在固定大小关系。
@@ -467,11 +468,12 @@ sidecar；Grok Build 在配置里追加条目。Claude Code 的完整可选目�
 1. 读取该客户端的当前路由，得到 `route.provider` 和 `route.model`。
 2. 若请求模型为空或等于 `gateway-default`，使用当前路由的 provider 和 model。
 3. 否则，若请求模型形如 `<prefix>/<rest>`，且 `<prefix>` 正好命中一个已配置 provider id，则本次请求使用该 provider，模型为 `<rest>`。
-4. 否则使用当前路由的 provider，并把请求模型完整地作为上游模型名。
+4. 否则，若客户端是 `generic`，并且请求模型完整匹配唯一一个已启用 provider 明确登记且已启用的 `default_model` 或 `models[].id`，则使用该 provider，模型名保持完整。
+5. 若 `generic` 请求的模型被多个已启用 provider 登记，且当前路由 provider 也是其中之一，则使用当前路由 provider；否则返回明确的模型归属歧义错误，要求调用方使用 `<provider-id>/<model-id>`。
+6. 否则，若请求模型完整匹配当前路由 provider 明确登记且已启用的 `default_model` 或 `models[].id`，则使用当前路由 provider，模型名保持完整。这一步不得因为模型名包含 `/` 而报“未知供应商”。例如当前路由指向 OpenRouter 且其 `default_model` 为 `anthropic/claude-sonnet-4` 时，该字符串是合法的上游模型名。
+7. 否则拒绝本次请求。数据面必须在接触上游之前返回 400，错误信息必须为 `未匹配当前选择的[<requested-model>],请选择正确的 供应商/模型ID`。禁止把无法归属到任何已配置 provider 的模型名透传到当前路由 provider。
 
-第四步不得因为模型名包含 `/` 而报“未知供应商”。例如当前路由指向 OpenRouter 时，`anthropic/claude-sonnet-4` 是合法的上游模型名。
-
-请求级 provider 覆盖只在前缀命中已配置 provider 时生效。客户端或调用方若需要确定性地覆盖，必须使用已存在的 provider id。
+请求级 provider 覆盖只在前缀命中已配置 provider 时生效。客户端或调用方若需要确定性地覆盖，必须使用已存在的 provider id。显式 `<provider-id>/<model-id>` 仍可以把未写入该 provider 目录的模型名发给该 provider；未带供应商前缀、且未被任何已启用 provider 登记的名字不得再走这条路。
 
 ### 7.5 模型列表
 
@@ -748,13 +750,15 @@ URL 拼接必须避免重复 `/v1` 或重复斜杠。`base_url` 语义以配置�
 - Anthropic adapter 默认发送 `x-api-key: <secret>` 和实现所需的稳定 `anthropic-version`。
 - 本地无钥匙 provider 不发送认证头。
 - 入站客户端的 Authorization、x-api-key 或占位 key 不得转发上游。
+- provider 的 `extra_headers` 在 adapter 默认头之后应用，因此可以覆盖 `User-Agent`、`Accept`、`Content-Type` 或 `anthropic-version`；认证头始终由网关最后注入。
+- 桌面提供经过本机真实客户端请求核验的 Claude Code 与 Codex 请求头预设。预设只是可编辑的 `extra_headers`，不是运行时分支，也不包含会话、安装、窗口或系统环境标识。
 
-若未来需要自定义头，必须新增明确配置合同；第一阶段禁止把任意客户端头透传给上游。
+禁止把任意入站客户端头自动透传给上游；只有 provider 配置中明确列出的 `extra_headers` 可以发送。
 
 ### 10.2 HTTP 客户端
 
 - 每个 provider 可以复用连接池。
-- 必须设置连接、TLS 握手和响应头超时。
+- 必须设置连接、TLS 握手和响应头超时。数据面响应头超时为五分钟，避免长推理模型在首个流事件之前被六十秒固定时限截断；连接探测仍使用独立的短超时。
 - 不得给整个流式响应设置固定总时长。
 - 必须遵循请求 context 取消。
 - 第一阶段不得自动切换 provider。
@@ -1330,7 +1334,7 @@ ai-gateway version
 
 1. 首次风险说明。
 2. 总览：网关状态、监听地址、日志和登录启动状态。
-3. Providers：列表、新增、编辑、删除、探测、模型列表。
+3. Providers：列表、新增、编辑、删除、探测、模型列表、自定义请求头和 Claude Code/Codex 请求头预设。
 4. Routes：Codex、Claude Code、Grok Build、Generic 的当前 provider 和 model。
 5. Clients：检查、point、restore、漂移状态和影响说明。
 6. Logs：摘要列表、正文详情、筛选。
@@ -2335,6 +2339,33 @@ messages following tool_calls message)
 的结构化结果，跨协议必须作为工具结果文本保留（JSON 字符串），不得当成
 空字符串丢掉。入站要把该 `tool_result` 拆成 IR `RoleTool`，剩余用户
 文本仍是 `RoleUser`。
+
+### 2026-08-17 复核：未归属模型不得透传到当前路由
+
+实验对象：第三方客户端 `Anthropic/Go 1.56.0` 经通用入口
+`POST /v1/messages` 请求 `claude-opus-5`。当时 `routes.generic` 为
+`opencode / deepseek-v4-flash`，`claude-opus-5` 只登记在已启用的
+`agentrouter`。
+
+证据文件：
+
+- `%USERPROFILE%\.ai-gateway\logs\2026-08-17\req_f7f101f2df53e1b227380052.jsonl`
+- `%USERPROFILE%\.ai-gateway\logs\2026-08-17\req_5410f2645f4504ff2c29b33e.jsonl`
+
+- 入站模型是裸名 `claude-opus-5`，没有 `agentrouter/` 前缀。
+- 旧 §7.4 第六步把完整模型名交给当前 generic 路由，出站变成
+  `https://opencode.ai/zen/go/v1/chat/completions`，模型仍是
+  `claude-opus-5`。
+- 上游返回 `Model claude-opus-5 is not supported`（日志状态 401）。
+- 同日稍后、同一调用方请求同一模型时，唯一归属已能选中
+  `agentrouter`。未写入任何 provider 目录的名字仍会落到默认
+  `opencode`。
+
+这不是调用方选错模型后的上游鉴权失败，而是网关把“没有供应商的模型
+名”透传给了当前路由。第三方目录与桌面选择器都使用
+`<provider-id>/<model-id>`。未命中前缀、也无法归属到已登记模型时，必须
+在接触上游之前拒绝，错误信息为
+`未匹配当前选择的[<requested-model>],请选择正确的 供应商/模型ID`。
 
 ---
 

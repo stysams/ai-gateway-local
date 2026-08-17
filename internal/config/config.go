@@ -123,15 +123,16 @@ type Autostart struct {
 
 // Provider is a single upstream provider definition.
 type Provider struct {
-	Name         string          `yaml:"name"`
-	Adapter      string          `yaml:"adapter"`
-	BaseURL      string          `yaml:"base_url"`
-	ModelsURL    string          `yaml:"models_url,omitempty"`
-	DefaultModel string          `yaml:"default_model"`
-	Models       []ProviderModel `yaml:"models,omitempty"`
-	Enabled      *bool           `yaml:"enabled,omitempty"`
-	SecretRef    string          `yaml:"secret_ref,omitempty"`
-	Capabilities Capabilities    `yaml:"capabilities,omitempty"`
+	Name         string            `yaml:"name"`
+	Adapter      string            `yaml:"adapter"`
+	BaseURL      string            `yaml:"base_url"`
+	ModelsURL    string            `yaml:"models_url,omitempty"`
+	ExtraHeaders map[string]string `yaml:"extra_headers,omitempty"`
+	DefaultModel string            `yaml:"default_model"`
+	Models       []ProviderModel   `yaml:"models,omitempty"`
+	Enabled      *bool             `yaml:"enabled,omitempty"`
+	SecretRef    string            `yaml:"secret_ref,omitempty"`
+	Capabilities Capabilities      `yaml:"capabilities,omitempty"`
 }
 
 func (p Provider) EnabledValue() bool {
@@ -252,6 +253,12 @@ func (c *Config) clone() *Config {
 	if c.Providers != nil {
 		out.Providers = make(map[string]Provider, len(c.Providers))
 		for k, v := range c.Providers {
+			if v.ExtraHeaders != nil {
+				v.ExtraHeaders = make(map[string]string, len(v.ExtraHeaders))
+				for name, value := range c.Providers[k].ExtraHeaders {
+					v.ExtraHeaders[name] = value
+				}
+			}
 			if v.Models != nil {
 				v.Models = append([]ProviderModel(nil), v.Models...)
 				for i := range v.Models {

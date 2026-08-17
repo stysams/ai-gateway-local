@@ -237,7 +237,7 @@ func (s *Server) serveDataPlaneWith(w http.ResponseWriter, r *http.Request, clie
 		}
 		stream = false
 	}
-	if err := trace.route(res.Provider, res.Model, cfgProvider.Adapter); err != nil {
+	if err := trace.route(res.Provider, res.Model, cfgProvider.Adapter, inProto, outProto); err != nil {
 		trace.setError(err)
 		writeInboundError(w, http.StatusInternalServerError, inProto, err.Error(), "request_log_failed")
 		return
@@ -250,7 +250,8 @@ func (s *Server) serveDataPlaneWith(w http.ResponseWriter, r *http.Request, clie
 	}
 	provider := providerInfo{
 		id: res.Provider, baseURL: cfgProvider.BaseURL, secretRef: cfgProvider.SecretRef,
-		imageInput: cfgProvider.Capabilities.ImageInput, reasoning: cfgProvider.Capabilities.Reasoning,
+		extraHeaders: cfgProvider.ExtraHeaders,
+		imageInput:   cfgProvider.Capabilities.ImageInput, reasoning: cfgProvider.Capabilities.Reasoning,
 		contextManagement: cfgProvider.Capabilities.ContextManagement,
 	}
 	if inProto == ir.ProtocolMessages && !provider.contextManagement {
@@ -553,6 +554,7 @@ type providerInfo struct {
 	id                string
 	baseURL           string
 	secretRef         string
+	extraHeaders      map[string]string
 	imageInput        bool
 	reasoning         bool
 	contextManagement bool
@@ -562,15 +564,15 @@ type providerInfo struct {
 func (s *Server) upstreamDo(ctx context.Context, proto ir.Protocol, p providerInfo, body []byte, stream bool, compact bool) (*http.Response, error) {
 	switch proto {
 	case ir.ProtocolChat:
-		return s.upstreamsChat.Client(p.baseURL, p.secretRef).Do(ctx, body, stream)
+		return s.upstreamsChat.Client(p.baseURL, p.secretRef).DoWithHeaders(ctx, body, stream, p.extraHeaders)
 	case ir.ProtocolResponses:
 		client := s.upstreamsResponses.Client(p.baseURL, p.secretRef)
 		if compact {
-			return client.DoCompact(ctx, body)
+			return client.DoCompactWithHeaders(ctx, body, p.extraHeaders)
 		}
-		return client.Do(ctx, body, stream)
+		return client.DoWithHeaders(ctx, body, stream, p.extraHeaders)
 	case ir.ProtocolMessages:
-		return s.upstreamsAnthropic.Client(p.baseURL, p.secretRef).Do(ctx, body, stream)
+		return s.upstreamsAnthropic.Client(p.baseURL, p.secretRef).DoWithHeaders(ctx, body, stream, p.extraHeaders)
 	}
 	return nil, fmt.Errorf("unknown upstream protocol %q", proto)
 }

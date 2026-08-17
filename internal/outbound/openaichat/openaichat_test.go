@@ -48,6 +48,24 @@ func TestCompletionURL(t *testing.T) {
 	}
 }
 
+func TestDoWithHeadersOverlaysAdapterDefaults(t *testing.T) {
+	var got http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	resp, err := NewPool(nil).Client(server.URL, "").DoWithHeaders(context.Background(), []byte(`{}`), false, map[string]string{"User-Agent": "codex_cli_rs/0.147.0", "Originator": "codex_cli_rs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got.Get("User-Agent") != "codex_cli_rs/0.147.0" || got.Get("Originator") != "codex_cli_rs" {
+		t.Fatalf("custom headers = %v", got)
+	}
+}
+
 func TestGenerateRequestImageAndReasoning(t *testing.T) {
 	req := &ir.Request{
 		Model:     "m",

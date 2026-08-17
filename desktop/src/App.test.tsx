@@ -75,10 +75,13 @@ describe("desktop workflow", () => {
   it("loads upstream model metadata and includes edits in the provider payload", async () => {
     const user = userEvent.setup(); render(<App />); await ready(); await user.click(screen.getByRole("button", { name: "Providers" })); await user.click(screen.getByRole("button", { name: "Add provider" }));
     await user.type(screen.getByLabelText("Identifier"), "new-provider"); await user.type(screen.getByLabelText("Name"), "New Provider"); await user.type(screen.getByLabelText("Base URL"), "https://example.com/v1");
+    await user.click(screen.getByRole("button", { name: "Apply preset Codex" }));
+    expect(screen.getByDisplayValue("codex_cli_rs/0.147.0")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Fetch models" }));
     expect(await screen.findByDisplayValue("model-a")).toBeVisible(); expect(screen.getByDisplayValue("131072")).toBeVisible(); expect(screen.getByDisplayValue("16384")).toBeVisible();
     const contextInput = screen.getByDisplayValue("131072"); await user.clear(contextInput); await user.type(contextInput, "200000"); await user.click(screen.getAllByRole("radio", { name: "Default model" })[0]); await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ method: "POST", body: expect.stringContaining('"context_window":200000') })));
+    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ body: expect.stringContaining('"Originator":"codex_cli_rs"') }));
   });
 
   it("requires confirmation before pointing", async () => {

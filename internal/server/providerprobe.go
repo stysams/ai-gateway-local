@@ -49,11 +49,12 @@ type ProviderModel struct {
 }
 
 type DiscoverProviderModelsRequest struct {
-	ProviderID string  `json:"provider_id"`
-	Adapter    string  `json:"adapter"`
-	BaseURL    string  `json:"base_url"`
-	ModelsURL  string  `json:"models_url,omitempty"`
-	APIKey     *string `json:"api_key"`
+	ProviderID   string            `json:"provider_id"`
+	Adapter      string            `json:"adapter"`
+	BaseURL      string            `json:"base_url"`
+	ModelsURL    string            `json:"models_url,omitempty"`
+	ExtraHeaders map[string]string `json:"extra_headers"`
+	APIKey       *string           `json:"api_key"`
 }
 
 type ProviderModelsResponse struct {
@@ -131,6 +132,7 @@ func (s *Server) probeProvider(ctx context.Context, id string, p config.Provider
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "ai-gateway/provider-probe")
+	applyExtraHeaders(req.Header, p.ExtraHeaders)
 	key, err := s.providerProbeKey(ctx, p)
 	if err != nil {
 		return 0, err, ""
@@ -218,7 +220,7 @@ func (s *Server) handleDiscoverProviderModels(w http.ResponseWriter, r *http.Req
 		return
 	}
 	id := strings.TrimSpace(request.ProviderID)
-	p := config.Provider{Name: "model discovery", Adapter: strings.TrimSpace(request.Adapter), BaseURL: strings.TrimSpace(request.BaseURL), ModelsURL: strings.TrimSpace(request.ModelsURL), DefaultModel: "discovery-placeholder"}
+	p := config.Provider{Name: "model discovery", Adapter: strings.TrimSpace(request.Adapter), BaseURL: strings.TrimSpace(request.BaseURL), ModelsURL: strings.TrimSpace(request.ModelsURL), ExtraHeaders: cloneStringMap(request.ExtraHeaders), DefaultModel: "discovery-placeholder"}
 	if existing := s.cfg.Snapshot(); existing != nil {
 		if saved, ok := existing.Providers[id]; ok {
 			p.SecretRef = saved.SecretRef
@@ -286,6 +288,7 @@ func (s *Server) fetchProviderModelsDetailedWithKey(ctx context.Context, id stri
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "ai-gateway/provider-probe")
+	applyExtraHeaders(req.Header, p.ExtraHeaders)
 	key := suppliedKey
 	if len(key) == 0 && p.SecretRef != "" {
 		key, err = s.secrets.Get(ctx, p.SecretRef)
@@ -378,6 +381,12 @@ func (s *Server) fetchProviderModelsDetailedWithKey(ctx context.Context, id stri
 		s.cacheModels(id, models)
 	}
 	return models, resp.StatusCode, nil, sanitizeProbeBody(body, true)
+}
+
+func applyExtraHeaders(target http.Header, extra map[string]string) {
+	for name, value := range extra {
+		target.Set(name, value)
+	}
 }
 
 const maxProbeResponse = 256 << 10

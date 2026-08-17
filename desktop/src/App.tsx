@@ -7,6 +7,7 @@ import {
 import { ClientsIcon, GatewayMark, LogsIcon, OverviewIcon, ProvidersIcon, RoutesIcon, SettingsIcon, UsageIcon, type AppIcon } from "./icons";
 import { api } from "./api";
 import { catalogId, enabledCatalog } from "./catalog";
+import { mergeHeaderPreset, presetForAdapter } from "./headerPresets";
 import { translator, type Language, type MessageKey } from "./i18n";
 import type { ClientID, Config, LocalAccess, LogSummary, PointClient, PointStatus, Provider, ProviderModel, Status, UsageGroup, UsageReport } from "./types";
 import { validateProvider, type ProviderFormValue } from "./validation";
@@ -23,7 +24,11 @@ const navigation: { id: Page; icon: AppIcon }[] = [
   { id: "clients", icon: ClientsIcon }, { id: "logs", icon: LogsIcon }, { id: "usage", icon: UsageIcon }, { id: "settings", icon: SettingsIcon },
 ];
 
-const emptyProvider: ProviderFormValue = { id: "", name: "", adapter: "openai-chat", base_url: "", models_url: "", default_model: "", models: [], api_key: "" };
+const emptyProvider: ProviderFormValue = { id: "", name: "", adapter: "openai-chat", base_url: "", models_url: "", extra_headers: [], default_model: "", models: [], api_key: "" };
+
+function headerRecord(headers: ProviderFormValue["extra_headers"]): Record<string, string> {
+  return Object.fromEntries(headers.map((header) => [header.name.trim(), header.value]));
+}
 
 export function App() {
   const [page, setPage] = useState<Page>("overview");
@@ -221,8 +226,12 @@ function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (k
   const [probe, setProbe] = useState<{ provider: string; result: { ok: boolean; status: number; latency_ms: number; models?: number; error?: string; response?: string } } | null>(null);
   const edit = (p: Provider) => {
     const models = p.models?.length ? p.models : [{ id: p.default_model, name: "", context_window: 0, max_output_tokens: 0 }];
-    setEditing(p.id); setForm({ id: p.id, name: p.name, adapter: p.adapter, base_url: p.base_url, models_url: p.models_url || "", default_model: p.default_model, models, api_key: "" }); setErrors({}); setOpen(true);
+    const extra_headers = Object.entries(p.extra_headers || {}).sort(([left], [right]) => left.localeCompare(right)).map(([name, value]) => ({ name, value }));
+    setEditing(p.id); setForm({ id: p.id, name: p.name, adapter: p.adapter, base_url: p.base_url, models_url: p.models_url || "", extra_headers, default_model: p.default_model, models, api_key: "" }); setErrors({}); setOpen(true);
   };
+  const headerPreset = presetForAdapter(form.adapter);
+  const updateHeader = (index: number, patch: Partial<ProviderFormValue["extra_headers"][number]>) => setForm((current) => ({ ...current, extra_headers: current.extra_headers.map((header, headerIndex) => headerIndex === index ? { ...header, ...patch } : header) }));
+  const removeHeader = (index: number) => setForm((current) => ({ ...current, extra_headers: current.extra_headers.filter((_, headerIndex) => headerIndex !== index) }));
   const updateModel = (index: number, patch: Partial<ProviderModel>) => setForm((current) => ({ ...current, models: current.models.map((model, modelIndex) => modelIndex === index ? { ...model, ...patch } : model) }));
   const removeModel = (index: number) => setForm((current) => {
     const removed = current.models[index]; const models = current.models.filter((_, modelIndex) => modelIndex !== index);
@@ -232,11 +241,11 @@ function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (k
   const addModel = () => setForm((current) => ({ ...current, models: [...current.models, { id: "", name: "", context_window: 0, max_output_tokens: 0 }] }));
   const fetchModels = async () => {
     const discoveryErrors = validateProvider({ ...form, name: "discovery", default_model: "discovery", models: [] }, false);
-    const nextErrors = Object.fromEntries(Object.entries(discoveryErrors).filter(([field]) => ["id", "adapter", "base_url", "models_url"].includes(field)));
+    const nextErrors = Object.fromEntries(Object.entries(discoveryErrors).filter(([field]) => ["id", "adapter", "base_url", "models_url"].includes(field) || field.startsWith("extra_headers.")));
     if (Object.keys(nextErrors).length) { setErrors(nextErrors); notify("error", t("fetchModelsHint")); return; }
     setFetching(true);
     try {
-      const result = await api.discoverProviderModels({ provider_id: form.id, adapter: form.adapter, base_url: form.base_url, models_url: form.models_url || undefined, api_key: form.api_key || undefined });
+      const result = await api.discoverProviderModels({ provider_id: form.id, adapter: form.adapter, base_url: form.base_url, models_url: form.models_url || undefined, extra_headers: headerRecord(form.extra_headers), api_key: form.api_key || undefined });
       setForm((current) => {
         const existing = new Map(current.models.filter((model) => model.id.trim()).map((model) => [model.id, model]));
         const fetched = result.data.map((model) => {
@@ -253,7 +262,7 @@ function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (k
   };
   const submit = async (event: React.FormEvent) => {
     event.preventDefault(); const nextErrors = validateProvider(form, Boolean(editing)); setErrors(nextErrors); if (Object.keys(nextErrors).length) return;
-    await run(() => api.saveProvider({ ...(editing ? {} : { id: form.id }), name: form.name, adapter: form.adapter, base_url: form.base_url, models_url: form.models_url?.trim() || undefined, default_model: form.default_model, models: form.models.map((model) => ({ ...model, id: model.id.trim(), name: model.name?.trim() || undefined })), api_key: form.api_key || undefined, capabilities: { image_input: true, reasoning: true, context_management: false } }, editing), t("success"));
+    await run(() => api.saveProvider({ ...(editing ? {} : { id: form.id }), name: form.name, adapter: form.adapter, base_url: form.base_url, models_url: form.models_url?.trim() || undefined, extra_headers: headerRecord(form.extra_headers), default_model: form.default_model, models: form.models.map((model) => ({ ...model, id: model.id.trim(), name: model.name?.trim() || undefined })), api_key: form.api_key || undefined, capabilities: { image_input: true, reasoning: true, context_management: false } }, editing), t("success"));
   setOpen(false); setEditing(undefined); setForm(emptyProvider);
   };
   const probeProvider = async (provider: Provider) => {
@@ -274,6 +283,8 @@ function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (k
       <Field label={t("baseURL")} error={errors.base_url} wide><input type="url" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} /></Field>
       <Field label={t("modelsURL")} error={errors.models_url} wide><input type="url" value={form.models_url} placeholder={t("modelsURLPlaceholder")} onChange={(e) => setForm({ ...form, models_url: e.target.value })} /></Field>
       <Field label={t("apiKey")} wide><input type="password" autoComplete="new-password" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} placeholder={editing ? t("keepKey") : "sk-…"} /></Field>
+    </div><div className="header-editor"><div className="header-editor-title"><div><h3>{t("customHeaders")}</h3><p>{t("customHeadersDescription")}</p></div><div className="header-editor-actions"><button type="button" className="secondary" onClick={() => setForm((current) => ({ ...current, extra_headers: mergeHeaderPreset(current.extra_headers, headerPreset.headers) }))}><Plus size={15} />{t("applyPreset")} {headerPreset.label}</button><button type="button" className="secondary" onClick={() => setForm((current) => ({ ...current, extra_headers: [...current.extra_headers, { name: "", value: "" }] }))}><Plus size={15} />{t("addHeader")}</button></div></div>
+      {form.extra_headers.length === 0 ? <div className="header-empty">{t("noCustomHeaders")}</div> : <div className="header-rows" role="table" aria-label={t("customHeaders")}><div className="header-row header-row-head" role="row"><span>{t("headerName")}</span><span>{t("headerValue")}</span><span /></div>{form.extra_headers.map((header, index) => <div className="header-row" role="row" key={`${header.name}-${index}`}><label><span>{t("headerName")}</span><input className="mono" value={header.name} onChange={(event) => updateHeader(index, { name: event.target.value })} aria-invalid={Boolean(errors[`extra_headers.${index}.name`])} />{errors[`extra_headers.${index}.name`] && <small className="field-error">{errors[`extra_headers.${index}.name`].replaceAll("_", " ")}</small>}</label><label><span>{t("headerValue")}</span><input className="mono" value={header.value} onChange={(event) => updateHeader(index, { value: event.target.value })} aria-invalid={Boolean(errors[`extra_headers.${index}.value`])} />{errors[`extra_headers.${index}.value`] && <small className="field-error">{errors[`extra_headers.${index}.value`].replaceAll("_", " ")}</small>}</label><button type="button" className="icon-button compact danger" onClick={() => removeHeader(index)} title={t("removeHeader")} aria-label={`${t("removeHeader")} ${header.name || index + 1}`}><Trash2 size={15} /></button></div>)}</div>}
     </div><div className="model-catalog"><div className="model-catalog-header"><div><h3>{t("modelCatalog")}</h3><p>{t("modelCatalogDescription")}</p></div><button type="button" className="secondary" onClick={() => void fetchModels()} disabled={fetching}><RefreshCw size={15} className={fetching ? "spin" : ""} />{fetching ? t("fetchingModels") : t("fetchModels")}</button></div>
       {errors.default_model && <small className="field-error catalog-error">{errors.default_model.replaceAll("_", " ")}</small>}
       {form.models.length === 0 ? <div className="model-empty">{t("noModels")}</div> : <div className="model-editor" role="table" aria-label={t("modelCatalog")}><div className="model-editor-head" role="row"><span>{t("defaultModel")}</span><span>{t("modelID")}</span><span>{t("displayName")}</span><span>{t("contextWindow")}</span><span>{t("maxOutputTokens")}</span><span /></div>{form.models.map((model, index) => <div className="model-editor-row" role="row" key={`${model.id}-${index}`}><label className="default-radio" title={t("defaultModel")}><input type="radio" name="default-model" checked={Boolean(model.id) && form.default_model === model.id} onChange={() => setForm({ ...form, default_model: model.id })} /><span>{t("defaultModel")}</span></label><label><span>{t("modelID")}</span><input className="mono" value={model.id} onChange={(e) => { const previous = model.id; updateModel(index, { id: e.target.value }); if (form.default_model === previous) setForm((current) => ({ ...current, default_model: e.target.value, models: current.models.map((item, itemIndex) => itemIndex === index ? { ...item, id: e.target.value } : item) })); }} aria-invalid={Boolean(errors[`models.${index}.id`])} />{errors[`models.${index}.id`] && <small className="field-error">{errors[`models.${index}.id`].replaceAll("_", " ")}</small>}</label><label><span>{t("displayName")}</span><input value={model.name || ""} onChange={(e) => updateModel(index, { name: e.target.value })} /></label><label><span>{t("contextWindow")}</span><input className="mono" type="number" min="0" placeholder={t("upstreamUnknown")} value={model.context_window || ""} onChange={(e) => updateModel(index, { context_window: Number(e.target.value) || 0 })} aria-invalid={Boolean(errors[`models.${index}.context_window`])} /></label><label><span>{t("maxOutputTokens")}</span><input className="mono" type="number" min="0" placeholder={t("upstreamUnknown")} value={model.max_output_tokens || ""} onChange={(e) => updateModel(index, { max_output_tokens: Number(e.target.value) || 0 })} aria-invalid={Boolean(errors[`models.${index}.max_output_tokens`])} /></label><button type="button" className="icon-button compact danger" onClick={() => removeModel(index)} title={t("removeModel")} aria-label={`${t("removeModel")} ${model.id || index + 1}`}><Trash2 size={15} /></button></div>)}</div>}

@@ -141,9 +141,12 @@ pipeline:
 3. `startTrace` opens the per-request JSONL session and sets `X-Request-Id`.
 4. `route.Resolve(client, model, cfg)` — §7.4: route default → empty or
    `gateway-default` → `<provider-id>/<rest>` prefix override (prefix must be a
-   configured provider id) → otherwise the full requested model passes through
-   to the route's provider. A model containing `/` must never be rejected as
-   "unknown provider".
+   configured provider id) → for `generic`, a uniquely registered model selects
+   its owning provider → a model listed on the current route provider is kept
+   on that provider → otherwise reject with the unmatched-model message
+   (callers must send `<provider-id>/<model-id>`). Ambiguous registered
+   ownership without the route provider is rejected. A model containing `/`
+   must never be rejected merely as an "unknown provider".
 5. Capability gates before any upstream call: image input unsupported → 422
    with zero upstream contact; `context_management` stripped for providers that
    do not declare it; reasoning dropped with a `reasoning_dropped` warning event.
@@ -169,8 +172,9 @@ stream must end in a protocol error event — never a fabricated completion.
 ### Streaming and error mapping
 
 No overall `WriteTimeout` on the HTTP server and no total deadline on streams
-(long reasoning must not be truncated); only `ResponseHeaderTimeout` bounds the
-upstream (→ 504). Every SSE event is flushed immediately; buffering an entire
+(long reasoning must not be truncated); only the five-minute
+`ResponseHeaderTimeout` bounds the upstream before response headers (→ 504).
+Every SSE event is flushed immediately; buffering an entire
 upstream response and replaying it as a stream is forbidden. Redirects are never
 followed (status + `Location` are passed through) so provider credentials cannot
 leak to a second target. Key-store failures map to **500**, never 502;

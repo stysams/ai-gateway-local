@@ -6,6 +6,7 @@
 /desktop/test-results/
 /desktop/playwright-report/
 /memory/
+/.snow/
 .env
 .env.*
 *.pid

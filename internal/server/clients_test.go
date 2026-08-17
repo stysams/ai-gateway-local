@@ -141,7 +141,7 @@ func TestClientPointAndRestoreAPI(t *testing.T) {
 // route resolves the reserved model, internal/point writes it into client
 // configurations, and the two constants live in different packages because
 // internal/point must not import the router. If they ever drift, every pointed
-// client would send a model the router treats as a passthrough model id
+// client would send a model the router cannot attribute to a provider
 // (docs/v1-scheme.md §7.3, §7.4).
 func TestReservedModelNamesAgree(t *testing.T) {
 	if clientcatalog.ReservedModel != route.ReservedModel {

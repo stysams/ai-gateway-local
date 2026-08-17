@@ -5,6 +5,7 @@ package route
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"ai-gateway/internal/config"
@@ -75,9 +76,15 @@ type Resolution struct {
 //  2. an empty or gateway-default model uses the route's provider/model,
 //  3. a <prefix>/<rest> model whose prefix matches a configured provider id
 //     overrides the provider and strips the prefix,
-//  4. otherwise the route's provider is used with the full requested model
-//     — a model containing '/' must never be rejected as "unknown
-//     provider".
+//  4. for the generic client, an exact model id declared by one enabled
+//     provider selects that provider; ambiguous ownership is rejected unless
+//     the current route provider is one of the owners,
+//  5. an exact model id declared by the current route provider is sent to
+//     that provider with the full requested name — a model containing '/'
+//     must never be rejected merely as an "unknown provider",
+//  6. otherwise the request is rejected: the model has no attributable
+//     provider, so callers must send <provider-id>/<model-id>
+//     (docs/v1-scheme.md §7.4).
 func Resolve(client ClientID, requestedModel string, cfg *config.Config) (Resolution, error) {
 	requestedModel = DecodeClaudePickerID(requestedModel)
 	r := RouteFor(cfg, client)
@@ -113,10 +120,71 @@ func Resolve(client ClientID, requestedModel string, cfg *config.Config) (Resolu
 			return Resolution{Provider: prefix, Model: rest}, nil
 		}
 	}
+	if client == Generic {
+		owners := modelOwners(cfg, requestedModel)
+		if len(owners) == 1 {
+			return Resolution{Provider: owners[0], Model: requestedModel}, nil
+		}
+		if len(owners) > 1 {
+			for _, owner := range owners {
+				if owner == r.Provider {
+					return Resolution{Provider: r.Provider, Model: requestedModel}, nil
+				}
+			}
+			return Resolution{}, fmt.Errorf(
+				"model %q is provided by multiple providers (%s); use <provider-id>/%s",
+				requestedModel, strings.Join(owners, ", "), requestedModel,
+			)
+		}
+	}
+	if !modelListed(routeProvider, requestedModel) {
+		return Resolution{}, unmatchedModelError(requestedModel)
+	}
 	if !modelEnabled(routeProvider, requestedModel) {
 		return Resolution{}, fmt.Errorf("model %q is disabled for provider %q", requestedModel, r.Provider)
 	}
 	return Resolution{Provider: r.Provider, Model: requestedModel}, nil
+}
+
+// UnmatchedModelMessage is the data-plane error when a requested model
+// cannot be attributed to any configured provider (docs/v1-scheme.md §7.4).
+func UnmatchedModelMessage(requested string) string {
+	return fmt.Sprintf("未匹配当前选择的[%s],请选择正确的 供应商/模型ID", requested)
+}
+
+func unmatchedModelError(requested string) error {
+	return fmt.Errorf("%s", UnmatchedModelMessage(requested))
+}
+
+// modelOwners returns enabled providers that explicitly declare requested as
+// their default model or as an enabled model-catalog entry. Sorting makes an
+// ambiguity error stable even though providers are stored in a map.
+func modelOwners(cfg *config.Config, requested string) []string {
+	var owners []string
+	for id, provider := range cfg.Providers {
+		if !provider.EnabledValue() || !modelDeclared(provider, requested) {
+			continue
+		}
+		owners = append(owners, id)
+	}
+	sort.Strings(owners)
+	return owners
+}
+
+func modelListed(provider config.Provider, requested string) bool {
+	if requested == provider.DefaultModel {
+		return true
+	}
+	for _, model := range provider.Models {
+		if model.ID == requested {
+			return true
+		}
+	}
+	return false
+}
+
+func modelDeclared(provider config.Provider, requested string) bool {
+	return modelListed(provider, requested) && modelEnabled(provider, requested)
 }
 
 func modelEnabled(provider config.Provider, requested string) bool {
@@ -133,7 +201,8 @@ func modelEnabled(provider config.Provider, requested string) bool {
 			return model.EnabledValue()
 		}
 	}
-	// A manually requested model remains a passthrough when the provider did
-	// not publish an explicit entry for it.
+	// An explicit <provider-id>/<model> request may name a model the
+	// provider has not published. Unprefixed names never reach this
+	// fallback: Resolve rejects them when modelListed is false.
 	return true
 }

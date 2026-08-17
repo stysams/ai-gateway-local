@@ -60,7 +60,8 @@ Scope delivered:
 - `internal/route`: the four fixed client ids (codex/claude/grok/generic),
   the reserved `gateway-default` model, and the §7.4 resolution order
   (route default → empty/gateway-default → provider-prefix override with
-  prefix stripping → full-model passthrough to the route provider).
+  prefix stripping → unique generic model ownership → listed route-provider
+  model → unmatched model rejected).
 - `internal/inbound/chat` + `internal/outbound/openaichat`: Chat
   Completions parsing/rewriting that only touches `model` and `stream` and
   preserves every unknown field with its exact raw value (field-level
@@ -77,8 +78,9 @@ Scope delivered:
   X-Request-Id, OpenAI-Request-ID, rate-limit headers, Location — never
   Set-Cookie, Authorization or hop-by-hop), live SSE piping with per-chunk
   flush (never buffered), client disconnect cancelling the upstream,
-  502/504 mapping (shared connection pool with `ResponseHeaderTimeout`,
-  no overall stream deadline), redirects never followed (status + Location
+  502/504 mapping (shared connection pool with a five-minute
+  `ResponseHeaderTimeout`, no overall stream deadline), redirects never
+  followed (status + Location
   passed through, provider Authorization cannot leak to a second target),
   per-provider `Authorization: Bearer` injection from the key store
   (zeroed after use, never logged; store failures map to 500, not 502) and
