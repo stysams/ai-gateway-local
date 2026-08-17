@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"ai-gateway/internal/config"
 )
@@ -37,12 +38,14 @@ type ConfigProviderPayload struct {
 	Name         string                 `json:"name"`
 	Adapter      string                 `json:"adapter"`
 	BaseURL      string                 `json:"base_url"`
-	ModelsURL    string                 `json:"models_url,omitempty"`
-	DefaultModel string                 `json:"default_model"`
-	Enabled      *bool                  `json:"enabled,omitempty"`
-	Models       []ProviderModelPayload `json:"models"`
-	SecretRef    string                 `json:"secret_ref,omitempty"`
-	Capabilities CapabilitiesPayload    `json:"capabilities"`
+	ModelsURL      string                 `json:"models_url,omitempty"`
+	ExtraHeaders   map[string]string      `json:"extra_headers,omitempty"`
+	DisguiseClient string                 `json:"disguise_client,omitempty"`
+	DefaultModel   string                 `json:"default_model"`
+	Enabled        *bool                  `json:"enabled,omitempty"`
+	Models         []ProviderModelPayload `json:"models"`
+	SecretRef      string                 `json:"secret_ref,omitempty"`
+	Capabilities   CapabilitiesPayload    `json:"capabilities"`
 }
 type ConfigRoutesPayload struct {
 	Codex   RouteStatus `json:"codex"`
@@ -67,6 +70,7 @@ func configPayload(cfg *config.Config) ConfigPayload {
 	for id, p := range cfg.Providers {
 		out.Providers[id] = ConfigProviderPayload{
 			Name: p.Name, Adapter: p.Adapter, BaseURL: p.BaseURL, ModelsURL: p.ModelsURL,
+			ExtraHeaders: cloneStringMap(p.ExtraHeaders), DisguiseClient: p.DisguiseClient,
 			DefaultModel: p.DefaultModel, SecretRef: p.SecretRef,
 			Enabled:      config.BoolPtr(p.EnabledValue()),
 			Models:       providerModelsPayload(p.Models),
@@ -86,6 +90,7 @@ func (p ConfigPayload) toConfig() *config.Config {
 	for id, provider := range p.Providers {
 		providers[id] = config.Provider{
 			Name: provider.Name, Adapter: provider.Adapter, BaseURL: provider.BaseURL, ModelsURL: provider.ModelsURL,
+			ExtraHeaders: cloneStringMap(provider.ExtraHeaders), DisguiseClient: strings.TrimSpace(provider.DisguiseClient),
 			DefaultModel: provider.DefaultModel, SecretRef: provider.SecretRef,
 			Enabled:      provider.Enabled,
 			Models:       providerModelsFromPayload(provider.Models),

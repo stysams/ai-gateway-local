@@ -99,6 +99,18 @@ describe("desktop workflow", () => {
     expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ body: expect.stringContaining('"Originator":"codex_cli_rs"') }));
   });
 
+  it("saves disguise_client for third-party requests", async () => {
+    const user = userEvent.setup(); render(<App />); await ready(); await user.click(screen.getByRole("button", { name: "Providers" })); await user.click(screen.getByRole("button", { name: "Add provider" }));
+    await user.type(screen.getByLabelText("Identifier"), "any"); await user.type(screen.getByLabelText("Name"), "Any"); await user.type(screen.getByLabelText("Base URL"), "https://example.com/v1");
+    await user.click(screen.getByRole("button", { name: "Add model manually" }));
+    await user.click(screen.getAllByLabelText("Model ID").at(-1)!);
+    await user.keyboard("claude-fable-5");
+    await user.click(screen.getAllByRole("radio", { name: "Default model" })[0]);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Disguise client" }), "claude");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ method: "POST", body: expect.stringContaining('"disguise_client":"claude"') })));
+  });
+
   it("requires confirmation before pointing", async () => {
     const user = userEvent.setup(); const confirm = vi.spyOn(window, "confirm").mockReturnValue(false); render(<App />); await ready();
     await user.click(screen.getByRole("button", { name: "Clients" })); await user.click(screen.getAllByRole("button", { name: "Point to gateway" })[0]);

@@ -127,8 +127,9 @@ type Provider struct {
 	Adapter      string            `yaml:"adapter"`
 	BaseURL      string            `yaml:"base_url"`
 	ModelsURL    string            `yaml:"models_url,omitempty"`
-	ExtraHeaders map[string]string `yaml:"extra_headers,omitempty"`
-	DefaultModel string            `yaml:"default_model"`
+	ExtraHeaders   map[string]string `yaml:"extra_headers,omitempty"`
+	DisguiseClient string            `yaml:"disguise_client,omitempty"`
+	DefaultModel   string            `yaml:"default_model"`
 	Models       []ProviderModel   `yaml:"models,omitempty"`
 	Enabled      *bool             `yaml:"enabled,omitempty"`
 	SecretRef    string            `yaml:"secret_ref,omitempty"`

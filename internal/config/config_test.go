@@ -330,6 +330,9 @@ func TestValidateProvider(t *testing.T) {
 		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", ExtraHeaders: map[string]string{"Authorization": "secret"}}, "managed by the gateway"},
 		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", ExtraHeaders: map[string]string{"X-App": "one", "x-app": "two"}}, "ignoring case"},
 		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", ExtraHeaders: map[string]string{"X-Trace": "line\nbreak"}}, "must not contain newlines"},
+		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", DisguiseClient: "claude"}, ""},
+		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", DisguiseClient: "codex"}, ""},
+		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", DisguiseClient: "gpt"}, "providers.ok.disguise_client"},
 	}
 	for _, tc := range cases {
 		err := ValidateProvider(tc.id, tc.p)

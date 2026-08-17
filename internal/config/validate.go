@@ -37,6 +37,19 @@ var validAdapters = map[string]bool{
 	"anthropic":        true,
 }
 
+// Disguise client identities for generic inbound requests
+// (docs/v1-scheme.md §5.2, §10.1). Empty means off.
+const (
+	DisguiseClientClaude = "claude"
+	DisguiseClientCodex  = "codex"
+)
+
+var validDisguiseClients = map[string]bool{
+	"":                   true,
+	DisguiseClientClaude: true,
+	DisguiseClientCodex:  true,
+}
+
 // FieldError pinpoints one invalid field. Field uses the dotted path form
 // used across the management API, e.g. "providers.openrouter.base_url".
 type FieldError struct {
@@ -155,6 +168,12 @@ func validateProvider(id string, p Provider) []FieldError {
 	}
 	if len(p.Models) > 0 && !modelIDs[strings.TrimSpace(p.DefaultModel)] {
 		errs = append(errs, FieldError{Field: "providers." + id + ".default_model", Reason: "must reference an entry in models"})
+	}
+	if !validDisguiseClients[p.DisguiseClient] {
+		errs = append(errs, FieldError{
+			Field:  "providers." + id + ".disguise_client",
+			Reason: `must be empty, "claude", or "codex"`,
+		})
 	}
 	if p.SecretRef != "" && !validSecretRefRe.MatchString(p.SecretRef) {
 		errs = append(errs, FieldError{

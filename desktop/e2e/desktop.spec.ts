@@ -29,6 +29,9 @@ test("provider form exposes an editable upstream model catalog", async ({ page }
   await page.goto("/");
   await page.getByRole("button", { name: "Providers" }).click();
   await page.getByRole("button", { name: "Add provider" }).click();
+  await expect(page.getByRole("combobox", { name: "Disguise client" })).toHaveValue("");
+  await page.getByRole("combobox", { name: "Disguise client" }).selectOption("claude");
+  await expect(page.getByRole("combobox", { name: "Disguise client" })).toHaveValue("claude");
   await page.getByLabel("Identifier").fill("upstream");
   await page.getByLabel("Name").fill("Upstream");
   await page.getByLabel("Base URL").fill("https://example.com/v1");

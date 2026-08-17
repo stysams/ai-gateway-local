@@ -301,6 +301,7 @@ routes:
 - `adapter`：只允许 `openai-chat`、`openai-responses`、`anthropic`。
 - `base_url`：必须是绝对 HTTP 或 HTTPS URL，不得包含查询字符串或片段。
 - `extra_headers`：可选的上游请求头名称到值映射，最多 64 项；用于正常请求、远程压缩、模型发现和连接探测。名称必须符合 HTTP 字段名语法，值不得包含换行或 NUL 字节。`Authorization`、`x-api-key`、Cookie、Host、Content-Length 和逐跳传输字段由网关管理，不允许配置。
+- `disguise_client`：可选。空或缺省表示关闭。只允许 `claude` 或 `codex`。开启后，仅当入站客户端是 `generic`（`/v1/*` 或 `/c/generic/v1/*`）时，网关在 adapter 默认头之后、`extra_headers` 之前套用已核验的对应客户端身份头。已指向的 `claude`、`codex`、`grok` 请求不套用。连接探测和模型发现不套用。身份头不含会话、安装、窗口或系统环境标识。`extra_headers` 覆盖同名伪装头；`Anthropic-Beta` 按令牌并集。证据见 §20「2026-08-17 复核：第三方请求需要可开关的客户端伪装」。
 - `default_model`：非空。
 - `models`：可选模型目录；每项包含非空且在同一 provider 内唯一的 `id`，以及可选 `name`、`context_window` 和 `max_output_tokens`。
 - `context_window` 和 `max_output_tokens`：分别是非负整数；`0` 表示上游未提供且用户尚未填写，不得按模型名称推测。协议不假定两个字段之间存在固定大小关系。
@@ -751,10 +752,11 @@ URL 拼接必须避免重复 `/v1` 或重复斜杠。`base_url` 语义以配置�
 - 本地无钥匙 provider 不发送认证头。
 - 入站客户端的 Authorization、x-api-key 或占位 key 不得转发上游。
 - provider 的 `extra_headers` 在 adapter 默认头之后应用，因此可以覆盖 `User-Agent`、`Accept`、`Content-Type` 或 `anthropic-version`；认证头始终由网关最后注入。
-- 桌面提供经过本机真实客户端请求核验的 Claude Code 与 Codex 请求头预设。预设只是可编辑的 `extra_headers`，不是运行时分支，也不包含会话、安装、窗口或系统环境标识。
-- 入站 `Anthropic-Beta`（大小写不敏感）的逗号分隔令牌必须与 `extra_headers` 中的同名头做去重并集后再发送。`extra_headers` 已有令牌保持原顺序，入站多出的令牌按入站顺序追加。这是唯一允许从入站请求并入的头。证据见 §20「2026-08-17 复核：Anthropic-Beta 必须与 extra_headers 并集」。
+- `disguise_client` 为 `claude` 或 `codex` 时，仅 `generic` 入站在 adapter 默认头之后套用对应身份头，然后再应用 `extra_headers`。身份头取值必须与桌面已核验预设相同，且不得包含会话、安装、窗口或系统环境标识。已指向客户端和探测、发现路径不走这条分支。证据见 §20「2026-08-17 复核：第三方请求需要可开关的客户端伪装」。
+- 桌面仍提供经过本机真实客户端请求核验的 Claude Code 与 Codex 请求头预设。预设继续是可编辑的 `extra_headers`；`disguise_client` 是独立运行时开关，不得在打开开关时把预设写进 `extra_headers`。
+- 入站 `Anthropic-Beta`（大小写不敏感）的逗号分隔令牌必须与出站已有的同名头做去重并集后再发送。已有令牌（先伪装头，再 `extra_headers` 多出的令牌）保持原顺序，入站多出的令牌按入站顺序追加。这是唯一允许从入站请求并入的头。证据见 §20「2026-08-17 复核：Anthropic-Beta 必须与 extra_headers 并集」。
 
-禁止把任意入站客户端头自动透传给上游。除上一款的 `Anthropic-Beta` 令牌并集外，只有 provider 配置中明确列出的 `extra_headers` 可以发送。会话、安装、Cookie、Authorization 和 `x-api-key` 仍不得转发。
+禁止把任意入站客户端头自动透传给上游。除上一款的 `Anthropic-Beta` 令牌并集外，只有 provider 配置中明确列出的 `extra_headers`，以及 `generic` 入站时由 `disguise_client` 套用的身份头，可以发送。会话、安装、Cookie、Authorization 和 `x-api-key` 仍不得转发。
 
 ### 10.2 HTTP 客户端
 
@@ -2385,6 +2387,32 @@ Claude Code 在 LLM 网关后用 `Anthropic-Beta: context-1m-2025-08-07`
 （以及可选的模型名 `[1m]`）选择 1M 窗口。`extra_headers` 仍应覆盖
 `User-Agent` 等整值头，但对 `Anthropic-Beta` 必须按令牌并集，不能
 `Set` 覆盖。其它入站头继续禁止转发。
+
+### 2026-08-17 复核：第三方请求需要可开关的客户端伪装
+
+实验对象：本机供应商 `any`（`https://anyrouter.top`，adapter `anthropic`），模型
+`claude-fable-5`。证据文件：
+
+- 成功：`%USERPROFILE%\.ai-gateway\logs\2026-08-17\req_f3b436f9cbc9bd8aeace0afc.jsonl`
+- 失败：`%USERPROFILE%\.ai-gateway\logs\2026-08-17\req_ade45770cb0ed44d2232596e.jsonl`
+  与 `req_25483fde65408838db303158.jsonl`
+- 同会话 400：`req_67a2e5d8324da61991a42697.jsonl`
+
+观察：
+
+- 唯一 200 来自 Claude Code（`/c/claude/v1/messages`），入站带完整
+  `Anthropic-Beta`（含 `context-1m-2025-08-07`）。
+- 最新失败来自第三方 generic（`User-Agent: Anthropic/Go 1.56.0`，
+  `/v1/messages`），入站没有 `Anthropic-Beta`。该供应商当时靠手工
+  `extra_headers` 补 Claude Code 身份头。
+- `extra_headers` 作用于全部入站，包括已经是 Claude Code 的请求；桌面
+  「应用预设」只是把头写进配置，不是按客户端分支的运行时开关。
+- 身份头取值必须继续以本机 Claude Code 2.1.228 与 Codex CLI 0.147.0
+  的核验结果为准，不得转发会话或安装标识。
+
+因此 provider 增加 `disguise_client`：`claude` / `codex` / 关闭。只给
+`generic` 套用身份头；`extra_headers` 仍可覆盖同名头；`Anthropic-Beta`
+继续按令牌并集。探测和模型发现不走这条分支。
 
 ---
 

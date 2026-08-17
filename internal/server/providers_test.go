@@ -571,3 +571,28 @@ func TestProviderExtraHeadersRoundTrip(t *testing.T) {
 		t.Fatalf("persisted Originator = %q", got)
 	}
 }
+
+func TestProviderDisguiseClientRoundTrip(t *testing.T) {
+	s, addr := startWithStore(t, config.Defaults(), secret.NewMemStore())
+	req := map[string]any{
+		"id": "masked", "name": "Masked", "adapter": "anthropic",
+		"base_url": "https://example.com", "default_model": "claude-fable-5",
+		"disguise_client": "claude",
+	}
+	resp, data := httpJSON(t, addr, http.MethodPost, "/api/v1/providers", req)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+	}
+	p := decodeProvider(t, data)
+	if p.DisguiseClient != config.DisguiseClientClaude {
+		t.Fatalf("response disguise_client = %q", p.DisguiseClient)
+	}
+	if got := s.cfg.Snapshot().Providers["masked"].DisguiseClient; got != config.DisguiseClientClaude {
+		t.Fatalf("persisted disguise_client = %q", got)
+	}
+	req["disguise_client"] = "gpt"
+	resp, data = httpJSON(t, addr, http.MethodPut, "/api/v1/providers/masked", req)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid disguise status = %d, body = %s", resp.StatusCode, data)
+	}
+}

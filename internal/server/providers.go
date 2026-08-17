@@ -42,12 +42,13 @@ type ProviderRequest struct {
 	Adapter      string                 `json:"adapter"`
 	BaseURL      string                 `json:"base_url"`
 	ModelsURL    string                 `json:"models_url"`
-	ExtraHeaders map[string]string      `json:"extra_headers"`
-	DefaultModel string                 `json:"default_model"`
-	Enabled      *bool                  `json:"enabled"`
-	Models       []ProviderModelPayload `json:"models"`
-	APIKey       *string                `json:"api_key"`
-	Capabilities *CapabilitiesPayload   `json:"capabilities"`
+	ExtraHeaders   map[string]string      `json:"extra_headers"`
+	DisguiseClient string                 `json:"disguise_client"`
+	DefaultModel   string                 `json:"default_model"`
+	Enabled        *bool                  `json:"enabled"`
+	Models         []ProviderModelPayload `json:"models"`
+	APIKey         *string                `json:"api_key"`
+	Capabilities   *CapabilitiesPayload   `json:"capabilities"`
 }
 
 // ProviderModelPayload is the editable, persisted model metadata for one
@@ -75,12 +76,13 @@ type ProviderResponse struct {
 	Adapter      string                 `json:"adapter"`
 	BaseURL      string                 `json:"base_url"`
 	ModelsURL    string                 `json:"models_url,omitempty"`
-	ExtraHeaders map[string]string      `json:"extra_headers"`
-	DefaultModel string                 `json:"default_model"`
-	Enabled      bool                   `json:"enabled"`
-	Models       []ProviderModelPayload `json:"models"`
-	HasSecret    bool                   `json:"has_secret"`
-	Capabilities CapabilitiesPayload    `json:"capabilities"`
+	ExtraHeaders   map[string]string      `json:"extra_headers"`
+	DisguiseClient string                 `json:"disguise_client,omitempty"`
+	DefaultModel   string                 `json:"default_model"`
+	Enabled        bool                   `json:"enabled"`
+	Models         []ProviderModelPayload `json:"models"`
+	HasSecret      bool                   `json:"has_secret"`
+	Capabilities   CapabilitiesPayload    `json:"capabilities"`
 }
 
 type ProviderAvailabilityRequest struct {
@@ -143,8 +145,9 @@ func providerFromRequest(id string, req ProviderRequest) (config.Provider, error
 		Adapter:      req.Adapter,
 		BaseURL:      req.BaseURL,
 		ModelsURL:    req.ModelsURL,
-		ExtraHeaders: cloneStringMap(req.ExtraHeaders),
-		DefaultModel: req.DefaultModel,
+		ExtraHeaders:   cloneStringMap(req.ExtraHeaders),
+		DisguiseClient: strings.TrimSpace(req.DisguiseClient),
+		DefaultModel:   req.DefaultModel,
 		Models:       providerModelsFromPayload(req.Models),
 		Enabled:      req.Enabled,
 	}
@@ -307,8 +310,9 @@ func (s *Server) providerResponse(ctx context.Context, id string, p config.Provi
 		Adapter:      p.Adapter,
 		BaseURL:      p.BaseURL,
 		ModelsURL:    p.ModelsURL,
-		ExtraHeaders: cloneStringMap(p.ExtraHeaders),
-		DefaultModel: p.DefaultModel,
+		ExtraHeaders:   cloneStringMap(p.ExtraHeaders),
+		DisguiseClient: p.DisguiseClient,
+		DefaultModel:   p.DefaultModel,
 		Enabled:      p.EnabledValue(),
 		Models:       providerModelsPayload(p.Models),
 		HasSecret:    s.hasSecret(ctx, p.SecretRef),

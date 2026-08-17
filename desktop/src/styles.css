@@ -120,6 +120,9 @@ input:disabled { background: var(--surface-2); color: var(--text-3); }
 .model-editor-row > button { margin-top: 1px; }
 .add-model { margin-top: 10px; display: inline-flex; align-items: center; gap: 6px; }
 .header-editor { padding: 24px 0; border-bottom: 1px solid var(--border); }
+.disguise-editor .disguise-select { min-width: 200px; }
+.disguise-editor .disguise-select > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.disguise-editor select { height: 36px; min-width: 200px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
 .header-editor-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .header-editor-title h3 { margin: 0; font-size: 13px; font-weight: 600; }
 .header-editor-title p { max-width: 720px; margin: 5px 0 0; color: var(--text-3); font-size: 11px; line-height: 1.55; }

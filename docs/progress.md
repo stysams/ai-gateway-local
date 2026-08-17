@@ -132,6 +132,10 @@
 18. **入站 `Anthropic-Beta` 与 `extra_headers` 按令牌并集。** Claude Code
     的 `context-1m-2025-08-07` 不得被供应商预设整段覆盖。其它入站头仍
     禁止转发。
+19. **供应商伪装客户端开关。** `disguise_client` 为 `claude` 或 `codex`
+    时，只给第三方 `generic` 入站套用已核验身份头。已指向客户端、探测
+    和模型发现不套用。`extra_headers` 覆盖同名伪装头；`Anthropic-Beta`
+    按令牌并集。不得把开关写成再往 `extra_headers` 里粘贴一份预设。
 
 相关证据在规格 §20「2026-08-15 复核：客户端可选模型目录」、
 「2026-08-16 复核：Codex 远程压缩触发条件」、
@@ -143,7 +147,8 @@
 「2026-08-16 复核：Responses 出站助手历史必须用 output_text」和
 「2026-08-16 复核：Claude Code 用户消息里的 tool_result 必须转成 function_call_output」和
 「2026-08-17 复核：未归属模型不得透传到当前路由」和
-「2026-08-17 复核：Anthropic-Beta 必须与 extra_headers 并集」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
+「2026-08-17 复核：Anthropic-Beta 必须与 extra_headers 并集」和
+「2026-08-17 复核：第三方请求需要可开关的客户端伪装」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
 
 ---
 

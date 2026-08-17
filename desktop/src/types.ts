@@ -40,6 +40,7 @@ export interface Provider {
   base_url: string;
   models_url?: string;
   extra_headers?: Record<string, string>;
+  disguise_client?: "" | "claude" | "codex";
   default_model: string;
   enabled?: boolean;
   models: ProviderModel[];

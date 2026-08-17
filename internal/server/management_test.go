@@ -24,6 +24,8 @@ func TestConfigAPIAtomicRoundTripPreservesUnknownTopLevelAndSecrets(t *testing.T
 	cfg.Extra = map[string]yaml.Node{"future_feature": {Kind: yaml.ScalarNode, Tag: "!!str", Value: "keep-me"}}
 	p := cfg.Providers["openrouter"]
 	p.SecretRef = "provider.openrouter"
+	p.DisguiseClient = config.DisguiseClientClaude
+	p.ExtraHeaders = map[string]string{"User-Agent": "claude-cli/2.1.228 (external, cli)"}
 	cfg.Providers["openrouter"] = p
 	store := secret.NewMemStore()
 	const actualSecret = "sk-config-api-secret"
@@ -59,6 +61,12 @@ func TestConfigAPIAtomicRoundTripPreservesUnknownTopLevelAndSecrets(t *testing.T
 	}
 	if models := got.Providers["openrouter"].Models; len(models) != 1 || models[0].ContextWindow != 200000 || models[0].MaxOutputTokens != 64000 {
 		t.Fatalf("provider model metadata not preserved: %+v", models)
+	}
+	if got.Providers["openrouter"].DisguiseClient != config.DisguiseClientClaude {
+		t.Fatalf("disguise_client lost after settings save: %q", got.Providers["openrouter"].DisguiseClient)
+	}
+	if got.Providers["openrouter"].ExtraHeaders["User-Agent"] != "claude-cli/2.1.228 (external, cli)" {
+		t.Fatalf("extra_headers lost after settings save: %v", got.Providers["openrouter"].ExtraHeaders)
 	}
 	disk, err := os.ReadFile(s.cfg.Path())
 	if err != nil {

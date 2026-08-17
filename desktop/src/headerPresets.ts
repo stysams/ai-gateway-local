@@ -1,5 +1,8 @@
 import type { RequestHeader } from "./validation";
 
+// Keep these values aligned with internal/server/disguise.go. They were
+// verified against Claude Code 2.1.228 and Codex CLI 0.147.0.
+
 export const CLAUDE_CODE_HEADERS: RequestHeader[] = [
   { name: "User-Agent", value: "claude-cli/2.1.228 (external, cli)" },
   { name: "X-App", value: "cli" },
