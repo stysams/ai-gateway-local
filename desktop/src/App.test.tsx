@@ -72,6 +72,21 @@ describe("desktop workflow", () => {
     expect(writeText).toHaveBeenCalledWith("ollama/qwen3");
   });
 
+  it("keeps focus while typing a model id", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await ready();
+    await user.click(screen.getByRole("button", { name: "Providers" }));
+    await user.click(screen.getByRole("button", { name: "Add provider" }));
+    await user.click(screen.getByRole("button", { name: "Add model manually" }));
+    const input = screen.getAllByLabelText("Model ID").at(-1);
+    expect(input).toBeDefined();
+    await user.click(input!);
+    await user.keyboard("claude-opus-5");
+    expect(input).toHaveValue("claude-opus-5");
+    expect(input).toHaveFocus();
+  });
+
   it("loads upstream model metadata and includes edits in the provider payload", async () => {
     const user = userEvent.setup(); render(<App />); await ready(); await user.click(screen.getByRole("button", { name: "Providers" })); await user.click(screen.getByRole("button", { name: "Add provider" }));
     await user.type(screen.getByLabelText("Identifier"), "new-provider"); await user.type(screen.getByLabelText("Name"), "New Provider"); await user.type(screen.getByLabelText("Base URL"), "https://example.com/v1");

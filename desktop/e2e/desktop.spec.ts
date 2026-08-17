@@ -32,6 +32,12 @@ test("provider form exposes an editable upstream model catalog", async ({ page }
   await page.getByLabel("Identifier").fill("upstream");
   await page.getByLabel("Name").fill("Upstream");
   await page.getByLabel("Base URL").fill("https://example.com/v1");
+  await page.getByRole("button", { name: "Add model manually" }).click();
+  const typedModelId = page.getByLabel("Model ID").last();
+  await typedModelId.click();
+  await page.keyboard.type("claude-opus-5");
+  await expect(typedModelId).toHaveValue("claude-opus-5");
+  await expect(typedModelId).toBeFocused();
   await page.getByRole("button", { name: "Fetch models" }).click();
   await expect(page.locator('input[value="model-a"]')).toBeVisible();
   await expect(page.locator('input[value="131072"]')).toBeVisible();
