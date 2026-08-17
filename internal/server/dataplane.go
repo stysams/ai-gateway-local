@@ -268,6 +268,20 @@ func (s *Server) serveDataPlaneWith(w http.ResponseWriter, r *http.Request, clie
 			}
 		}
 	}
+	if client == route.Generic && cfgProvider.DisguiseClient == config.DisguiseClientClaude && inProto == ir.ProtocolMessages {
+		var applied []string
+		body, applied, err = messages.ApplyClaudeDisguise(body, provider.reasoning)
+		if err != nil {
+			writeInboundError(w, http.StatusBadRequest, inProto, err.Error(), "")
+			return
+		}
+		if len(applied) > 0 {
+			if err := s.writeClaudeDisguiseApplied(trace, inProto, outProto, provider.id, applied); err != nil {
+				writeInboundError(w, http.StatusInternalServerError, inProto, err.Error(), "warning_log_failed")
+				return
+			}
+		}
+	}
 
 	if inProto == outProto {
 		if features.Reasoning && !provider.reasoning {
@@ -820,6 +834,25 @@ func (s *Server) writeContextManagementDropped(trace *requestTrace, inProto, out
 		},
 	}); err != nil {
 		return fmt.Errorf("write context management downgrade warning: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) writeClaudeDisguiseApplied(trace *requestTrace, inProto, outProto ir.Protocol, providerID string, applied []string) error {
+	if trace == nil {
+		return nil
+	}
+	if err := trace.session.Append("warning", map[string]any{
+		"code":    "claude_disguise_applied",
+		"message": "verified Claude Code request fields were added before the upstream request",
+		"details": map[string]any{
+			"inbound_protocol":  inProto,
+			"outbound_protocol": outProto,
+			"provider":          providerID,
+			"applied":           applied,
+		},
+	}); err != nil {
+		return fmt.Errorf("write claude disguise warning: %w", err)
 	}
 	return nil
 }

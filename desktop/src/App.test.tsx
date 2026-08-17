@@ -106,6 +106,7 @@ describe("desktop workflow", () => {
     await user.click(screen.getAllByLabelText("Model ID").at(-1)!);
     await user.keyboard("claude-fable-5");
     await user.click(screen.getAllByRole("radio", { name: "Default model" })[0]);
+    expect(screen.getByText(/Claude Code disguise also adds thinking and system cache_control/)).toBeVisible();
     await user.selectOptions(screen.getByRole("combobox", { name: "Disguise client" }), "claude");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ method: "POST", body: expect.stringContaining('"disguise_client":"claude"') })));

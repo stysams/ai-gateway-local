@@ -301,7 +301,7 @@ routes:
 - `adapter`：只允许 `openai-chat`、`openai-responses`、`anthropic`。
 - `base_url`：必须是绝对 HTTP 或 HTTPS URL，不得包含查询字符串或片段。
 - `extra_headers`：可选的上游请求头名称到值映射，最多 64 项；用于正常请求、远程压缩、模型发现和连接探测。名称必须符合 HTTP 字段名语法，值不得包含换行或 NUL 字节。`Authorization`、`x-api-key`、Cookie、Host、Content-Length 和逐跳传输字段由网关管理，不允许配置。
-- `disguise_client`：可选。空或缺省表示关闭。只允许 `claude` 或 `codex`。开启后，仅当入站客户端是 `generic`（`/v1/*` 或 `/c/generic/v1/*`）时，网关在 adapter 默认头之后、`extra_headers` 之前套用已核验的对应客户端身份头。已指向的 `claude`、`codex`、`grok` 请求不套用。连接探测和模型发现不套用。身份头不含会话、安装、窗口或系统环境标识。`extra_headers` 覆盖同名伪装头；`Anthropic-Beta` 按令牌并集。证据见 §20「2026-08-17 复核：第三方请求需要可开关的客户端伪装」。
+- `disguise_client`：可选。空或缺省表示关闭。只允许 `claude` 或 `codex`。开启后，仅当入站客户端是 `generic`（`/v1/*` 或 `/c/generic/v1/*`）时，网关在 adapter 默认头之后、`extra_headers` 之前套用已核验的对应客户端身份头。`disguise_client` 为 `claude` 且入站是 Messages 时，还要在转发前补齐 Claude Code 2.1.228 与这些身份头一起发送的正文字段：缺省则写入 `thinking: {type: adaptive}`（仅当 `capabilities.reasoning` 为真），并给缺少 `cache_control` 的顶层 `system` 文本块以及 `role: system` 消息补 `{"type":"ephemeral"}`。不得改写 tools、用户消息或系统文本，不得写入会话、安装或设备 `metadata`。已指向的 `claude`、`codex`、`grok` 请求不套用。连接探测和模型发现不套用。身份头不含会话、安装、窗口或系统环境标识。`extra_headers` 覆盖同名伪装头；`Anthropic-Beta` 按令牌并集。证据见 §20「2026-08-17 复核：第三方请求需要可开关的客户端伪装」和「2026-08-17 复核：Claude 伪装必须补齐 thinking 与系统 cache_control」。
 - `default_model`：非空。
 - `models`：可选模型目录；每项包含非空且在同一 provider 内唯一的 `id`，以及可选 `name`、`context_window` 和 `max_output_tokens`。
 - `context_window` 和 `max_output_tokens`：分别是非负整数；`0` 表示上游未提供且用户尚未填写，不得按模型名称推测。协议不假定两个字段之间存在固定大小关系。
@@ -609,6 +609,7 @@ error
 - 必须重写上游模型和认证。
 - 应当保留未知 JSON 字段。
 - 可以采用原协议结构直通，减少语义损失。
+- 例外：`disguise_client` 为 `claude` 的 generic Messages 请求，在转发前按 §5.2 / §10.1 补齐已核验的 `thinking` 与系统 `cache_control`。这与去掉上游不支持的 `context_management` 一样，是有证据的兼容补丁，不是把任意正文改写成 Claude Code。
 
 跨协议请求：
 
@@ -752,7 +753,7 @@ URL 拼接必须避免重复 `/v1` 或重复斜杠。`base_url` 语义以配置�
 - 本地无钥匙 provider 不发送认证头。
 - 入站客户端的 Authorization、x-api-key 或占位 key 不得转发上游。
 - provider 的 `extra_headers` 在 adapter 默认头之后应用，因此可以覆盖 `User-Agent`、`Accept`、`Content-Type` 或 `anthropic-version`；认证头始终由网关最后注入。
-- `disguise_client` 为 `claude` 或 `codex` 时，仅 `generic` 入站在 adapter 默认头之后套用对应身份头，然后再应用 `extra_headers`。身份头取值必须与桌面已核验预设相同，且不得包含会话、安装、窗口或系统环境标识。已指向客户端和探测、发现路径不走这条分支。证据见 §20「2026-08-17 复核：第三方请求需要可开关的客户端伪装」。
+- `disguise_client` 为 `claude` 或 `codex` 时，仅 `generic` 入站在 adapter 默认头之后套用对应身份头，然后再应用 `extra_headers`。`disguise_client` 为 `claude` 且入站是 Messages 时，还要按 §5.2 补齐 `thinking` 与系统 `cache_control`。身份头取值必须与桌面已核验预设相同，且不得包含会话、安装、窗口或系统环境标识。已指向客户端和探测、发现路径不走这条分支。证据见 §20「2026-08-17 复核：第三方请求需要可开关的客户端伪装」和「2026-08-17 复核：Claude 伪装必须补齐 thinking 与系统 cache_control」。
 - 桌面仍提供经过本机真实客户端请求核验的 Claude Code 与 Codex 请求头预设。预设继续是可编辑的 `extra_headers`；`disguise_client` 是独立运行时开关，不得在打开开关时把预设写进 `extra_headers`。
 - 入站 `Anthropic-Beta`（大小写不敏感）的逗号分隔令牌必须与出站已有的同名头做去重并集后再发送。已有令牌（先伪装头，再 `extra_headers` 多出的令牌）保持原顺序，入站多出的令牌按入站顺序追加。这是唯一允许从入站请求并入的头。证据见 §20「2026-08-17 复核：Anthropic-Beta 必须与 extra_headers 并集」。
 
@@ -1223,7 +1224,7 @@ result
 - `route` 记录最终 provider、model 和 adapter。
 - `upstream_request` 记录去除认证头后的 URL、方法、实际非敏感请求头和正文。
 - 流式时逐条追加 `upstream_event` 与 `client_event`。
-- `warning` 记录 reasoning、托管工具、自定义工具 format 或扩展字段降级。
+- `warning` 记录 reasoning、托管工具、自定义工具 format 或扩展字段降级，以及 `claude_disguise_applied` 这类已核验的伪装正文补齐。
 - `result` 记录状态、耗时、用量、错误和完成时间。
 - 不记录 Authorization、x-api-key、Cookie、密码、令牌、会话标识或系统 secret；事件使用 `omitted_sensitive_header_count` 和 `omitted_sensitive_query_count` 表示被省略的敏感字段数量。
 - 文件写入必须串行且可在异常结束时保留已有事件。
@@ -2413,6 +2414,39 @@ Claude Code 在 LLM 网关后用 `Anthropic-Beta: context-1m-2025-08-07`
 因此 provider 增加 `disguise_client`：`claude` / `codex` / 关闭。只给
 `generic` 套用身份头；`extra_headers` 仍可覆盖同名头；`Anthropic-Beta`
 继续按令牌并集。探测和模型发现不走这条分支。
+
+### 2026-08-17 复核：Claude 伪装必须补齐 thinking 与系统 cache_control
+
+实验对象：本机供应商 `any`（`https://anyrouter.top`，adapter `anthropic`），
+`disguise_client: claude`，且 `extra_headers` 已含同一套 Claude Code 身份头。
+网关于 `2026-08-17T05:50:09Z` 重启后，13:50–13:51 的第三方请求仍全部 503。
+
+证据文件：
+
+- 成功：`%USERPROFILE%\.ai-gateway\logs\2026-08-17\req_f3b436f9cbc9bd8aeace0afc.jsonl`
+  （Claude Code `/c/claude/v1/messages`，出站身份头已是 Claude Code）
+- 失败：`req_55b3a1056699bccddd868895.jsonl`、`req_29c0e579792267993193a212.jsonl`
+  （generic `/v1/messages`，`User-Agent: Anthropic/Go 1.56.0`）
+- 有正文的 Claude Code 对照：`req_5c7be90608ea509f316eee7e.jsonl`
+
+观察：
+
+- 伪装打开后，generic 出站头与 13:06 成功请求相同：`User-Agent`、`X-App`、
+  `Anthropic-Dangerous-Direct-Browser-Access`、`Anthropic-Beta`（含
+  `context-1m-2025-08-07`）。`extra_headers` 已覆盖同名伪装头，因此只开头
+  对这条供应商是空操作。
+- 上游在 387–1810 毫秒内返回 HTTP 503，正文为
+  `{"error":{"message":"Service Unavailable","type":"error"},"type":"error"}`。
+- 13:09 起、打开伪装开关之前，同一供应商的 generic 请求已经是 503。
+- Claude Code 2.1.228 正文稳定带 `thinking: {"type":"adaptive"}`，并且每个
+  系统文本块带 `cache_control: {"type":"ephemeral"}`。第三方 Ally 请求两者
+  都没有，但出站仍带着声明了 interleaved-thinking 与 prompt-caching 的
+  `Anthropic-Beta`。
+- 不得把系统提示改成 “You are Claude Code”，不得替换 Ally 工具，不得写入
+  Claude 的 `metadata.user_id`（含 device_id / session_id）。
+
+因此 `disguise_client=claude` 在 generic Messages 上还必须补齐上述两个已核验
+正文字段；已有取值保持不变；供应商未启用 reasoning 时不写入 `thinking`。
 
 ---
 

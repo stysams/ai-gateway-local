@@ -38,7 +38,8 @@ func disguiseHeaders(kind string) map[string]string {
 // outboundExtraHeaders builds the provider extra-header map sent upstream.
 // Generic inbound may receive a verified client disguise; first-class
 // clients do not. extra_headers overlay the disguise; Anthropic-Beta
-// unions with inbound tokens (docs/v1-scheme.md §10.1).
+// unions with inbound tokens. Claude Messages body overlay lives in
+// inbound/messages.ApplyClaudeDisguise (docs/v1-scheme.md §10.1).
 func outboundExtraHeaders(p config.Provider, client route.ClientID, inbound http.Header) map[string]string {
 	extra := p.ExtraHeaders
 	if client == route.Generic {

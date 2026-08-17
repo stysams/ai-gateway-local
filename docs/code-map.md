@@ -29,7 +29,7 @@
 | 入站协议外形 | `internal/inbound/{chat,responses,messages}` | `Parse` / `ParseRequest` / `Encode*` / `WriteError` |
 | 出站协议外形与上游 HTTP | `internal/outbound/{openaichat,openairesponses,anthropic}` | `outbound/internal/upstream` |
 | 入站 `Anthropic-Beta` 与 `extra_headers` 并集 | `server/anthropicbeta.go` `mergeInboundAnthropicBeta` | `dataplane.go` 组 `providerInfo` 时调用 |
-| 供应商伪装客户端 | `config.Provider.DisguiseClient`；`server/disguise.go` | `dataplane.go` `outboundExtraHeaders`；桌面供应商表单 |
+| 供应商伪装客户端 | `config.Provider.DisguiseClient`；`server/disguise.go`；`inbound/messages` `ApplyClaudeDisguise` | `dataplane.go` `outboundExtraHeaders`；桌面供应商表单 |
 | 图片 / reasoning / context_management 门 | `dataplane.go` `inspectRequestFeatures`、`normalizeReasoning`、`Drop*` | 各 inbound 的 `InspectFeatures` / `DropReasoning` |
 | 钥匙读写与事务 | `internal/secret/` | `internal/server/providers.go`（§6.3） |
 | 指向 / 还原 / 漂移 | `internal/point/point.go` | `point/{codex,claude,grok}`、`point/clientcatalog` |

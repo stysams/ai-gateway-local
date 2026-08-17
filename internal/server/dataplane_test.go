@@ -309,9 +309,9 @@ func TestMessagesMergesInboundAnthropicBeta(t *testing.T) {
 	resp, data := chatPost(t, addr, "/v1/messages",
 		[]byte(`{"model":"qwen3","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`),
 		map[string]string{
-			"Anthropic-Beta":             "claude-code-20250219,context-1m-2025-08-07,effort-2025-11-24",
-			"X-Claude-Code-Session-Id":   "sess-should-not-forward",
-			"Authorization":              "Bearer inbound-must-not-leak",
+			"Anthropic-Beta":           "claude-code-20250219,context-1m-2025-08-07,effort-2025-11-24",
+			"X-Claude-Code-Session-Id": "sess-should-not-forward",
+			"Authorization":            "Bearer inbound-must-not-leak",
 		})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, body %s", resp.StatusCode, data)
@@ -364,6 +364,58 @@ func TestGenericDisguiseAppliesClaudeHeaders(t *testing.T) {
 	}
 }
 
+func TestGenericClaudeDisguiseAppliesThinkingAndSystemCache(t *testing.T) {
+	up := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"qwen3","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	})
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	provider := cfg.Providers["ollama"]
+	provider.Adapter = "anthropic"
+	provider.DisguiseClient = config.DisguiseClientClaude
+	provider.Capabilities = config.Capabilities{Reasoning: true}
+	cfg.Providers["ollama"] = provider
+	s, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	resp, data := chatPost(t, addr, "/v1/messages",
+		[]byte(`{"model":"qwen3","max_tokens":32,"output_config":{"effort":"medium"},"system":[{"type":"text","text":"You are Ally."}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"tools":[{"name":"read","input_schema":{"type":"object"}}]}`),
+		nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, body %s", resp.StatusCode, data)
+	}
+	req := up.last()
+	if string(req.Fields["thinking"]) != `{"type":"adaptive"}` {
+		t.Fatalf("thinking = %s", req.Fields["thinking"])
+	}
+	if string(req.Fields["output_config"]) != `{"effort":"medium"}` {
+		t.Fatalf("output_config rewritten: %s", req.Fields["output_config"])
+	}
+	var system []map[string]json.RawMessage
+	if err := json.Unmarshal(req.Fields["system"], &system); err != nil {
+		t.Fatal(err)
+	}
+	if len(system) != 1 || string(system[0]["text"]) != `"You are Ally."` {
+		t.Fatalf("system text changed: %s", req.Fields["system"])
+	}
+	if string(system[0]["cache_control"]) != `{"type":"ephemeral"}` {
+		t.Fatalf("system cache = %s", system[0]["cache_control"])
+	}
+	if !strings.Contains(string(req.Fields["tools"]), `"read"`) {
+		t.Fatalf("tools lost: %s", req.Fields["tools"])
+	}
+	files, err := filepath.Glob(filepath.Join(filepath.Dir(s.cfg.Path()), "logs", "*", "*.jsonl"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("warning files = %v, err = %v", files, err)
+	}
+	warning, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(warning), `"code":"claude_disguise_applied"`) {
+		t.Fatalf("warning = %s", warning)
+	}
+}
+
 func TestFirstClassClientSkipsDisguise(t *testing.T) {
 	var got http.Header
 	up := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
@@ -375,11 +427,12 @@ func TestFirstClassClientSkipsDisguise(t *testing.T) {
 	provider := cfg.Providers["openrouter"]
 	provider.Adapter = "anthropic"
 	provider.DisguiseClient = config.DisguiseClientClaude
+	provider.Capabilities = config.Capabilities{Reasoning: true}
 	cfg.Providers["openrouter"] = provider
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/c/claude/v1/messages",
-		[]byte(`{"model":"gateway-default","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`), nil)
+		[]byte(`{"model":"gateway-default","max_tokens":32,"system":[{"type":"text","text":"Be brief."}],"messages":[{"role":"user","content":"hi"}]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, body %s", resp.StatusCode, data)
 	}
@@ -388,6 +441,13 @@ func TestFirstClassClientSkipsDisguise(t *testing.T) {
 	}
 	if got.Get("X-App") != "" {
 		t.Fatalf("first-class received disguise X-App = %q", got.Get("X-App"))
+	}
+	req := up.last()
+	if _, ok := req.Fields["thinking"]; ok {
+		t.Fatalf("first-class received disguise thinking: %s", req.Fields["thinking"])
+	}
+	if strings.Contains(string(req.Fields["system"]), "cache_control") {
+		t.Fatalf("first-class received disguise cache_control: %s", req.Fields["system"])
 	}
 }
 
