@@ -752,8 +752,9 @@ URL 拼接必须避免重复 `/v1` 或重复斜杠。`base_url` 语义以配置�
 - 入站客户端的 Authorization、x-api-key 或占位 key 不得转发上游。
 - provider 的 `extra_headers` 在 adapter 默认头之后应用，因此可以覆盖 `User-Agent`、`Accept`、`Content-Type` 或 `anthropic-version`；认证头始终由网关最后注入。
 - 桌面提供经过本机真实客户端请求核验的 Claude Code 与 Codex 请求头预设。预设只是可编辑的 `extra_headers`，不是运行时分支，也不包含会话、安装、窗口或系统环境标识。
+- 入站 `Anthropic-Beta`（大小写不敏感）的逗号分隔令牌必须与 `extra_headers` 中的同名头做去重并集后再发送。`extra_headers` 已有令牌保持原顺序，入站多出的令牌按入站顺序追加。这是唯一允许从入站请求并入的头。证据见 §20「2026-08-17 复核：Anthropic-Beta 必须与 extra_headers 并集」。
 
-禁止把任意入站客户端头自动透传给上游；只有 provider 配置中明确列出的 `extra_headers` 可以发送。
+禁止把任意入站客户端头自动透传给上游。除上一款的 `Anthropic-Beta` 令牌并集外，只有 provider 配置中明确列出的 `extra_headers` 可以发送。会话、安装、Cookie、Authorization 和 `x-api-key` 仍不得转发。
 
 ### 10.2 HTTP 客户端
 
@@ -2366,6 +2367,24 @@ messages following tool_calls message)
 `<provider-id>/<model-id>`。未命中前缀、也无法归属到已登记模型时，必须
 在接触上游之前拒绝，错误信息为
 `未匹配当前选择的[<requested-model>],请选择正确的 供应商/模型ID`。
+
+### 2026-08-17 复核：Anthropic-Beta 必须与 extra_headers 并集
+
+实验对象：Claude Code 2.1.228 经 `/c/claude/v1/messages?beta=true`
+请求 1M 上下文。供应商 `any` 的 `extra_headers.Anthropic-Beta` 来自
+Claude Code 预设，不含 `context-1m-2025-08-07`。
+
+证据文件：`%USERPROFILE%\.ai-gateway\logs\2026-08-17\req_437b4e87a66fc871117dbd50.jsonl`。
+
+- 入站 `Anthropic-Beta` 含 `context-1m-2025-08-07`。
+- 出站 `Anthropic-Beta` 被 `extra_headers` 整段覆盖，1M 令牌消失。
+- 当日 18 条 Claude 请求中 3 条入站带该令牌，0 条到达上游。
+- 目录字段 `context_window: 1000000` 不会写入出站正文。
+
+Claude Code 在 LLM 网关后用 `Anthropic-Beta: context-1m-2025-08-07`
+（以及可选的模型名 `[1m]`）选择 1M 窗口。`extra_headers` 仍应覆盖
+`User-Agent` 等整值头，但对 `Anthropic-Beta` 必须按令牌并集，不能
+`Set` 覆盖。其它入站头继续禁止转发。
 
 ---
 

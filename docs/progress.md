@@ -129,6 +129,9 @@
     provider 已登记模型时，数据面 400，错误为
     `未匹配当前选择的[<model>],请选择正确的 供应商/模型ID`，零上游接触。
     显式 `<provider-id>/<model-id>` 和当前路由已登记模型仍可解析。
+18. **入站 `Anthropic-Beta` 与 `extra_headers` 按令牌并集。** Claude Code
+    的 `context-1m-2025-08-07` 不得被供应商预设整段覆盖。其它入站头仍
+    禁止转发。
 
 相关证据在规格 §20「2026-08-15 复核：客户端可选模型目录」、
 「2026-08-16 复核：Codex 远程压缩触发条件」、
@@ -139,7 +142,8 @@
 「2026-08-16 复核：Claude Code `/model` 必须预写 gateway-models.json」和
 「2026-08-16 复核：Responses 出站助手历史必须用 output_text」和
 「2026-08-16 复核：Claude Code 用户消息里的 tool_result 必须转成 function_call_output」和
-「2026-08-17 复核：未归属模型不得透传到当前路由」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
+「2026-08-17 复核：未归属模型不得透传到当前路由」和
+「2026-08-17 复核：Anthropic-Beta 必须与 extra_headers 并集」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
 
 ---
 

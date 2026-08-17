@@ -289,6 +289,47 @@ func TestMessagesGenericRejectsUnattributedModel(t *testing.T) {
 	}
 }
 
+func TestMessagesMergesInboundAnthropicBeta(t *testing.T) {
+	var got http.Header
+	up := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"qwen3","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	})
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	provider := cfg.Providers["ollama"]
+	provider.Adapter = "anthropic"
+	provider.ExtraHeaders = map[string]string{
+		"Anthropic-Beta": "claude-code-20250219,effort-2025-11-24",
+		"User-Agent":     "claude-cli/2.1.228 (external, cli)",
+	}
+	cfg.Providers["ollama"] = provider
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	resp, data := chatPost(t, addr, "/v1/messages",
+		[]byte(`{"model":"qwen3","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`),
+		map[string]string{
+			"Anthropic-Beta":             "claude-code-20250219,context-1m-2025-08-07,effort-2025-11-24",
+			"X-Claude-Code-Session-Id":   "sess-should-not-forward",
+			"Authorization":              "Bearer inbound-must-not-leak",
+		})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, body %s", resp.StatusCode, data)
+	}
+	if got.Get("Anthropic-Beta") != "claude-code-20250219,effort-2025-11-24,context-1m-2025-08-07" {
+		t.Fatalf("upstream Anthropic-Beta = %q", got.Get("Anthropic-Beta"))
+	}
+	if got.Get("User-Agent") != "claude-cli/2.1.228 (external, cli)" {
+		t.Fatalf("upstream User-Agent = %q", got.Get("User-Agent"))
+	}
+	if got.Get("X-Claude-Code-Session-Id") != "" {
+		t.Fatal("inbound session header was forwarded")
+	}
+	if strings.Contains(got.Get("Authorization"), "inbound-must-not-leak") {
+		t.Fatal("inbound authorization was forwarded")
+	}
+}
+
 func TestMessagesGenericRoutesUniqueModelToOwningProvider(t *testing.T) {
 	agentrouter := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -250,7 +250,7 @@ func (s *Server) serveDataPlaneWith(w http.ResponseWriter, r *http.Request, clie
 	}
 	provider := providerInfo{
 		id: res.Provider, baseURL: cfgProvider.BaseURL, secretRef: cfgProvider.SecretRef,
-		extraHeaders: cfgProvider.ExtraHeaders,
+		extraHeaders: mergeInboundAnthropicBeta(cfgProvider.ExtraHeaders, r.Header),
 		imageInput:   cfgProvider.Capabilities.ImageInput, reasoning: cfgProvider.Capabilities.Reasoning,
 		contextManagement: cfgProvider.Capabilities.ContextManagement,
 	}

@@ -28,6 +28,7 @@
 | 跨协议转换 | `dataplane.go` `serveCrossProtocol` | `internal/ir/ir.go`，再进 inbound / outbound |
 | 入站协议外形 | `internal/inbound/{chat,responses,messages}` | `Parse` / `ParseRequest` / `Encode*` / `WriteError` |
 | 出站协议外形与上游 HTTP | `internal/outbound/{openaichat,openairesponses,anthropic}` | `outbound/internal/upstream` |
+| 入站 `Anthropic-Beta` 与 `extra_headers` 并集 | `server/anthropicbeta.go` `mergeInboundAnthropicBeta` | `dataplane.go` 组 `providerInfo` 时调用 |
 | 图片 / reasoning / context_management 门 | `dataplane.go` `inspectRequestFeatures`、`normalizeReasoning`、`Drop*` | 各 inbound 的 `InspectFeatures` / `DropReasoning` |
 | 钥匙读写与事务 | `internal/secret/` | `internal/server/providers.go`（§6.3） |
 | 指向 / 还原 / 漂移 | `internal/point/point.go` | `point/{codex,claude,grok}`、`point/clientcatalog` |
