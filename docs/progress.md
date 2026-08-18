@@ -139,6 +139,11 @@
     用户消息或系统文本，不得写入会话 metadata。已指向客户端、探测
     和模型发现不套用。`extra_headers` 覆盖同名伪装头；`Anthropic-Beta`
     按令牌并集。不得把开关写成再往 `extra_headers` 里粘贴一份预设。
+20. **禁用的默认路由不得挡住前缀覆盖。** `route.Resolve` 不得在第 3 步
+    之前因为当前路由 provider 禁用而拒绝请求。Codex 默认停在已禁用的
+    `tudou` 时，`any/claude-opus-5` 或 `agentrouter/claude-opus-5` 必须
+    覆盖成功。只有 `gateway-default`、以及已登记在该禁用路由上的未加前缀
+    模型，才回报 `provider "<route>" is disabled`。
 
 相关证据在规格 §20「2026-08-15 复核：客户端可选模型目录」、
 「2026-08-16 复核：Codex 远程压缩触发条件」、
@@ -152,7 +157,8 @@
 「2026-08-17 复核：未归属模型不得透传到当前路由」和
 「2026-08-17 复核：Anthropic-Beta 必须与 extra_headers 并集」和
 「2026-08-17 复核：第三方请求需要可开关的客户端伪装」和
-「2026-08-17 复核：Claude 伪装必须补齐 thinking 与系统 cache_control」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
+「2026-08-17 复核：Claude 伪装必须补齐 thinking 与系统 cache_control」和
+「2026-08-18 复核：禁用的默认路由不得挡住前缀覆盖」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
 
 ---
 

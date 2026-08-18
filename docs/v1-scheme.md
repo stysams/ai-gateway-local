@@ -474,6 +474,8 @@ sidecar；Grok Build 在配置里追加条目。Claude Code 的完整可选目�
 6. 否则，若请求模型完整匹配当前路由 provider 明确登记且已启用的 `default_model` 或 `models[].id`，则使用当前路由 provider，模型名保持完整。这一步不得因为模型名包含 `/` 而报“未知供应商”。例如当前路由指向 OpenRouter 且其 `default_model` 为 `anthropic/claude-sonnet-4` 时，该字符串是合法的上游模型名。
 7. 否则拒绝本次请求。数据面必须在接触上游之前返回 400，错误信息必须为 `未匹配当前选择的[<requested-model>],请选择正确的 供应商/模型ID`。禁止把无法归属到任何已配置 provider 的模型名透传到当前路由 provider。
 
+当前路由引用的 provider 被禁用或不存在时：第 2 步必须拒绝；第 3 步只要前缀命中另一个已启用 provider，就必须覆盖成功，不得回报当前路由 provider 已禁用。第 6 步仅在请求模型已登记在当前路由 provider 时，才因该 provider 禁用而拒绝；否则按第 7 步返回未匹配错误。generic 唯一归属（第 4 步）只看已启用 provider，不得因为当前路由 provider 禁用而失败。
+
 请求级 provider 覆盖只在前缀命中已配置 provider 时生效。客户端或调用方若需要确定性地覆盖，必须使用已存在的 provider id。显式 `<provider-id>/<model-id>` 仍可以把未写入该 provider 目录的模型名发给该 provider；未带供应商前缀、且未被任何已启用 provider 登记的名字不得再走这条路。
 
 ### 7.5 模型列表
@@ -2447,6 +2449,25 @@ Claude Code 在 LLM 网关后用 `Anthropic-Beta: context-1m-2025-08-07`
 
 因此 `disguise_client=claude` 在 generic Messages 上还必须补齐上述两个已核验
 正文字段；已有取值保持不变；供应商未启用 reasoning 时不写入 `thinking`。
+
+### 2026-08-18 复核：禁用的默认路由不得挡住前缀覆盖
+
+实验对象：Codex 入站 `POST /c/codex/v1/responses`。当时
+`routes.codex` 为已禁用的 `tudou / gpt-5.6-sol`，请求模型为
+`agentrouter/claude-opus-5`（`agentrouter` 已启用）。
+
+证据文件：
+
+- `%USERPROFILE%\.ai-gateway\logs\2026-08-18\req_e424e54dea729e1e6dc7fc56.jsonl`
+- `%USERPROFILE%\.ai-gateway\logs\2026-08-18\req_ec1586c4d73fae1e34611b7d.jsonl`
+
+观察：两条请求都在 2 毫秒内 400，没有 `route` 事件，没有出站。
+`route.Resolve` 用当前 `config.yaml` 复现，`gateway-default`、
+`agentrouter/claude-opus-5` 和 `any/claude-fable-5[1m]` 全部返回
+`provider "tudou" is disabled`。
+
+这与 §7.3（客户端路由只是启动首选）和 §7.4 第 3 步（前缀命中已配置
+provider id 则覆盖）冲突。禁用检查只能发生在真正使用当前路由的步骤。
 
 ---
 

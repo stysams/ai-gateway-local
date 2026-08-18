@@ -85,35 +85,35 @@ type Resolution struct {
 //  6. otherwise the request is rejected: the model has no attributable
 //     provider, so callers must send <provider-id>/<model-id>
 //     (docs/v1-scheme.md §7.4).
+//
+// A disabled or missing route provider only rejects requests that would
+// actually use that route (steps 2 and 5). Prefix override and generic
+// unique ownership must not fail with "provider <route> is disabled".
 func Resolve(client ClientID, requestedModel string, cfg *config.Config) (Resolution, error) {
 	requestedModel = DecodeClaudePickerID(requestedModel)
 	r := RouteFor(cfg, client)
 	if r.Provider == "" {
 		return Resolution{}, fmt.Errorf("route for client %q is not configured", client)
 	}
-	routeProvider, ok := cfg.Providers[r.Provider]
-	if !ok {
-		return Resolution{}, fmt.Errorf("route for client %q references unknown provider %q", client, r.Provider)
-	}
-	if !routeProvider.EnabledValue() {
-		return Resolution{}, fmt.Errorf("provider %q is disabled", r.Provider)
-	}
 
 	if requestedModel == "" || requestedModel == ReservedModel {
+		routeProvider, err := loadEnabledRouteProvider(cfg, client, r)
+		if err != nil {
+			return Resolution{}, err
+		}
 		if !modelEnabled(routeProvider, r.Model) {
 			return Resolution{}, fmt.Errorf("model %q is disabled", r.Model)
 		}
 		return Resolution{Provider: r.Provider, Model: r.Model}, nil
 	}
 	if prefix, rest, ok := strings.Cut(requestedModel, "/"); ok {
-		if _, exists := cfg.Providers[prefix]; exists {
-			if !cfg.Providers[prefix].EnabledValue() {
+		if provider, exists := cfg.Providers[prefix]; exists {
+			if !provider.EnabledValue() {
 				return Resolution{}, fmt.Errorf("provider %q is disabled", prefix)
 			}
 			if rest == "" {
 				return Resolution{}, fmt.Errorf("model %q: provider prefix %q must be followed by a model name", requestedModel, prefix)
 			}
-			provider := cfg.Providers[prefix]
 			if !modelEnabled(provider, rest) {
 				return Resolution{}, fmt.Errorf("model %q is disabled for provider %q", rest, prefix)
 			}
@@ -126,9 +126,11 @@ func Resolve(client ClientID, requestedModel string, cfg *config.Config) (Resolu
 			return Resolution{Provider: owners[0], Model: requestedModel}, nil
 		}
 		if len(owners) > 1 {
-			for _, owner := range owners {
-				if owner == r.Provider {
-					return Resolution{Provider: r.Provider, Model: requestedModel}, nil
+			if routeProvider, ok := cfg.Providers[r.Provider]; ok && routeProvider.EnabledValue() {
+				for _, owner := range owners {
+					if owner == r.Provider {
+						return Resolution{Provider: r.Provider, Model: requestedModel}, nil
+					}
 				}
 			}
 			return Resolution{}, fmt.Errorf(
@@ -137,13 +139,31 @@ func Resolve(client ClientID, requestedModel string, cfg *config.Config) (Resolu
 			)
 		}
 	}
+	routeProvider, ok := cfg.Providers[r.Provider]
+	if !ok {
+		return Resolution{}, fmt.Errorf("route for client %q references unknown provider %q", client, r.Provider)
+	}
 	if !modelListed(routeProvider, requestedModel) {
 		return Resolution{}, unmatchedModelError(requestedModel)
+	}
+	if !routeProvider.EnabledValue() {
+		return Resolution{}, fmt.Errorf("provider %q is disabled", r.Provider)
 	}
 	if !modelEnabled(routeProvider, requestedModel) {
 		return Resolution{}, fmt.Errorf("model %q is disabled for provider %q", requestedModel, r.Provider)
 	}
 	return Resolution{Provider: r.Provider, Model: requestedModel}, nil
+}
+
+func loadEnabledRouteProvider(cfg *config.Config, client ClientID, r config.Route) (config.Provider, error) {
+	provider, ok := cfg.Providers[r.Provider]
+	if !ok {
+		return config.Provider{}, fmt.Errorf("route for client %q references unknown provider %q", client, r.Provider)
+	}
+	if !provider.EnabledValue() {
+		return config.Provider{}, fmt.Errorf("provider %q is disabled", r.Provider)
+	}
+	return provider, nil
 }
 
 // UnmatchedModelMessage is the data-plane error when a requested model
