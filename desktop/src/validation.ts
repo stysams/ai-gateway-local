@@ -31,8 +31,6 @@ export function validateProvider(value: ProviderFormValue, editing = false): Rec
     else if (modelIDs.has(id)) errors[`models.${index}.id`] = "duplicate_model";
     else modelIDs.add(id);
     if (model.adapter && !["openai-chat", "openai-responses", "anthropic"].includes(model.adapter)) errors[`models.${index}.adapter`] = "invalid_adapter";
-    if (model.context_window < 0) errors[`models.${index}.context_window`] = "invalid_token_limit";
-    if (model.max_output_tokens < 0) errors[`models.${index}.max_output_tokens`] = "invalid_token_limit";
   });
   if (value.models.length > 0 && !modelIDs.has(value.default_model.trim())) errors.default_model = "default_model_missing";
   try {

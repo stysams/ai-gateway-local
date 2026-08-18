@@ -43,8 +43,9 @@ test("provider form exposes an editable upstream model catalog", async ({ page }
   await expect(typedModelId).toBeFocused();
   await page.getByRole("button", { name: "Fetch models" }).click();
   await expect(page.locator('input[value="model-a"]')).toBeVisible();
-  await expect(page.locator('input[value="131072"]')).toBeVisible();
-  await expect(page.getByPlaceholder("Not provided upstream").first()).toBeVisible();
+  await expect(page.getByText("For Claude 1M context, append the [1m] suffix to the model ID, for example claude-opus-5[1m].")).toBeVisible();
+  await expect(page.getByLabel("Default adapter")).toHaveCount(0);
+  await expect(page.getByPlaceholder("Not provided upstream")).toHaveCount(0);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   expect(overflow).toBe(false);
   await page.screenshot({ path: testInfo.outputPath("provider-model-catalog.png"), fullPage: true });

@@ -9,16 +9,16 @@ describe("enabledCatalog", () => {
         enabled: true,
         default_model: "gpt-5",
         models: [
-          { id: "gpt-5", name: "GPT-5", context_window: 0, max_output_tokens: 0 },
-          { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4", context_window: 0, max_output_tokens: 0 },
-          { id: "hidden", name: "Hidden", context_window: 0, max_output_tokens: 0, enabled: false },
+          { id: "gpt-5", name: "GPT-5" },
+          { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4" },
+          { id: "hidden", name: "Hidden", enabled: false },
         ],
       },
       {
         id: "ollama",
         enabled: false,
         default_model: "qwen3",
-        models: [{ id: "qwen3", context_window: 0, max_output_tokens: 0 }],
+        models: [{ id: "qwen3" }],
       },
       { id: "deepseek", default_model: "deepseek-chat", models: [] },
     ]);
@@ -36,8 +36,8 @@ describe("enabledCatalog", () => {
 
   it("treats a disabled provider route as unavailable", () => {
     const catalog = enabledCatalog([
-      { id: "openrouter", enabled: true, default_model: "gpt-5", models: [{ id: "gpt-5", context_window: 0, max_output_tokens: 0 }] },
-      { id: "ollama", enabled: false, default_model: "qwen3", models: [{ id: "qwen3", context_window: 0, max_output_tokens: 0 }] },
+      { id: "openrouter", enabled: true, default_model: "gpt-5", models: [{ id: "gpt-5" }] },
+      { id: "ollama", enabled: false, default_model: "qwen3", models: [{ id: "qwen3" }] },
     ]);
     expect(isCatalogRoute({ provider: "ollama", model: "qwen3" }, catalog)).toBe(false);
     expect(isCatalogRoute({ provider: "openrouter", model: "gpt-5" }, catalog)).toBe(true);
@@ -45,8 +45,8 @@ describe("enabledCatalog", () => {
 
   it("clears saved and draft routes that leave the enabled catalog", () => {
     const catalog = enabledCatalog([
-      { id: "openrouter", enabled: true, default_model: "gpt-5", models: [{ id: "gpt-5", context_window: 0, max_output_tokens: 0 }] },
-      { id: "ollama", enabled: false, default_model: "qwen3", models: [{ id: "qwen3", context_window: 0, max_output_tokens: 0 }] },
+      { id: "openrouter", enabled: true, default_model: "gpt-5", models: [{ id: "gpt-5" }] },
+      { id: "ollama", enabled: false, default_model: "qwen3", models: [{ id: "qwen3" }] },
     ]);
     const next = reconcileClientRoutes(
       { codex: { provider: "ollama", model: "qwen3" }, claude: { provider: "openrouter", model: "gpt-5" } },

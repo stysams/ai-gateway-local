@@ -5,10 +5,10 @@ import { App } from "./App";
 
 const status = { version: "test", pid: 42, listen: "127.0.0.1:12600", logging_enabled: false, logging_body_enabled: false, autostart_enabled: false, clients: { codex: { point_state: "not_pointed" }, claude: { point_state: "client_not_installed" }, grok: { point_state: "drifted" }, generic: { point_state: "unknown" } }, routes: { codex: { provider: "ollama", model: "qwen3" }, claude: { provider: "ollama", model: "qwen3" }, grok: { provider: "ollama", model: "qwen3" }, generic: { provider: "ollama", model: "qwen3" } } };
 const localAccess = { base_url: "http://127.0.0.1:12600/v1", api_key: "ai-gateway", auth_required: false, default_model: "gateway-default", default_route: status.routes.generic, endpoints: { models: "http://127.0.0.1:12600/v1/models", chat_completions: "http://127.0.0.1:12600/v1/chat/completions", responses: "http://127.0.0.1:12600/v1/responses", messages: "http://127.0.0.1:12600/v1/messages" }, models: [{ id: "gateway-default", object: "model", created: 0, owned_by: "ai-gateway", display_name: "gateway-default" }, { id: "ollama/qwen3", object: "model", created: 0, owned_by: "ollama", display_name: "ollama/qwen3" }] };
-const config = { version: 1, listen: { port: 12600 }, logging: { enabled: false, body: false, dir: "logs" }, ui: { language: "en-US", logging_notice_accepted: true }, autostart: { enabled: false }, providers: { ollama: { name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", models: [{ id: "qwen3", name: "Qwen 3", context_window: 32768, max_output_tokens: 8192 }], capabilities: { image_input: false, reasoning: false } }, openrouter: { name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", models: [{ id: "gpt-5", name: "GPT-5", context_window: 400000, max_output_tokens: 128000 }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4", context_window: 200000, max_output_tokens: 64000 }], capabilities: { image_input: true, reasoning: true } } }, routes: status.routes };
+const config = { version: 1, listen: { port: 12600 }, logging: { enabled: false, body: false, dir: "logs" }, ui: { language: "en-US", logging_notice_accepted: true }, autostart: { enabled: false }, providers: { ollama: { name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", models: [{ id: "qwen3", name: "Qwen 3" }], capabilities: { image_input: false, reasoning: false } }, openrouter: { name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", models: [{ id: "gpt-5", name: "GPT-5" }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4" }], capabilities: { image_input: true, reasoning: true } } }, routes: status.routes };
 const providers = [
-  { id: "ollama", name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", enabled: true, models: [{ id: "qwen3", name: "Qwen 3", context_window: 32768, max_output_tokens: 8192 }], has_secret: false, capabilities: { image_input: false, reasoning: false } },
-  { id: "openrouter", name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", enabled: true, models: [{ id: "gpt-5", name: "GPT-5", context_window: 400000, max_output_tokens: 128000 }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4", context_window: 200000, max_output_tokens: 64000 }], has_secret: true, capabilities: { image_input: true, reasoning: true } },
+  { id: "ollama", name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", enabled: true, models: [{ id: "qwen3", name: "Qwen 3" }], has_secret: false, capabilities: { image_input: false, reasoning: false } },
+  { id: "openrouter", name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", enabled: true, models: [{ id: "gpt-5", name: "GPT-5" }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4" }], has_secret: true, capabilities: { image_input: true, reasoning: true } },
 ];
 const pointStatus = (client: string) => ({ client, point_state: client === "codex" ? "not_pointed" : "client_not_installed", target: `C:/${client}/config`, backup_available: false, ...(client === "codex" ? { remote_compaction: false } : {}) });
 
@@ -128,14 +128,19 @@ describe("desktop workflow", () => {
   it("loads upstream model metadata and includes edits in the provider payload", async () => {
     const user = userEvent.setup(); render(<App />); await ready(); await user.click(screen.getByRole("button", { name: "Providers" })); await user.click(screen.getByRole("button", { name: "Add provider" }));
     await user.type(screen.getByLabelText("Identifier"), "new-provider"); await user.type(screen.getByLabelText("Name"), "New Provider"); await user.type(screen.getByLabelText("Base URL"), "https://example.com/v1");
+    expect(screen.getByText(/append the \[1m\] suffix/)).toBeVisible();
+    expect(screen.queryByLabelText("Default adapter")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Context window")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Apply preset Codex" }));
     expect(screen.getByDisplayValue("codex_cli_rs/0.147.0")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Fetch models" }));
-    expect(await screen.findByDisplayValue("model-a")).toBeVisible(); expect(screen.getByDisplayValue("131072")).toBeVisible(); expect(screen.getByDisplayValue("16384")).toBeVisible();
-    const contextInput = screen.getByDisplayValue("131072"); await user.clear(contextInput); await user.type(contextInput, "200000"); await user.click(screen.getAllByRole("radio", { name: "Default model" })[0]); await user.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ method: "POST", body: expect.stringContaining('"context_window":200000') })));
+    expect(await screen.findByDisplayValue("model-a")).toBeVisible();
+    expect(screen.queryByDisplayValue("131072")).not.toBeInTheDocument();
+    await user.click(screen.getAllByRole("radio", { name: "Default model" })[0]); await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ method: "POST", body: expect.stringContaining('"id":"model-a"') })));
     expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ body: expect.stringContaining('"Originator":"codex_cli_rs"') }));
     expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ body: expect.stringContaining('"adapter":"openai-chat"') }));
+    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ body: expect.not.stringContaining("context_window") }));
   });
 
   it("saves a different outbound protocol on one model", async () => {

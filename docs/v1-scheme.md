@@ -245,8 +245,6 @@ providers:
       - id: anthropic/claude-sonnet-4
         name: Claude Sonnet 4
         adapter: openai-chat
-        context_window: 200000
-        max_output_tokens: 64000
     secret_ref: provider.openrouter
     capabilities:
       image_input: true
@@ -299,14 +297,14 @@ routes:
 
 - provider id 必须匹配 `^[a-z][a-z0-9_-]{0,31}$`。
 - `name`：非空显示名称。
-- `adapter`：只允许 `openai-chat`、`openai-responses`、`anthropic`。这是默认出站协议，也用于模型发现和连接探测。未单独指定协议的模型继承该值。
+- `adapter`：只允许 `openai-chat`、`openai-responses`、`anthropic`。桌面不再单独提供供应商级适配器选项；保存时写入默认模型的协议，供模型发现、连接探测和未指定协议的模型回退。
 - `base_url`：必须是绝对 HTTP 或 HTTPS URL，不得包含查询字符串或片段。
 - `extra_headers`：可选的上游请求头名称到值映射，最多 64 项；用于正常请求、远程压缩、模型发现和连接探测。名称必须符合 HTTP 字段名语法，值不得包含换行或 NUL 字节。`Authorization`、`x-api-key`、Cookie、Host、Content-Length 和逐跳传输字段由网关管理，不允许配置。
 - `disguise_client`：可选。空或缺省表示关闭。只允许 `claude` 或 `codex`。开启后，仅当入站客户端是 `generic`（`/v1/*` 或 `/c/generic/v1/*`）时，网关在 adapter 默认头之后、`extra_headers` 之前套用已核验的对应客户端身份头。`disguise_client` 为 `claude` 且入站是 Messages 时，还要在转发前补齐 Claude Code 2.1.228 与这些身份头一起发送的正文字段：缺省则写入 `thinking: {type: adaptive}`（仅当 `capabilities.reasoning` 为真），并给缺少 `cache_control` 的顶层 `system` 文本块以及 `role: system` 消息补 `{"type":"ephemeral"}`。不得改写 tools、用户消息或系统文本，不得写入会话、安装或设备 `metadata`。已指向的 `claude`、`codex`、`grok` 请求不套用。连接探测和模型发现不套用。身份头不含会话、安装、窗口或系统环境标识。`extra_headers` 覆盖同名伪装头；`Anthropic-Beta` 按令牌并集。证据见 §20「2026-08-17 复核：第三方请求需要可开关的客户端伪装」和「2026-08-17 复核：Claude 伪装必须补齐 thinking 与系统 cache_control」。
 - `default_model`：非空。
-- `models`：可选模型目录；每项包含非空且在同一 provider 内唯一的 `id`，以及可选 `name`、`adapter`、`context_window` 和 `max_output_tokens`。
+- `models`：可选模型目录；每项包含非空且在同一 provider 内唯一的 `id`，以及可选 `name` 和 `adapter`。
 - `models[].adapter`：可选。非空时必须是 `openai-chat`、`openai-responses` 或 `anthropic`，并覆盖 provider 默认协议。同一 provider 下的不同模型可以使用不同协议，以便同一上游同时提供 Chat 与 Messages 接口。数据面按解析到的模型取 adapter；模型未指定、目录为空、或显式 `<provider-id>/<model>` 未登记时回退到 provider `adapter`。证据见 §20「2026-08-18 复核：出站协议绑定到模型」。
-- `context_window` 和 `max_output_tokens`：分别是非负整数；`0` 表示上游未提供且用户尚未填写，不得按模型名称推测。协议不假定两个字段之间存在固定大小关系。
+- 上下文窗口由客户端与上游协商，不在供应商模型目录里配置。Claude 的 1M 上下文通过模型 ID 后缀 `[1m]` 选择，例如 `claude-opus-5[1m]`。旧配置里的 `context_window` 和 `max_output_tokens` 仍可读取，桌面不再编辑；`0` 或缺失表示未配置。
 - 当 `models` 非空时，`default_model` 必须引用目录中的模型。旧配置没有 `models` 时继续兼容。
 - `secret_ref`：可选；需要认证的供应商必须设置。
 - `capabilities.image_input`：布尔值，默认 `false`。
@@ -862,9 +860,7 @@ POST   /api/v1/provider-models/discover
     {
       "id": "anthropic/claude-sonnet-4",
       "name": "Claude Sonnet 4",
-      "adapter": "openai-chat",
-      "context_window": 200000,
-      "max_output_tokens": 64000
+      "adapter": "openai-chat"
     }
   ],
   "has_secret": true,
