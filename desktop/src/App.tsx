@@ -6,10 +6,10 @@ import {
 } from "lucide-react";
 import { ClientsIcon, GatewayMark, LogsIcon, OverviewIcon, ProvidersIcon, RoutesIcon, SettingsIcon, UsageIcon, type AppIcon } from "./icons";
 import { api } from "./api";
-import { catalogId, enabledCatalog } from "./catalog";
+import { catalogId, enabledCatalog, isCatalogRoute, reconcileClientRoutes } from "./catalog";
 import { mergeHeaderPreset, presetForAdapter } from "./headerPresets";
 import { translator, type Language, type MessageKey } from "./i18n";
-import type { ClientID, Config, LocalAccess, LogSummary, PointClient, PointStatus, Provider, ProviderModel, Status, UsageGroup, UsageReport } from "./types";
+import type { ClientID, Config, LocalAccess, LogSummary, PointClient, PointStatus, Provider, ProviderModel, Route, Status, UsageGroup, UsageReport } from "./types";
 import { validateProvider, type DisguiseClient, type ProviderFormValue } from "./validation";
 
 type Page = "overview" | "localAccess" | "providers" | "routes" | "clients" | "logs" | "usage" | "settings";
@@ -115,8 +115,10 @@ export function App() {
       </aside>
       <main className="main">
         <header className="topbar">
-          <div><p className="eyebrow">AI GATEWAY / {page.toUpperCase()}</p><h1>{t(page)}</h1></div>
-          <button className="icon-button" onClick={() => void refresh()} title={t("refresh")} aria-label={t("refresh")} disabled={busy}><RefreshCw size={17} className={busy ? "spin" : ""} /></button>
+          <div className="topbar-inner">
+            <div><p className="eyebrow">AI GATEWAY / {page.toUpperCase()}</p><h1>{t(page)}</h1></div>
+            <button className="icon-button" onClick={() => void refresh()} title={t("refresh")} aria-label={t("refresh")} disabled={busy}><RefreshCw size={17} className={busy ? "spin" : ""} /></button>
+          </div>
         </header>
         {busy && !status ? <div className="loading"><RefreshCw className="spin" size={18} />{t("loading")}</div> : (
           <div className="content">
@@ -298,7 +300,7 @@ function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (k
   </section>;
 
   return <section><SectionHeader title={t("providers")} description={`${providers.length}${t("configured")}`} action={<button className="primary" onClick={() => { setOpen(true); setEditing(undefined); setForm(emptyProvider); setErrors({}); }}><Plus size={16} />{t("addProvider")}</button>} />
-    {providers.length === 0 ? <Empty text={t("noProviders")} /> : <div className="table-wrap"><table><thead><tr><th>{t("provider")}</th><th>{t("adapter")}</th><th>{t("model")}</th><th>{t("modelCount")}</th><th>{t("status")}</th><th className="actions">{t("actions")}</th></tr></thead><tbody>{providers.map((p) => <tr key={p.id}><td><strong>{p.name}</strong><small>{p.id} · {p.base_url}</small></td><td className="mono">{p.adapter}</td><td className="mono">{p.default_model}</td><td className="mono">{p.models?.length || 0}</td><td><State value={p.enabled === false ? "disabled" : p.has_secret ? "key ready" : "keyless"} /></td><td className="actions"><button className="text-button" onClick={() => void probeProvider(p)}>{t("probe")}</button><button className="icon-button compact" onClick={() => edit(p)} title={t("edit")}><Settings size={15} /></button><button className="icon-button compact danger" onClick={() => { if (confirm(t("confirmDelete"))) void run(() => api.deleteProvider(p.id)); }} title={t("remove")}><Trash2 size={15} /></button></td></tr>)}</tbody></table></div>}
+    {providers.length === 0 ? <Empty text={t("noProviders")} /> : <div className="table-wrap providers-table-wrap"><table className="providers-table"><thead><tr><th>{t("provider")}</th><th>{t("adapter")}</th><th>{t("model")}</th><th>{t("modelCount")}</th><th>{t("status")}</th><th className="actions">{t("actions")}</th></tr></thead><tbody>{providers.map((p) => <tr key={p.id}><td><strong>{p.name}</strong><small>{p.id} · {p.base_url}</small></td><td className="mono" data-label={t("adapter")}>{p.adapter}</td><td className="mono" data-label={t("model")}>{p.default_model}</td><td className="mono" data-label={t("modelCount")}>{p.models?.length || 0}</td><td><State value={p.enabled === false ? "disabled" : p.has_secret ? "key ready" : "keyless"} /></td><td className="actions"><button className="text-button" onClick={() => void probeProvider(p)}>{t("probe")}</button><button className="icon-button compact" onClick={() => edit(p)} title={t("edit")}><Settings size={15} /></button><button className="icon-button compact danger" onClick={() => { if (confirm(t("confirmDelete"))) void run(() => api.deleteProvider(p.id)); }} title={t("remove")}><Trash2 size={15} /></button></td></tr>)}</tbody></table></div>}
     {probe && <div className="modal-backdrop" onMouseDown={() => setProbe(null)}><div className="modal probe-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><div className="drawer-title"><div><p className="eyebrow">{t("probeResponse")}</p><h2>{probe.provider}</h2></div><button className="icon-button" onClick={() => setProbe(null)} aria-label={t("close")}><X size={17} /></button></div><div className="probe-meta"><State value={probe.result.ok ? "ok" : "failed"} /><span>{probe.result.status || "-"} · {probe.result.latency_ms} ms · {probe.result.models || 0} {t("models")}</span></div>{probe.result.error && <p className="field-error">{probe.result.error}</p>}<pre>{formatProbeResponse(probe.result.response) || t("noProbeResponse")}</pre></div></div>}
   </section>;
 }
@@ -315,9 +317,10 @@ function formatProbeResponse(value?: string): string {
 function Field({ label, error, wide, children }: { label: string; error?: string; wide?: boolean; children: React.ReactNode }) { return <label className={wide ? "field wide" : "field"}><span>{label}</span>{children}{error && <small className="field-error">{error.replaceAll("_", " ")}</small>}</label>; }
 
 function Routes({ status, providers, t, run }: { status: Status; providers: Provider[]; t: (key: MessageKey) => string; run: (op: () => Promise<unknown>, message?: string) => Promise<void> }) {
-  const [draft, setDraft] = useState(status.routes);
-  const [expandedProviders, setExpandedProviders] = useState<Set<string>>(() => new Set());
   const catalog = useMemo(() => enabledCatalog(providers), [providers]);
+  const [override, setOverride] = useState<Partial<Record<ClientID, Route>>>({});
+  const draft = useMemo(() => reconcileClientRoutes(override, status.routes, catalog), [override, status.routes, catalog]);
+  const [expandedProviders, setExpandedProviders] = useState<Set<string>>(() => new Set());
   const toggleProvider = (provider: Provider, enabled: boolean) => run(() => api.updateProviderAvailability(provider.id, { enabled }), t("success"));
   const toggleModel = (provider: Provider, model: ProviderModel, enabled: boolean) => run(() => api.updateProviderAvailability(provider.id, { models: { [model.id]: enabled } }), t("success"));
   const toggleExpanded = (id: string) => setExpandedProviders((current) => {
@@ -325,8 +328,24 @@ function Routes({ status, providers, t, run }: { status: Status; providers: Prov
     if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
+  const selectRoute = (client: ClientID, catalogIdValue: string) => {
+    const next = catalog.find((item) => item.id === catalogIdValue);
+    if (!next) return;
+    setOverride((current) => ({ ...current, [client]: { provider: next.provider, model: next.model } }));
+  };
+  const applyRoute = (client: ClientID) => {
+    const next = draft[client];
+    if (!isCatalogRoute(next, catalog)) return;
+    void run(() => api.updateRoute(client, next), t("success"));
+  };
   return <section><SectionHeader title={t("routes")} description={t("routesDescription")} />
-    <div className="route-clients primary-route-block"><h3>{t("clientRoutes")}</h3><p className="muted">{t("clientRoutesDescription")}</p><div className="route-list">{allClients.map((client) => { const currentId = catalogId(draft[client]); const savedId = catalogId(status.routes[client]); const currentKnown = catalog.some((item) => item.id === currentId); return <div className="route-row" key={client}><div><strong className="mono">{client}</strong><small>/c/{client}/v1</small></div><label><span>{t("defaultSelectedModel")}</span><select className="mono" aria-label={`${client} ${t("defaultSelectedModel")}`} value={currentId} onChange={(e) => { const next = catalog.find((item) => item.id === e.target.value); if (next) setDraft({ ...draft, [client]: { provider: next.provider, model: next.model } }); }}>{!currentKnown && <option value={currentId}>{currentId}</option>}{catalog.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select></label><button className="secondary" disabled={currentId === savedId} onClick={() => void run(() => api.updateRoute(client, draft[client]), t("success"))}><Check size={16} />{t("apply")}</button></div>; })}</div></div>
+    <div className="route-clients primary-route-block"><h3>{t("clientRoutes")}</h3><p className="muted">{t("clientRoutesDescription")}</p><div className="route-list">{allClients.map((client) => {
+      const currentKnown = isCatalogRoute(draft[client], catalog);
+      const currentId = currentKnown ? catalogId(draft[client]) : "";
+      const savedId = catalogId(status.routes[client]);
+      const canApply = currentKnown && currentId !== savedId;
+      return <div className="route-row" key={client}><div><strong className="mono">{client}</strong><small>/c/{client}/v1</small></div><label><span>{t("defaultSelectedModel")}</span><select className="mono" required aria-required="true" aria-invalid={!currentKnown} aria-label={`${client} ${t("defaultSelectedModel")}`} value={currentId} onChange={(event) => selectRoute(client, event.target.value)}><option value="" disabled>{t("selectDefaultModel")}</option>{catalog.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select>{!currentKnown && <small className="field-error">{t("routeUnavailable")}</small>}</label><button className="secondary" disabled={!canApply} onClick={() => applyRoute(client)}><Check size={16} />{t("apply")}</button></div>;
+    })}</div></div>
     <div className="route-catalog-header"><div><h3>{t("routeCatalog")}</h3><p className="muted">{t("availabilityDescription")}</p></div><span className="mono muted">{providers.length} {t("providers")}</span></div>
     <div className="route-tree" aria-label={t("routeCatalog")}>{providers.map((provider) => { const treeModels = provider.models?.length ? provider.models : [{ id: provider.default_model, name: "", context_window: 0, max_output_tokens: 0 }]; const expanded = expandedProviders.has(provider.id); const enabledCount = treeModels.filter((model) => model.enabled !== false).length; return <div className="tree-provider" key={provider.id}><div className="tree-provider-row"><button className="tree-provider-toggle" onClick={() => toggleExpanded(provider.id)} aria-expanded={expanded} aria-label={`${provider.name} ${expanded ? t("hideModels") : t("showModels")}`}><ChevronRight className={expanded ? "expanded" : ""} size={15} /><span><b>{provider.name}</b><small>{enabledCount}/{treeModels.length} {t("models")}</small></span></button><span className="mono muted">{provider.id}</span><label className="switch"><input type="checkbox" checked={provider.enabled !== false} onChange={(event) => toggleProvider(provider, event.target.checked)} aria-label={`${t("provider")} ${provider.name}`} /><span /><b>{provider.enabled === false ? t("disabled") : t("enabled")}</b></label></div>{expanded && <div className="tree-models">{treeModels.map((model) => <div className="tree-model-row" key={model.id}><span className="tree-branch" aria-hidden="true"><ChevronRight size={14} /></span><span className="mono">{`${provider.id}/${model.id}`}</span><label className="switch"><input type="checkbox" checked={provider.enabled !== false && model.enabled !== false} disabled={provider.enabled === false} onChange={(event) => toggleModel(provider, model, event.target.checked)} aria-label={`${provider.id}/${model.id} ${t("enabled")}`} /><span /><b>{model.enabled === false ? t("disabled") : t("enabled")}</b></label></div>)}</div>}</div>; })}</div>
   </section>;

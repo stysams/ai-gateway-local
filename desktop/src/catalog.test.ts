@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { catalogId, enabledCatalog } from "./catalog";
+import { catalogId, enabledCatalog, isCatalogRoute, reconcileClientRoutes } from "./catalog";
 
 describe("enabledCatalog", () => {
   it("lists every enabled model as provider/model id", () => {
@@ -31,5 +31,33 @@ describe("enabledCatalog", () => {
 
   it("keeps the route wire form as provider plus raw model id", () => {
     expect(catalogId({ provider: "openrouter", model: "anthropic/claude-sonnet-4" })).toBe("openrouter/anthropic/claude-sonnet-4");
+    expect(catalogId({ provider: "", model: "" })).toBe("");
+  });
+
+  it("treats a disabled provider route as unavailable", () => {
+    const catalog = enabledCatalog([
+      { id: "openrouter", enabled: true, default_model: "gpt-5", models: [{ id: "gpt-5", context_window: 0, max_output_tokens: 0 }] },
+      { id: "ollama", enabled: false, default_model: "qwen3", models: [{ id: "qwen3", context_window: 0, max_output_tokens: 0 }] },
+    ]);
+    expect(isCatalogRoute({ provider: "ollama", model: "qwen3" }, catalog)).toBe(false);
+    expect(isCatalogRoute({ provider: "openrouter", model: "gpt-5" }, catalog)).toBe(true);
+  });
+
+  it("clears saved and draft routes that leave the enabled catalog", () => {
+    const catalog = enabledCatalog([
+      { id: "openrouter", enabled: true, default_model: "gpt-5", models: [{ id: "gpt-5", context_window: 0, max_output_tokens: 0 }] },
+      { id: "ollama", enabled: false, default_model: "qwen3", models: [{ id: "qwen3", context_window: 0, max_output_tokens: 0 }] },
+    ]);
+    const next = reconcileClientRoutes(
+      { codex: { provider: "ollama", model: "qwen3" }, claude: { provider: "openrouter", model: "gpt-5" } },
+      { codex: { provider: "ollama", model: "qwen3" }, claude: { provider: "ollama", model: "qwen3" }, grok: { provider: "openrouter", model: "gpt-5" }, generic: { provider: "missing", model: "x" } },
+      catalog,
+    );
+    expect(next).toEqual({
+      codex: { provider: "", model: "" },
+      claude: { provider: "openrouter", model: "gpt-5" },
+      grok: { provider: "openrouter", model: "gpt-5" },
+      generic: { provider: "", model: "" },
+    });
   });
 });

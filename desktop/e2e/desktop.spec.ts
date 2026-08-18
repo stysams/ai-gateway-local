@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-const status = { version: "0.1.0", pid: 4242, listen: "127.0.0.1:12600", logging_enabled: true, logging_body_enabled: true, autostart_enabled: false, clients: { codex: { point_state: "pointed" }, claude: { point_state: "not_pointed" }, grok: { point_state: "drifted" }, generic: { point_state: "unknown" } }, routes: { codex: { provider: "openrouter", model: "gpt-5" }, claude: { provider: "anthropic", model: "claude-sonnet" }, grok: { provider: "openrouter", model: "grok-4" }, generic: { provider: "ollama", model: "qwen3" } } };
+const status = { version: "0.1.0", pid: 4242, listen: "127.0.0.1:12600", logging_enabled: true, logging_body_enabled: true, autostart_enabled: false, clients: { codex: { point_state: "pointed" }, claude: { point_state: "not_pointed" }, grok: { point_state: "drifted" }, generic: { point_state: "unknown" } }, routes: { codex: { provider: "openrouter", model: "gpt-5" }, claude: { provider: "openrouter", model: "anthropic/claude-sonnet-4" }, grok: { provider: "deepseek", model: "deepseek-chat" }, generic: { provider: "openrouter", model: "gpt-5" } } };
 const localAccess = { base_url: "http://127.0.0.1:12600/v1", api_key: "ai-gateway", auth_required: false, default_model: "gateway-default", default_route: status.routes.generic, endpoints: { models: "http://127.0.0.1:12600/v1/models", chat_completions: "http://127.0.0.1:12600/v1/chat/completions", responses: "http://127.0.0.1:12600/v1/responses", messages: "http://127.0.0.1:12600/v1/messages" }, models: [{ id: "gateway-default", object: "model", created: 0, owned_by: "ai-gateway", display_name: "gateway-default" }, { id: "openrouter/gpt-5", object: "model", created: 0, owned_by: "openrouter", display_name: "openrouter/gpt-5" }, { id: "openrouter/anthropic/claude-sonnet-4", object: "model", created: 0, owned_by: "openrouter", display_name: "openrouter/anthropic/claude-sonnet-4" }] };
 const providerModels = [
   { id: "gpt-5", name: "GPT-5", context_window: 400000, max_output_tokens: 128000 },
@@ -67,6 +67,9 @@ test("client routes list every enabled model as provider/model id", async ({ pag
   await expect(page.getByText("This sets the model the client selects by default at startup", { exact: false })).toBeVisible();
   const modelSelect = page.getByRole("combobox", { name: "codex Default selected model" });
   await expect(modelSelect).toBeVisible();
+  await expect(modelSelect).toHaveJSProperty("required", true);
+  await expect(modelSelect).toHaveValue("openrouter/gpt-5");
+  await expect(modelSelect.locator("option", { hasText: "Select a default model" })).toHaveCount(1);
   await expect(modelSelect.locator("option", { hasText: "openrouter/gpt-5" })).toHaveCount(1);
   await expect(modelSelect.locator("option", { hasText: "openrouter/anthropic/claude-sonnet-4" })).toHaveCount(1);
   await expect(modelSelect.locator("option", { hasText: "deepseek/deepseek-chat" })).toHaveCount(1);
@@ -78,6 +81,43 @@ test("client routes list every enabled model as provider/model id", async ({ pag
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   expect(overflow).toBe(false);
   await page.screenshot({ path: testInfo.outputPath("client-routes.png"), fullPage: true });
+});
+
+test("disabling a provider clears the required client route", async ({ page }, testInfo) => {
+  const liveProviders = [
+    { id: "openrouter", name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", enabled: true, models: providerModels, has_secret: true, capabilities: { image_input: true, reasoning: true } },
+    { id: "deepseek", name: "DeepSeek", adapter: "openai-chat", base_url: "https://api.deepseek.com", default_model: "deepseek-chat", enabled: true, models: [{ id: "deepseek-chat", name: "DeepSeek Chat", context_window: 128000, max_output_tokens: 8192 }], has_secret: true, capabilities: { image_input: false, reasoning: true } },
+  ];
+  await page.route("http://127.0.0.1:12600/api/v1/providers", async (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ json: liveProviders });
+    return route.fallback();
+  });
+  await page.route("http://127.0.0.1:12600/api/v1/providers/openrouter/availability", async (route) => {
+    const body = route.request().postDataJSON() as { enabled?: boolean };
+    liveProviders[0] = { ...liveProviders[0], enabled: body.enabled !== false };
+    return route.fulfill({ json: liveProviders[0] });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Routes" }).click();
+  const modelSelect = page.getByRole("combobox", { name: "codex Default selected model" });
+  const grokSelect = page.getByRole("combobox", { name: "grok Default selected model" });
+  await expect(modelSelect).toHaveValue("openrouter/gpt-5");
+  await expect(grokSelect).toHaveValue("deepseek/deepseek-chat");
+  await page.getByRole("checkbox", { name: "Provider OpenRouter" }).click();
+  await expect(modelSelect).toHaveValue("");
+  await expect(page.getByRole("combobox", { name: "claude Default selected model" })).toHaveValue("");
+  await expect(page.getByRole("combobox", { name: "generic Default selected model" })).toHaveValue("");
+  await expect(grokSelect).toHaveValue("deepseek/deepseek-chat");
+  await expect(page.getByText("The current default route is no longer available. Select another model and apply it.").first()).toBeVisible();
+  await expect(modelSelect.locator("option", { hasText: "openrouter/gpt-5" })).toHaveCount(0);
+  await expect(modelSelect.locator("option", { hasText: "deepseek/deepseek-chat" })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Apply" }).first()).toBeDisabled();
+  await modelSelect.selectOption("deepseek/deepseek-chat");
+  await expect(modelSelect).toHaveValue("deepseek/deepseek-chat");
+  await expect(page.getByRole("button", { name: "Apply" }).first()).toBeEnabled();
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+  expect(overflow).toBe(false);
+  await page.screenshot({ path: testInfo.outputPath("client-routes-cleared.png"), fullPage: true });
 });
 
 test("clients page exposes a Codex remote compaction switch", async ({ page }, testInfo) => {
