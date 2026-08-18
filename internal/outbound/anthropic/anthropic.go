@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"ai-gateway/internal/endpoint"
 	"ai-gateway/internal/ir"
 	"ai-gateway/internal/outbound/internal/upstream"
 	"ai-gateway/internal/secret"
@@ -58,6 +59,7 @@ func (p *Pool) SetResponseHeaderTimeout(d time.Duration) {
 // Client is a stateless handle for one provider.
 type Client struct {
 	baseURL   string
+	endpoint  string
 	secretRef string
 	secrets   secret.Store
 	http      *http.Client
@@ -76,11 +78,18 @@ func (p *Pool) Client(baseURL, secretRef string) *Client {
 // CompletionURL builds <base_url>/v1/messages without double slashes or a
 // duplicated /v1 (docs/v1-scheme.md §10).
 func CompletionURL(baseURL string) string {
-	base := strings.TrimRight(baseURL, "/")
-	if strings.HasSuffix(base, "/v1") {
-		return base + "/messages"
-	}
-	return base + "/v1/messages"
+	return endpoint.Join(baseURL, endpoint.Messages, "")
+}
+
+// WithEndpoint returns a client that posts to a user-maintained path.
+func (c *Client) WithEndpoint(path string) *Client {
+	next := *c
+	next.endpoint = strings.TrimSpace(path)
+	return &next
+}
+
+func (c *Client) requestURL() string {
+	return endpoint.Join(c.baseURL, endpoint.Messages, c.endpoint)
 }
 
 // Do sends a messages body upstream with the Anthropic auth headers.
@@ -90,7 +99,7 @@ func (c *Client) Do(ctx context.Context, body []byte, stream bool) (*http.Respon
 
 // DoWithHeaders sends a request with validated provider headers.
 func (c *Client) DoWithHeaders(ctx context.Context, body []byte, stream bool, extraHeaders map[string]string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, CompletionURL(c.baseURL), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.requestURL(), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}

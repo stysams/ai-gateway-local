@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"ai-gateway/internal/endpoint"
 )
 
 // providerIDRe matches docs/v1-scheme.md §5.2: ^[a-z][a-z0-9_-]{0,31}$.
@@ -159,10 +161,25 @@ func validateProvider(id string, p Provider) []FieldError {
 		} else {
 			modelIDs[modelID] = true
 		}
-		if adapter := strings.TrimSpace(model.Adapter); adapter != "" && !validAdapters[adapter] {
+		adapter := strings.TrimSpace(model.Adapter)
+		customPath := strings.TrimSpace(model.Endpoint)
+		switch {
+		case adapter == "":
+			if customPath != "" {
+				errs = append(errs, FieldError{Field: field + ".endpoint", Reason: "can only be set when adapter is custom"})
+			}
+		case adapter == "custom":
+			if err := endpoint.ValidateCustom(customPath); err != nil {
+				errs = append(errs, FieldError{Field: field + ".endpoint", Reason: err.Error()})
+			}
+		case validAdapters[adapter]:
+			if customPath != "" {
+				errs = append(errs, FieldError{Field: field + ".endpoint", Reason: "preset Claude and GPT endpoints cannot be edited"})
+			}
+		default:
 			errs = append(errs, FieldError{
 				Field:  field + ".adapter",
-				Reason: fmt.Sprintf("must be one of openai-chat, openai-responses, anthropic; got %q", model.Adapter),
+				Reason: fmt.Sprintf("must be one of openai-chat, openai-responses, anthropic, custom; got %q", model.Adapter),
 			})
 		}
 		if model.ContextWindow < 0 {

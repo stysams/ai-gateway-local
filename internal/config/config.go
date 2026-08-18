@@ -7,6 +7,8 @@ package config
 import (
 	"strings"
 
+	"ai-gateway/internal/endpoint"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -151,6 +153,7 @@ type ProviderModel struct {
 	ID              string `yaml:"id"`
 	Name            string `yaml:"name,omitempty"`
 	Adapter         string `yaml:"adapter,omitempty"`
+	Endpoint        string `yaml:"endpoint,omitempty"`
 	ContextWindow   int    `yaml:"context_window,omitempty"`
 	MaxOutputTokens int    `yaml:"max_output_tokens,omitempty"`
 	Enabled         *bool  `yaml:"enabled,omitempty"`
@@ -169,12 +172,35 @@ func (p Provider) ModelAdapter(modelID string) string {
 		if model.ID != modelID {
 			continue
 		}
-		if adapter := strings.TrimSpace(model.Adapter); adapter != "" {
+		adapter := strings.TrimSpace(model.Adapter)
+		if adapter == endpoint.Custom {
+			if wire, ok := endpoint.InferWire(model.Endpoint); ok {
+				return wire
+			}
+			break
+		}
+		if adapter != "" {
 			return adapter
 		}
 		break
 	}
 	return p.Adapter
+}
+
+// ModelEndpoint returns the user-maintained request path when the model
+// uses the custom adapter. Preset Claude and GPT adapters have locked
+// paths, so this returns empty for them.
+func (p Provider) ModelEndpoint(modelID string) string {
+	for _, model := range p.Models {
+		if model.ID != modelID {
+			continue
+		}
+		if strings.TrimSpace(model.Adapter) == endpoint.Custom {
+			return strings.TrimSpace(model.Endpoint)
+		}
+		return ""
+	}
+	return ""
 }
 
 // Capabilities describes provider feature flags.

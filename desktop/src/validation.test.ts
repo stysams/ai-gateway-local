@@ -23,6 +23,14 @@ describe("validateProvider", () => {
     expect(errors["models.0.adapter"]).toBe("invalid_adapter");
   });
 
+  it("accepts a custom endpoint and rejects a locked preset override", () => {
+    expect(validateProvider({ id: "tudou", name: "Tudou", adapter: "anthropic", base_url: "https://api.2dou.net", extra_headers: [], disguise_client: "", default_model: "gpt", models: [{ id: "gpt", adapter: "custom", endpoint: "/responses" }], api_key: "" })).toEqual({});
+    const missing = validateProvider({ id: "tudou", name: "Tudou", adapter: "anthropic", base_url: "https://api.2dou.net", extra_headers: [], disguise_client: "", default_model: "gpt", models: [{ id: "gpt", adapter: "custom" }], api_key: "" });
+    expect(missing["models.0.endpoint"]).toBe("required");
+    const locked = validateProvider({ id: "any", name: "Any", adapter: "openai-chat", base_url: "https://any.example/v1", extra_headers: [], disguise_client: "", default_model: "gpt-4o", models: [{ id: "gpt-4o", adapter: "openai-responses", endpoint: "/responses" }], api_key: "" });
+    expect(locked["models.0.endpoint"]).toBe("preset_endpoint_locked");
+  });
+
   it("rejects unsafe and duplicate custom headers", () => {
     const errors = validateProvider({ id: "openai-main", name: "OpenAI", adapter: "openai-responses", base_url: "https://api.openai.com/v1", extra_headers: [{ name: "Authorization", value: "secret" }, { name: "X-App", value: "one" }, { name: "x-app", value: "two" }, { name: "X-Bad Header", value: "line\nbreak" }], disguise_client: "claude", default_model: "gpt-5", models: [{ id: "gpt-5" }], api_key: "" });
     expect(errors["extra_headers.0.name"]).toBe("managed_header");

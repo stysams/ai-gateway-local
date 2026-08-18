@@ -157,8 +157,12 @@
     `"none"` / `"required"`；出站 Anthropic 写成 `{"type":"auto"}`、
     `{"type":"none"}`、`{"type":"any"}`。AgentRouter / Bedrock 拒绝字符串
     `"auto"`。同协议若收到 `text/html` 流，仍按原文转发，但记
-    `upstream_not_event_stream` 并标失败。AgentRouter 的 OpenAI 面必须把
-    `/v1` 写进 `base_url`，禁止按主机名自动补。
+    `upstream_not_event_stream` 并标失败。
+24. **预设 Claude / GPT 端点默认补 `/v1`。** `openai-chat`、
+    `openai-responses`、`anthropic` 的请求路径锁定，桌面只读。
+    `base_url` 尚未以 `/v1` 结尾时自动补上。不走 `/v1` 的上游把模型
+    `adapter` 写成 `custom`，并自己维护 `endpoint`。桌面在输入框下方
+    显示实际调用 URL。`provider.adapter` 仍只回写报文协议。
 
 相关证据在规格 §20「2026-08-15 复核：客户端可选模型目录」、
 「2026-08-16 复核：Codex 远程压缩触发条件」、
@@ -176,7 +180,8 @@
 「2026-08-18 复核：禁用的默认路由不得挡住前缀覆盖」和
 「2026-08-18 复核：出站协议绑定到模型」和
 「2026-08-18 复核：AgentRouter OpenAI 面必须带 /v1」和
-「2026-08-18 复核：Messages 出站 tool_choice 必须是对象」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
+「2026-08-18 复核：Messages 出站 tool_choice 必须是对象」和
+「2026-08-18 复核：预设端点默认补 /v1，例外走自定义路径」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
 
 ---
 

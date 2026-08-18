@@ -1273,8 +1273,8 @@ func TestModelAdapterSelectsOutboundProtocol(t *testing.T) {
 	if len(reqs) != 2 {
 		t.Fatalf("upstream requests = %d, want 2", len(reqs))
 	}
-	if reqs[0].Path != "/chat/completions" {
-		t.Fatalf("gpt path = %q, want /chat/completions", reqs[0].Path)
+	if reqs[0].Path != "/v1/chat/completions" {
+		t.Fatalf("gpt path = %q, want /v1/chat/completions", reqs[0].Path)
 	}
 	if _, ok := reqs[0].Fields["messages"]; !ok {
 		t.Fatalf("gpt upstream is not chat: %v", reqs[0].Fields)
@@ -1284,6 +1284,29 @@ func TestModelAdapterSelectsOutboundProtocol(t *testing.T) {
 	}
 	if _, ok := reqs[1].Fields["max_tokens"]; !ok {
 		t.Fatalf("claude upstream is not messages: %v", reqs[1].Fields)
+	}
+}
+
+func TestCustomModelEndpointIsUsedAsWritten(t *testing.T) {
+	up := newFakeUpstream(t, nil)
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	p := cfg.Providers["openrouter"]
+	p.Adapter = "anthropic"
+	p.DefaultModel = "legacy-gpt"
+	p.Models = []config.ProviderModel{
+		{ID: "legacy-gpt", Adapter: "custom", Endpoint: "/responses"},
+	}
+	cfg.Providers["openrouter"] = p
+	cfg.Routes.Codex = config.Route{Provider: "openrouter", Model: "legacy-gpt"}
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	resp, data := chatPost(t, addr, "/c/codex/v1/responses",
+		[]byte(`{"model":"openrouter/legacy-gpt","input":[{"role":"user","content":"hi"}],"stream":false}`), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body %s", resp.StatusCode, data)
+	}
+	if got := up.last().Path; got != "/responses" {
+		t.Fatalf("custom path = %q, want /responses without auto /v1", got)
 	}
 }
 
@@ -1353,8 +1376,8 @@ func TestResponsesCompactForwardsSameProtocol(t *testing.T) {
 		t.Fatalf("compact response = %s", data)
 	}
 	req := up.last()
-	if req.Path != "/responses/compact" {
-		t.Fatalf("upstream path = %q, want /responses/compact", req.Path)
+	if req.Path != "/v1/responses/compact" {
+		t.Fatalf("upstream path = %q, want /v1/responses/compact", req.Path)
 	}
 	if req.Model != "anthropic/claude-sonnet-4" {
 		t.Fatalf("upstream model = %q", req.Model)
@@ -1385,7 +1408,7 @@ func TestResponsesCompactUsesModelAdapter(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, body %s", resp.StatusCode, data)
 	}
-	if up.last().Path != "/responses/compact" {
+	if up.last().Path != "/v1/responses/compact" {
 		t.Fatalf("upstream path = %q", up.last().Path)
 	}
 

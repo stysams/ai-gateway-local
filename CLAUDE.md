@@ -162,9 +162,10 @@ pipeline:
 `map[string]json.RawMessage`, so same-protocol forwarding is lossless at the
 field level (key order and whitespace are not preserved — that is documented and
 intentional). `outbound/{openaichat,openairesponses,anthropic}` build
-`<base>/chat/completions`, `<base>/responses`, `<base>/v1/messages` with no
-duplicated slash or `/v1`, and share the transport/credential plumbing in
-`outbound/internal/upstream`.
+`<base>/v1/chat/completions`, `<base>/v1/responses`, `<base>/v1/messages`
+(no duplicated `/v1` if the base already ends with it). A model may set
+`adapter: custom` plus `endpoint` to keep a non-`/v1` path. They share the
+transport/credential plumbing in `outbound/internal/upstream`.
 
 `ir.Sequencer` is the state machine for the unified event stream: stable tool
 call ids, argument deltas concatenated in arrival order, at most one

@@ -260,6 +260,26 @@ func TestModelAdapter(t *testing.T) {
 	}
 }
 
+func TestModelAdapterCustomEndpoint(t *testing.T) {
+	p := Provider{
+		Adapter:      "anthropic",
+		DefaultModel: "gpt-5.6-sol",
+		Models: []ProviderModel{
+			{ID: "gpt-5.6-sol", Adapter: "custom", Endpoint: "/responses"},
+			{ID: "claude-opus-5", Adapter: "anthropic"},
+		},
+	}
+	if got := p.ModelAdapter("gpt-5.6-sol"); got != "openai-responses" {
+		t.Fatalf("custom adapter = %q, want openai-responses", got)
+	}
+	if got := p.ModelEndpoint("gpt-5.6-sol"); got != "/responses" {
+		t.Fatalf("custom endpoint = %q", got)
+	}
+	if got := p.ModelEndpoint("claude-opus-5"); got != "" {
+		t.Fatalf("preset endpoint = %q, want empty", got)
+	}
+}
+
 func TestValidateAdapter(t *testing.T) {
 	for _, ok := range []struct {
 		adapter string
@@ -358,6 +378,9 @@ func TestValidateProvider(t *testing.T) {
 		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", DisguiseClient: "codex"}, ""},
 		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", DisguiseClient: "gpt"}, "providers.ok.disguise_client"},
 		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", Models: []ProviderModel{{ID: "m", Adapter: "anthropic"}}}, ""},
+		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", Models: []ProviderModel{{ID: "m", Adapter: "custom", Endpoint: "/responses"}}}, ""},
+		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", Models: []ProviderModel{{ID: "m", Adapter: "custom"}}}, "providers.ok.models.0.endpoint"},
+		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", Models: []ProviderModel{{ID: "m", Adapter: "openai-responses", Endpoint: "/responses"}}}, "providers.ok.models.0.endpoint"},
 		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", Models: []ProviderModel{{ID: "m", Adapter: "bogus"}}}, "providers.ok.models.0.adapter"},
 	}
 	for _, tc := range cases {

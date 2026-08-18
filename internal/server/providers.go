@@ -57,6 +57,7 @@ type ProviderModelPayload struct {
 	ID              string `json:"id"`
 	Name            string `json:"name,omitempty"`
 	Adapter         string `json:"adapter,omitempty"`
+	Endpoint        string `json:"endpoint,omitempty"`
 	ContextWindow   int    `json:"context_window"`
 	MaxOutputTokens int    `json:"max_output_tokens"`
 	Enabled         *bool  `json:"enabled,omitempty"`
@@ -181,8 +182,8 @@ func providerModelsFromPayload(models []ProviderModelPayload) []config.ProviderM
 	for _, model := range models {
 		out = append(out, config.ProviderModel{
 			ID: strings.TrimSpace(model.ID), Name: strings.TrimSpace(model.Name),
-			Adapter: strings.TrimSpace(model.Adapter), ContextWindow: model.ContextWindow,
-			MaxOutputTokens: model.MaxOutputTokens, Enabled: model.Enabled,
+			Adapter: strings.TrimSpace(model.Adapter), Endpoint: strings.TrimSpace(model.Endpoint),
+			ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens, Enabled: model.Enabled,
 		})
 	}
 	return out
@@ -192,8 +193,9 @@ func providerModelsPayload(models []config.ProviderModel) []ProviderModelPayload
 	out := make([]ProviderModelPayload, 0, len(models))
 	for _, model := range models {
 		out = append(out, ProviderModelPayload{
-			ID: model.ID, Name: model.Name, Adapter: model.Adapter, ContextWindow: model.ContextWindow,
-			MaxOutputTokens: model.MaxOutputTokens, Enabled: config.BoolPtr(model.EnabledValue()),
+			ID: model.ID, Name: model.Name, Adapter: model.Adapter, Endpoint: model.Endpoint,
+			ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens,
+			Enabled: config.BoolPtr(model.EnabledValue()),
 		})
 	}
 	return out

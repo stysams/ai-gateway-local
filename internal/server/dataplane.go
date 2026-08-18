@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"ai-gateway/internal/config"
+	"ai-gateway/internal/endpoint"
 	"ai-gateway/internal/inbound/chat"
 	"ai-gateway/internal/inbound/messages"
 	"ai-gateway/internal/inbound/responses"
@@ -265,6 +266,7 @@ func (s *Server) serveDataPlaneWith(w http.ResponseWriter, r *http.Request, clie
 	}
 	provider := providerInfo{
 		id: res.Provider, baseURL: cfgProvider.BaseURL, secretRef: cfgProvider.SecretRef,
+		endpoint:     cfgProvider.ModelEndpoint(res.Model),
 		extraHeaders: outboundExtraHeaders(cfgProvider, client, r.Header),
 		imageInput:   cfgProvider.Capabilities.ImageInput, reasoning: cfgProvider.Capabilities.Reasoning,
 		contextManagement: cfgProvider.Capabilities.ContextManagement,
@@ -590,6 +592,7 @@ func upstreamErrorMessage(r io.Reader) string {
 type providerInfo struct {
 	id                string
 	baseURL           string
+	endpoint          string
 	secretRef         string
 	extraHeaders      map[string]string
 	imageInput        bool
@@ -597,19 +600,35 @@ type providerInfo struct {
 	contextManagement bool
 }
 
+func upstreamRequestURL(proto ir.Protocol, p providerInfo, compact bool) string {
+	var requestURL string
+	switch proto {
+	case ir.ProtocolChat:
+		requestURL = endpoint.Join(p.baseURL, endpoint.Chat, p.endpoint)
+	case ir.ProtocolResponses:
+		requestURL = endpoint.Join(p.baseURL, endpoint.Responses, p.endpoint)
+		if compact {
+			requestURL += "/compact"
+		}
+	case ir.ProtocolMessages:
+		requestURL = endpoint.Join(p.baseURL, endpoint.Messages, p.endpoint)
+	}
+	return requestURL
+}
+
 // upstreamDo dispatches to the adapter pool matching the wire protocol.
 func (s *Server) upstreamDo(ctx context.Context, proto ir.Protocol, p providerInfo, body []byte, stream bool, compact bool) (*http.Response, error) {
 	switch proto {
 	case ir.ProtocolChat:
-		return s.upstreamsChat.Client(p.baseURL, p.secretRef).DoWithHeaders(ctx, body, stream, p.extraHeaders)
+		return s.upstreamsChat.Client(p.baseURL, p.secretRef).WithEndpoint(p.endpoint).DoWithHeaders(ctx, body, stream, p.extraHeaders)
 	case ir.ProtocolResponses:
-		client := s.upstreamsResponses.Client(p.baseURL, p.secretRef)
+		client := s.upstreamsResponses.Client(p.baseURL, p.secretRef).WithEndpoint(p.endpoint)
 		if compact {
 			return client.DoCompactWithHeaders(ctx, body, p.extraHeaders)
 		}
 		return client.DoWithHeaders(ctx, body, stream, p.extraHeaders)
 	case ir.ProtocolMessages:
-		return s.upstreamsAnthropic.Client(p.baseURL, p.secretRef).DoWithHeaders(ctx, body, stream, p.extraHeaders)
+		return s.upstreamsAnthropic.Client(p.baseURL, p.secretRef).WithEndpoint(p.endpoint).DoWithHeaders(ctx, body, stream, p.extraHeaders)
 	}
 	return nil, fmt.Errorf("unknown upstream protocol %q", proto)
 }

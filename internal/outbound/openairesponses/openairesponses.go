@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"ai-gateway/internal/endpoint"
 	"ai-gateway/internal/ir"
 	"ai-gateway/internal/outbound/internal/upstream"
 	"ai-gateway/internal/secret"
@@ -51,6 +52,7 @@ func (p *Pool) SetResponseHeaderTimeout(d time.Duration) {
 // Client is a stateless handle for one provider.
 type Client struct {
 	baseURL   string
+	endpoint  string
 	secretRef string
 	secrets   secret.Store
 	http      *http.Client
@@ -66,10 +68,25 @@ func (p *Pool) Client(baseURL, secretRef string) *Client {
 	}
 }
 
-// CompletionURL builds <base_url>/responses without double slashes or a
-// duplicated /v1 (docs/v1-scheme.md §10).
+// CompletionURL builds the openai-responses completion URL. A base URL that
+// does not already end with /v1 receives that prefix (docs/v1-scheme.md §10).
 func CompletionURL(baseURL string) string {
-	return strings.TrimRight(baseURL, "/") + "/responses"
+	return endpoint.Join(baseURL, endpoint.Responses, "")
+}
+
+// WithEndpoint returns a client that posts to a user-maintained path.
+func (c *Client) WithEndpoint(path string) *Client {
+	next := *c
+	next.endpoint = strings.TrimSpace(path)
+	return &next
+}
+
+func (c *Client) requestURL() string {
+	return endpoint.Join(c.baseURL, endpoint.Responses, c.endpoint)
+}
+
+func (c *Client) compactURL() string {
+	return c.requestURL() + "/compact"
 }
 
 // CompactURL builds <base_url>/responses/compact for Codex remote compaction.
@@ -84,7 +101,7 @@ func (c *Client) Do(ctx context.Context, body []byte, stream bool) (*http.Respon
 
 // DoWithHeaders sends a Responses request with validated provider headers.
 func (c *Client) DoWithHeaders(ctx context.Context, body []byte, stream bool, extraHeaders map[string]string) (*http.Response, error) {
-	return c.do(ctx, CompletionURL(c.baseURL), body, stream, extraHeaders)
+	return c.do(ctx, c.requestURL(), body, stream, extraHeaders)
 }
 
 // DoCompact posts a unary compact request to /responses/compact.
@@ -94,7 +111,7 @@ func (c *Client) DoCompact(ctx context.Context, body []byte) (*http.Response, er
 
 // DoCompactWithHeaders posts a compact request with provider headers.
 func (c *Client) DoCompactWithHeaders(ctx context.Context, body []byte, extraHeaders map[string]string) (*http.Response, error) {
-	return c.do(ctx, CompactURL(c.baseURL), body, false, extraHeaders)
+	return c.do(ctx, c.compactURL(), body, false, extraHeaders)
 }
 
 func (c *Client) do(ctx context.Context, url string, body []byte, stream bool, extraHeaders map[string]string) (*http.Response, error) {

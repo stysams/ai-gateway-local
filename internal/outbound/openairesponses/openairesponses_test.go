@@ -26,7 +26,7 @@ func TestDoCompactWithHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if path != "/responses/compact" || got.Get("Originator") != "codex_cli_rs" {
+	if path != "/v1/responses/compact" || got.Get("Originator") != "codex_cli_rs" {
 		t.Fatalf("path = %q, headers = %v", path, got)
 	}
 }
@@ -394,8 +394,8 @@ data: {"type":"response.completed","response":{"id":"r"}}
 func TestCompletionURL(t *testing.T) {
 	for _, tc := range []struct{ base, want string }{
 		{"https://api.openai.com/v1", "https://api.openai.com/v1/responses"},
-		{"https://api.x.ai", "https://api.x.ai/responses"},
-		{"http://127.0.0.1:11434/", "http://127.0.0.1:11434/responses"},
+		{"https://api.x.ai", "https://api.x.ai/v1/responses"},
+		{"http://127.0.0.1:11434/", "http://127.0.0.1:11434/v1/responses"},
 	} {
 		if got := CompletionURL(tc.base); got != tc.want {
 			t.Errorf("CompletionURL(%q) = %q, want %q", tc.base, got, tc.want)

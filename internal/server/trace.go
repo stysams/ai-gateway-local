@@ -15,8 +15,6 @@ import (
 	"ai-gateway/internal/ir"
 	"ai-gateway/internal/logstore"
 	"ai-gateway/internal/outbound/anthropic"
-	"ai-gateway/internal/outbound/openaichat"
-	"ai-gateway/internal/outbound/openairesponses"
 	"ai-gateway/internal/route"
 )
 
@@ -86,21 +84,9 @@ func (t *requestTrace) upstreamRequest(proto ir.Protocol, p providerInfo, body [
 	if t == nil {
 		return nil
 	}
-	var endpoint string
-	switch proto {
-	case ir.ProtocolChat:
-		endpoint = openaichat.CompletionURL(p.baseURL)
-	case ir.ProtocolResponses:
-		if compact {
-			endpoint = openairesponses.CompactURL(p.baseURL)
-		} else {
-			endpoint = openairesponses.CompletionURL(p.baseURL)
-		}
-	case ir.ProtocolMessages:
-		endpoint = anthropic.CompletionURL(p.baseURL)
-	}
+	requestURL := upstreamRequestURL(proto, p, compact)
 	fields := map[string]any{
-		"method": http.MethodPost, "url": endpoint,
+		"method": http.MethodPost, "url": requestURL,
 	}
 	headers, omittedHeaders := safeLogHeaders(upstreamLogHeaders(proto, stream, p.extraHeaders))
 	fields["headers"] = headers

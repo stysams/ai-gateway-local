@@ -302,8 +302,9 @@ routes:
 - `extra_headers`：可选的上游请求头名称到值映射，最多 64 项；用于正常请求、远程压缩、模型发现和连接探测。名称必须符合 HTTP 字段名语法，值不得包含换行或 NUL 字节。`Authorization`、`x-api-key`、Cookie、Host、Content-Length 和逐跳传输字段由网关管理，不允许配置。
 - `disguise_client`：可选。空或缺省表示关闭。只允许 `claude` 或 `codex`。开启后，仅当入站客户端是 `generic`（`/v1/*` 或 `/c/generic/v1/*`）时，网关在 adapter 默认头之后、`extra_headers` 之前套用已核验的对应客户端身份头。`disguise_client` 为 `claude` 且入站是 Messages 时，还要在转发前补齐 Claude Code 2.1.228 与这些身份头一起发送的正文字段：缺省则写入 `thinking: {type: adaptive}`（仅当 `capabilities.reasoning` 为真），并给缺少 `cache_control` 的顶层 `system` 文本块以及 `role: system` 消息补 `{"type":"ephemeral"}`。不得改写 tools、用户消息或系统文本，不得写入会话、安装或设备 `metadata`。已指向的 `claude`、`codex`、`grok` 请求不套用。连接探测和模型发现不套用。身份头不含会话、安装、窗口或系统环境标识。`extra_headers` 覆盖同名伪装头；`Anthropic-Beta` 按令牌并集。证据见 §20「2026-08-17 复核：第三方请求需要可开关的客户端伪装」和「2026-08-17 复核：Claude 伪装必须补齐 thinking 与系统 cache_control」。
 - `default_model`：非空。
-- `models`：可选模型目录；每项包含非空且在同一 provider 内唯一的 `id`，以及可选 `name` 和 `adapter`。
-- `models[].adapter`：可选。非空时必须是 `openai-chat`、`openai-responses` 或 `anthropic`，并覆盖 provider 默认协议。同一 provider 下的不同模型可以使用不同协议，以便同一上游同时提供 Chat 与 Messages 接口。数据面按解析到的模型取 adapter；模型未指定、目录为空、或显式 `<provider-id>/<model>` 未登记时回退到 provider `adapter`。证据见 §20「2026-08-18 复核：出站协议绑定到模型」。
+- `models`：可选模型目录；每项包含非空且在同一 provider 内唯一的 `id`，以及可选 `name`、`adapter` 和 `endpoint`。
+- `models[].adapter`：可选。非空时必须是 `openai-chat`、`openai-responses`、`anthropic` 或 `custom`。前三项覆盖 provider 默认协议，请求端点由网关按 §10 锁定。`custom` 表示用户自己维护该模型的请求路径，必须同时给出 `models[].endpoint`。数据面按解析到的模型取**报文协议**：`custom` 由端点后缀推断（`/chat/completions` → Chat，`/responses` → Responses，`/messages` → Messages）；模型未指定、目录为空、或显式 `<provider-id>/<model>` 未登记时回退到 provider `adapter`。证据见 §20「2026-08-18 复核：出站协议绑定到模型」和「2026-08-18 复核：预设端点默认补 /v1，例外走自定义路径」。
+- `models[].endpoint`：仅 `adapter` 为 `custom` 时允许且必须。必须是以 `/` 开头的绝对路径，不得含查询、片段或空白，且必须以 `/chat/completions`、`/responses` 或 `/messages` 结尾。预设 Claude / GPT 适配器禁止带此字段。
 - 上下文窗口由客户端与上游协商，不在供应商模型目录里配置。Claude 的 1M 上下文通过模型 ID 后缀 `[1m]` 选择，例如 `claude-opus-5[1m]`。旧配置里的 `context_window` 和 `max_output_tokens` 仍可读取，桌面不再编辑；`0` 或缺失表示未配置。
 - 当 `models` 非空时，`default_model` 必须引用目录中的模型。旧配置没有 `models` 时继续兼容。
 - `secret_ref`：可选；需要认证的供应商必须设置。
@@ -731,29 +732,31 @@ GET  /readyz
 
 固定三类：
 
-- `openai-chat`：`POST <base_url>/chat/completions`。工具调用的
+- `openai-chat`：`POST <base>/v1/chat/completions`。若 `base_url` 已以
+  `/v1` 结尾则不再重复，写成 `<base>/chat/completions`。工具调用的
   `function.arguments` 必须是 JSON 字符串（内容是原始参数 JSON），与入站
   Chat 编码器一致。IR 里的 `ToolCall.Arguments` 是原始 JSON，出站必须再
   编码成字符串。带 `tool_calls` 的助手消息之后，必须紧跟对应
   `tool_call_id` 的 `role: tool` 消息；夹在中间的空消息（被丢弃的
   reasoning）和后续助手正文必须挪开，不得插在这一对之间（证据见 §20）。
-- `openai-responses`：`POST <base_url>/responses`。`input[]` 里用户和
+- `openai-responses`：`POST <base>/v1/responses`。若 `base_url` 已以
+  `/v1` 结尾则写成 `<base>/responses`。`input[]` 里用户和
   developer 的文本块是 `input_text`；助手历史的文本块必须是 `output_text`，
   不得写成 `input_text`。官方 Responses 对 `role: assistant` 的 content
   type 只接受 `output_text` 和 `refusal`（证据见 §20）。`input[]` 里每
   个 `function_call` 必须紧跟对应 `call_id` 的 `function_call_output`。
   Claude Code 把 `tool_result` 放在 `role: user` 消息里，并可与后续文本
   共存；跨协议不得丢掉该块，也不得只留下旁边的用户文本（证据见 §20）。
-- `anthropic`：`POST <base_url>/v1/messages`。出站 `tool_choice` 必须是官方
+- `anthropic`：`POST <base_url>/v1/messages`。若 `base_url` 已以 `/v1`
+  结尾则写成 `<base>/messages`。出站 `tool_choice` 必须是官方
   对象形 `{"type":"auto"}` / `{"type":"none"}` / `{"type":"any"}` /
   `{"type":"tool","name":"..."}`，不得把 IR 字符串 `"auto"` 原样写出。
   证据见 §20。
 
-URL 拼接必须避免重复 `/v1` 或重复斜杠。`base_url` 语义以配置预设为准，不得通过字符串猜测供应商。
-`openai-chat` 与 `openai-responses` 把路径接在 `base_url` 后面，因此 OpenAI
-兼容面位于 `/v1/chat/completions`、`/v1/responses` 的上游必须把 `/v1` 写进
-`base_url`。`anthropic` 适配器在 `base_url` 已以 `/v1` 结尾时不再重复拼接，
-因此同一 `https://host/v1` 可以同时服务 Messages 与 Responses。证据见 §20。
+URL 拼接必须避免重复 `/v1` 或重复斜杠。预设 Claude / GPT 适配器在
+`base_url` 尚未以 `/v1` 结尾时补上 `/v1`，不得按主机名猜测供应商。
+不走 `/v1` 的上游必须把该模型的 `adapter` 写成 `custom`，并给出
+`endpoint`；自定义路径按原文拼接，不再自动补 `/v1`。证据见 §20。
 
 ### 10.1 认证
 
@@ -2484,7 +2487,7 @@ provider id 则覆盖）冲突。禁用检查只能发生在真正使用当前�
 合同：
 
 - `models[].adapter` 可选；非空时必须是 `openai-chat`、
-  `openai-responses` 或 `anthropic`。
+  `openai-responses`、`anthropic` 或 `custom`。
 - 数据面按解析到的模型取 adapter；缺省回退 `provider.adapter`。
 - 模型发现、无目录旧配置、未登记的显式 `<provider-id>/<model>` 仍用
   `provider.adapter`。
@@ -2514,14 +2517,36 @@ AgentRouter 文档把两种协议写成不可混用的 Base URL：
 - OpenAI 兼容：`https://co.agentrouter.org/v1`（必须带 `/v1`）
 
 本网关的 `anthropic` 适配器在 `base_url` 已以 `/v1` 结尾时写成
-`<base>/messages`，因此把该供应商的 `base_url` 改成
-`https://agentrouter.org/v1` 后，Messages 仍是
-`https://agentrouter.org/v1/messages`，Responses 变成
-`https://agentrouter.org/v1/responses`。禁止按主机名猜测并自动补 `/v1`：
-土豆上游的真实路径是 `https://api.2dou.net/responses`，补 `/v1` 会打错。
+`<base>/messages`。当时的结论是：不要按主机名猜测并自动补 `/v1`，因为
+土豆上游的真实路径是 `https://api.2dou.net/responses`。该结论随后被
+「预设端点默认补 /v1，例外走自定义路径」修正：预设 Claude / GPT 一律
+按 `/v1` 拼接，土豆这类例外改用 `adapter: custom` 加 `endpoint: /responses`。
 
 同协议遇到 `text/html` 流时仍按原文转发状态和字节，但必须记
 `upstream_not_event_stream` 警告，并且结果标失败，不得再记成 success。
+
+### 2026-08-18 复核：预设端点默认补 /v1，例外走自定义路径
+
+产品原因：Claude 的 Messages 和 GPT 的 Chat / Responses 官方路径都带
+`/v1`。AgentRouter 把 `base_url` 配成 `https://agentrouter.org` 时，
+Anthropic 能打到 `/v1/messages`，Responses 却打到网站 `/responses`。
+操作员不该为同一把钥匙维护两份 `base_url`。
+
+合同：
+
+- 预设 `openai-chat`、`openai-responses`、`anthropic` 的请求端点锁定为
+  `/v1/chat/completions`、`/v1/responses`、`/v1/messages`。桌面这一列
+  只读。若 `base_url` 已以 `/v1` 结尾，实际调用去掉重复的 `/v1`。
+- 模型接口协议增加 `custom`（桌面文案「自定义接口协议」）。此时
+  `models[].endpoint` 必填且可编辑，按原文接到 `base_url` 后面，不再
+  自动补 `/v1`。路径必须以 `/chat/completions`、`/responses` 或
+  `/messages` 结尾，据此决定报文协议。
+- 桌面在端点输入框下方用小字显示该模型实际调用的完整 URL，例如
+  `https://agentrouter.org/v1/responses`。
+- `provider.adapter` 仍只能是三种报文协议，供发现、探测和未登记模型
+  回退。保存时写入默认模型的报文协议，不是 `custom`。
+- 禁止按主机名猜测供应商。土豆这类不带 `/v1` 的 OpenAI 面必须显式
+  写成自定义端点。
 
 ### 2026-08-18 复核：Messages 出站 tool_choice 必须是对象
 

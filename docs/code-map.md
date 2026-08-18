@@ -17,6 +17,7 @@
 | 监听地址、端口、数据根 | `internal/config/config.go` `Listen` | `internal/app/datadir.go`、`internal/server/server.go` |
 | `config.yaml` 字段、校验、原子写 | `internal/config/config.go`、`validate.go` | `internal/config/manager.go` |
 | 模型出站协议 | `config.Provider.ModelAdapter` | `dataplane.go` `serveDataPlane`；桌面模型目录 |
+| 模型请求端点 | `internal/endpoint` `Join` | `config.Provider.ModelEndpoint`；桌面 `endpoint.ts` |
 | 管理 API 路由表 | `internal/server/handlers.go` `routes()` | 对应 `internal/server/*.go` |
 | 数据面整条管道 | `internal/server/dataplane.go` `serveDataPlane` | `handlers.go` 里的 `/v1/*` 注册 |
 | §7.4 模型解析 | `internal/route/route.go` `Resolve` | `internal/route/availability_test.go` |

@@ -1,3 +1,4 @@
+import { isModelAdapter, isWireAdapter, validateCustomEndpoint } from "./endpoint";
 import type { ProviderModel } from "./types";
 
 export interface RequestHeader { name: string; value: string }
@@ -12,7 +13,7 @@ export function validateProvider(value: ProviderFormValue, editing = false): Rec
   if (!editing && !/^[a-z][a-z0-9_-]{0,31}$/.test(value.id)) errors.id = "invalid_id";
   if (!value.name.trim()) errors.name = "required";
   if (!value.default_model.trim()) errors.default_model = "required";
-  if (!["openai-chat", "openai-responses", "anthropic"].includes(value.adapter)) errors.adapter = "invalid_adapter";
+  if (!isWireAdapter(value.adapter)) errors.adapter = "invalid_adapter";
   if (value.disguise_client && !["claude", "codex"].includes(value.disguise_client)) errors.disguise_client = "invalid_disguise_client";
   const headerNames = new Set<string>();
   value.extra_headers.forEach((header, index) => {
@@ -30,7 +31,13 @@ export function validateProvider(value: ProviderFormValue, editing = false): Rec
     if (!id) errors[`models.${index}.id`] = "required";
     else if (modelIDs.has(id)) errors[`models.${index}.id`] = "duplicate_model";
     else modelIDs.add(id);
-    if (model.adapter && !["openai-chat", "openai-responses", "anthropic"].includes(model.adapter)) errors[`models.${index}.adapter`] = "invalid_adapter";
+    if (model.adapter && !isModelAdapter(model.adapter)) errors[`models.${index}.adapter`] = "invalid_adapter";
+    if (model.adapter === "custom") {
+      const endpointError = validateCustomEndpoint(model.endpoint);
+      if (endpointError) errors[`models.${index}.endpoint`] = endpointError;
+    } else if (model.endpoint?.trim()) {
+      errors[`models.${index}.endpoint`] = "preset_endpoint_locked";
+    }
   });
   if (value.models.length > 0 && !modelIDs.has(value.default_model.trim())) errors.default_model = "default_model_missing";
   try {

@@ -24,13 +24,13 @@ func TestCompletionURL(t *testing.T) {
 		{"https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1/chat/completions"},
 		{"http://127.0.0.1:11434/v1", "http://127.0.0.1:11434/v1/chat/completions"},
 		{"https://api.openai.com/v1", "https://api.openai.com/v1/chat/completions"},
-		// base_url 不带 /v1：也拼在根路径（预设语义，不做字符串猜测）。
-		{"https://api.deepseek.com", "https://api.deepseek.com/chat/completions"},
-		{"https://api.x.ai", "https://api.x.ai/chat/completions"},
+		// base_url 不带 /v1：预设 Claude / GPT 路径补上 /v1。
+		{"https://api.deepseek.com", "https://api.deepseek.com/v1/chat/completions"},
+		{"https://api.x.ai", "https://api.x.ai/v1/chat/completions"},
 		// 尾斜杠必须去掉，不能出现重复斜杠。
 		{"https://example.com/v1/", "https://example.com/v1/chat/completions"},
-		{"https://example.com/", "https://example.com/chat/completions"},
-		{"https://example.com", "https://example.com/chat/completions"},
+		{"https://example.com/", "https://example.com/v1/chat/completions"},
+		{"https://example.com", "https://example.com/v1/chat/completions"},
 	}
 	for _, tc := range cases {
 		if got := CompletionURL(tc.base); got != tc.want {
@@ -40,7 +40,7 @@ func TestCompletionURL(t *testing.T) {
 	for _, u := range []string{
 		"https://openrouter.ai/api/v1/chat/completions",
 		"http://127.0.0.1:11434/v1/chat/completions",
-		"https://api.deepseek.com/chat/completions",
+		"https://api.deepseek.com/v1/chat/completions",
 	} {
 		if strings.Contains(u, "//chat") || strings.Contains(u, "/v1/v1") {
 			t.Errorf("URL shape violation: %q", u)

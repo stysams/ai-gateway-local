@@ -151,8 +151,29 @@ describe("desktop workflow", () => {
     await user.keyboard("claude-opus");
     await user.click(screen.getAllByRole("radio", { name: "Default model" })[0]);
     await user.selectOptions(screen.getByRole("combobox", { name: "Protocol claude-opus" }), "anthropic");
+    expect(screen.getByLabelText("Request endpoint claude-opus")).toHaveValue("/v1/messages");
+    expect(screen.getByLabelText("Request endpoint claude-opus")).toHaveAttribute("readOnly");
+    expect(screen.getByText("https://example.com/v1/messages")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ method: "POST", body: expect.stringContaining('"adapter":"anthropic"') })));
+  });
+
+  it("saves a custom request endpoint without rewriting it to /v1", async () => {
+    const user = userEvent.setup(); render(<App />); await ready(); await user.click(screen.getByRole("button", { name: "Providers" })); await user.click(screen.getByRole("button", { name: "Add provider" }));
+    await user.type(screen.getByLabelText("Identifier"), "tudou"); await user.type(screen.getByLabelText("Name"), "Tudou"); await user.type(screen.getByLabelText("Base URL"), "https://api.2dou.net");
+    await user.click(screen.getByRole("button", { name: "Add model manually" }));
+    await user.click(screen.getAllByLabelText("Model ID").at(-1)!);
+    await user.keyboard("gpt-5.6-sol");
+    await user.click(screen.getAllByRole("radio", { name: "Default model" })[0]);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Protocol gpt-5.6-sol" }), "custom");
+    const endpoint = screen.getByLabelText("Request endpoint gpt-5.6-sol");
+    await user.clear(endpoint);
+    await user.type(endpoint, "/responses");
+    expect(screen.getByText("https://api.2dou.net/responses")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ method: "POST", body: expect.stringContaining('"endpoint":"/responses"') })));
+    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ body: expect.stringContaining('"adapter":"custom"') }));
+    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ body: expect.stringContaining('"adapter":"openai-responses"') }));
   });
 
   it("saves disguise_client for third-party requests", async () => {

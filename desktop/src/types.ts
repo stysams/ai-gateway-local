@@ -51,6 +51,7 @@ export interface ProviderModel {
   id: string;
   name?: string;
   adapter?: string;
+  endpoint?: string;
   enabled?: boolean;
 }
 export interface DiscoveredProviderModel {

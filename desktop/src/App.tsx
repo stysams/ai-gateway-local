@@ -7,6 +7,7 @@ import {
 import { ClientsIcon, GatewayMark, LogsIcon, OverviewIcon, ProvidersIcon, RoutesIcon, SettingsIcon, UsageIcon, type AppIcon } from "./icons";
 import { api } from "./api";
 import { catalogId, enabledCatalog, isCatalogRoute, reconcileClientRoutes } from "./catalog";
+import { inferWire, isModelAdapter, joinCompletionURL, modelAdapters, presetPath } from "./endpoint";
 import { CLAUDE_CODE_HEADERS, CODEX_HEADERS, mergeHeaderPreset } from "./headerPresets";
 import { translator, type Language, type MessageKey } from "./i18n";
 import type { ClientID, Config, LocalAccess, LogSummary, PointClient, PointStatus, Provider, ProviderModel, Route, Status, UsageGroup, UsageReport } from "./types";
@@ -24,7 +25,6 @@ const navigation: { id: Page; icon: AppIcon }[] = [
   { id: "clients", icon: ClientsIcon }, { id: "logs", icon: LogsIcon }, { id: "usage", icon: UsageIcon }, { id: "settings", icon: SettingsIcon },
 ];
 
-const adapters = ["openai-chat", "openai-responses", "anthropic"] as const;
 const emptyProvider: ProviderFormValue = { id: "", name: "", adapter: "openai-chat", base_url: "", models_url: "", extra_headers: [], disguise_client: "", default_model: "", models: [], api_key: "" };
 
 function emptyModel(adapter: string): ProviderModel {
@@ -32,12 +32,31 @@ function emptyModel(adapter: string): ProviderModel {
 }
 
 function modelAdapter(model: Pick<ProviderModel, "adapter"> | undefined, fallback: string): string {
-  return model?.adapter && (adapters as readonly string[]).includes(model.adapter) ? model.adapter : fallback;
+  return model?.adapter && isModelAdapter(model.adapter) ? model.adapter : fallback;
+}
+
+function wireAdapter(model: Pick<ProviderModel, "adapter" | "endpoint"> | undefined, fallback: string): string {
+  const adapter = modelAdapter(model, fallback);
+  if (adapter === "custom") return inferWire(model?.endpoint) || (fallback === "custom" ? "openai-chat" : fallback);
+  return adapter;
 }
 
 function discoveryAdapter(form: Pick<ProviderFormValue, "adapter" | "default_model" | "models">): string {
   const selected = form.models.find((model) => model.id && model.id === form.default_model);
-  return modelAdapter(selected, modelAdapter(form.models[0], form.adapter || "openai-chat"));
+  return wireAdapter(selected, wireAdapter(form.models[0], form.adapter || "openai-chat"));
+}
+
+function protocolLabel(adapter: string, t: (key: MessageKey) => string): string {
+  return adapter === "custom" ? t("customProtocol") : adapter;
+}
+
+function displayedEndpoint(model: ProviderModel, fallback: string): string {
+  return modelAdapter(model, fallback) === "custom" ? (model.endpoint || "") : presetPath(wireAdapter(model, fallback));
+}
+
+function requestURLPreview(baseURL: string, model: ProviderModel, fallback: string): string {
+  const adapter = modelAdapter(model, fallback);
+  return joinCompletionURL(baseURL, adapter === "custom" ? (inferWire(model.endpoint) || adapter) : adapter, adapter === "custom" ? model.endpoint : undefined);
 }
 
 function providerAdapters(provider: Provider): string {
@@ -246,7 +265,7 @@ function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (k
   const [open, setOpen] = useState(false); const [editing, setEditing] = useState<string>(); const [form, setForm] = useState(emptyProvider); const [errors, setErrors] = useState<Record<string, string>>({}); const [fetching, setFetching] = useState(false);
   const [probe, setProbe] = useState<{ provider: string; result: { ok: boolean; status: number; latency_ms: number; models?: number; error?: string; response?: string } } | null>(null);
   const edit = (p: Provider) => {
-    const models = (p.models?.length ? p.models : [{ id: p.default_model, name: "" }]).map((model) => ({ id: model.id, name: model.name, adapter: modelAdapter(model, p.adapter), enabled: model.enabled }));
+    const models = (p.models?.length ? p.models : [{ id: p.default_model, name: "" }]).map((model) => ({ id: model.id, name: model.name, adapter: modelAdapter(model, p.adapter), endpoint: model.endpoint, enabled: model.enabled }));
     const extra_headers = Object.entries(p.extra_headers || {}).sort(([left], [right]) => left.localeCompare(right)).map(([name, value]) => ({ name, value }));
     const disguise_client: DisguiseClient = p.disguise_client === "claude" || p.disguise_client === "codex" ? p.disguise_client : "";
     setEditing(p.id); setForm({ id: p.id, name: p.name, adapter: p.adapter || "openai-chat", base_url: p.base_url, models_url: p.models_url || "", extra_headers, disguise_client, default_model: p.default_model, models, api_key: "" }); setErrors({}); setOpen(true);
@@ -254,6 +273,17 @@ function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (k
   const updateHeader = (index: number, patch: Partial<ProviderFormValue["extra_headers"][number]>) => setForm((current) => ({ ...current, extra_headers: current.extra_headers.map((header, headerIndex) => headerIndex === index ? { ...header, ...patch } : header) }));
   const removeHeader = (index: number) => setForm((current) => ({ ...current, extra_headers: current.extra_headers.filter((_, headerIndex) => headerIndex !== index) }));
   const updateModel = (index: number, patch: Partial<ProviderModel>) => setForm((current) => ({ ...current, models: current.models.map((model, modelIndex) => modelIndex === index ? { ...model, ...patch } : model) }));
+  const changeModelProtocol = (index: number, next: string) => setForm((current) => ({
+    ...current,
+    models: current.models.map((model, modelIndex) => {
+      if (modelIndex !== index) return model;
+      if (next === "custom") {
+        const previous = modelAdapter(model, current.adapter);
+        return { ...model, adapter: "custom", endpoint: model.endpoint || presetPath(previous === "custom" ? "openai-chat" : previous) };
+      }
+      return { ...model, adapter: next, endpoint: undefined };
+    }),
+  }));
   const removeModel = (index: number) => setForm((current) => {
     const removed = current.models[index]; const models = current.models.filter((_, modelIndex) => modelIndex !== index);
     const default_model = current.default_model === removed.id ? (models[0]?.id || "") : current.default_model;
@@ -273,7 +303,7 @@ function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (k
         const fallback = discoveryAdapter(current);
         const fetched = result.data.map((model) => {
           const saved = existing.get(model.raw_id); existing.delete(model.raw_id);
-          return { id: model.raw_id, name: saved?.name || model.display_name || "", adapter: modelAdapter(saved, fallback), enabled: saved?.enabled };
+          return { id: model.raw_id, name: saved?.name || model.display_name || "", adapter: modelAdapter(saved, fallback), endpoint: saved?.endpoint, enabled: saved?.enabled };
         });
         const models = [...fetched, ...existing.values()];
         if (current.default_model && !models.some((model) => model.id === current.default_model)) models.push({ ...emptyModel(current.adapter), id: current.default_model });
@@ -287,7 +317,7 @@ function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (k
     event.preventDefault();
     const adapter = discoveryAdapter(form);
     const nextErrors = validateProvider({ ...form, adapter }, Boolean(editing)); setErrors(nextErrors); if (Object.keys(nextErrors).length) return;
-    await run(() => api.saveProvider({ ...(editing ? {} : { id: form.id }), name: form.name, adapter, base_url: form.base_url, models_url: form.models_url?.trim() || undefined, extra_headers: headerRecord(form.extra_headers), disguise_client: form.disguise_client, default_model: form.default_model, models: form.models.map((model) => ({ id: model.id.trim(), name: model.name?.trim() || undefined, adapter: modelAdapter(model, adapter), enabled: model.enabled })), api_key: form.api_key || undefined, capabilities: { image_input: true, reasoning: true, context_management: false } }, editing), t("success"));
+    await run(() => api.saveProvider({ ...(editing ? {} : { id: form.id }), name: form.name, adapter, base_url: form.base_url, models_url: form.models_url?.trim() || undefined, extra_headers: headerRecord(form.extra_headers), disguise_client: form.disguise_client, default_model: form.default_model, models: form.models.map((model) => { const nextAdapter = modelAdapter(model, adapter); return { id: model.id.trim(), name: model.name?.trim() || undefined, adapter: nextAdapter, endpoint: nextAdapter === "custom" ? model.endpoint?.trim() || undefined : undefined, enabled: model.enabled }; }), api_key: form.api_key || undefined, capabilities: { image_input: true, reasoning: true, context_management: false } }, editing), t("success"));
   setOpen(false); setEditing(undefined); setForm(emptyProvider);
   };
   const probeProvider = async (provider: Provider) => {
@@ -315,7 +345,7 @@ function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (k
       {form.extra_headers.length === 0 ? <div className="header-empty">{t("noCustomHeaders")}</div> : <div className="header-rows" role="table" aria-label={t("customHeaders")}><div className="header-row header-row-head" role="row"><span>{t("headerName")}</span><span>{t("headerValue")}</span><span /></div>{form.extra_headers.map((header, index) => <div className="header-row" role="row" key={`header-row-${index}`}><label><span>{t("headerName")}</span><input className="mono" value={header.name} onChange={(event) => updateHeader(index, { name: event.target.value })} aria-invalid={Boolean(errors[`extra_headers.${index}.name`])} />{errors[`extra_headers.${index}.name`] && <small className="field-error">{errors[`extra_headers.${index}.name`].replaceAll("_", " ")}</small>}</label><label><span>{t("headerValue")}</span><input className="mono" value={header.value} onChange={(event) => updateHeader(index, { value: event.target.value })} aria-invalid={Boolean(errors[`extra_headers.${index}.value`])} />{errors[`extra_headers.${index}.value`] && <small className="field-error">{errors[`extra_headers.${index}.value`].replaceAll("_", " ")}</small>}</label><button type="button" className="icon-button compact danger" onClick={() => removeHeader(index)} title={t("removeHeader")} aria-label={`${t("removeHeader")} ${header.name || index + 1}`}><Trash2 size={15} /></button></div>)}</div>}
     </div><div className="model-catalog"><div className="model-catalog-header"><div><h3>{t("modelCatalog")}</h3><p>{t("modelCatalogDescription")}</p><p className="catalog-hint">{t("claude1mHint")}</p></div><button type="button" className="secondary" onClick={() => void fetchModels()} disabled={fetching}><RefreshCw size={15} className={fetching ? "spin" : ""} />{fetching ? t("fetchingModels") : t("fetchModels")}</button></div>
       {errors.default_model && <small className="field-error catalog-error">{errors.default_model.replaceAll("_", " ")}</small>}
-      {form.models.length === 0 ? <div className="model-empty">{t("noModels")}</div> : <div className="model-editor" role="table" aria-label={t("modelCatalog")}><div className="model-editor-head" role="row"><span>{t("defaultModel")}</span><span>{t("modelID")}</span><span>{t("modelProtocol")}</span><span>{t("displayName")}</span><span /></div>{form.models.map((model, index) => <div className="model-editor-row" role="row" key={`model-row-${index}`}><label className="default-radio" title={t("defaultModel")}><input type="radio" name="default-model" checked={Boolean(model.id) && form.default_model === model.id} onChange={() => setForm({ ...form, default_model: model.id })} /><span>{t("defaultModel")}</span></label><label><span>{t("modelID")}</span><input className="mono" value={model.id} onChange={(e) => { const value = e.target.value; setForm((current) => { const previous = current.models[index]?.id; const models = current.models.map((item, itemIndex) => itemIndex === index ? { ...item, id: value } : item); return { ...current, models, default_model: current.default_model === previous ? value : current.default_model }; }); }} aria-invalid={Boolean(errors[`models.${index}.id`])} />{errors[`models.${index}.id`] && <small className="field-error">{errors[`models.${index}.id`].replaceAll("_", " ")}</small>}</label><label><span>{t("modelProtocol")}</span><select className="mono" value={modelAdapter(model, form.adapter)} onChange={(e) => updateModel(index, { adapter: e.target.value })} aria-invalid={Boolean(errors[`models.${index}.adapter`])} aria-label={`${t("modelProtocol")} ${model.id || index + 1}`}>{adapters.map((adapter) => <option key={adapter}>{adapter}</option>)}</select>{errors[`models.${index}.adapter`] && <small className="field-error">{errors[`models.${index}.adapter`].replaceAll("_", " ")}</small>}</label><label><span>{t("displayName")}</span><input value={model.name || ""} onChange={(e) => updateModel(index, { name: e.target.value })} /></label><button type="button" className="icon-button compact danger" onClick={() => removeModel(index)} title={t("removeModel")} aria-label={`${t("removeModel")} ${model.id || index + 1}`}><Trash2 size={15} /></button></div>)}</div>}
+      {form.models.length === 0 ? <div className="model-empty">{t("noModels")}</div> : <div className="model-editor" role="table" aria-label={t("modelCatalog")}><div className="model-editor-head" role="row"><span>{t("defaultModel")}</span><span>{t("modelID")}</span><span>{t("modelProtocol")}</span><span>{t("requestEndpoint")}</span><span>{t("displayName")}</span><span /></div>{form.models.map((model, index) => <div className="model-editor-row" role="row" key={`model-row-${index}`}><label className="default-radio" title={t("defaultModel")}><input type="radio" name="default-model" checked={Boolean(model.id) && form.default_model === model.id} onChange={() => setForm({ ...form, default_model: model.id })} /><span>{t("defaultModel")}</span></label><label><span>{t("modelID")}</span><input className="mono" value={model.id} onChange={(e) => { const value = e.target.value; setForm((current) => { const previous = current.models[index]?.id; const models = current.models.map((item, itemIndex) => itemIndex === index ? { ...item, id: value } : item); return { ...current, models, default_model: current.default_model === previous ? value : current.default_model }; }); }} aria-invalid={Boolean(errors[`models.${index}.id`])} />{errors[`models.${index}.id`] && <small className="field-error">{errors[`models.${index}.id`].replaceAll("_", " ")}</small>}</label><label><span>{t("modelProtocol")}</span><select className="mono" value={modelAdapter(model, form.adapter)} onChange={(e) => changeModelProtocol(index, e.target.value)} aria-invalid={Boolean(errors[`models.${index}.adapter`])} aria-label={`${t("modelProtocol")} ${model.id || index + 1}`}>{modelAdapters.map((adapter) => <option key={adapter} value={adapter}>{protocolLabel(adapter, t)}</option>)}</select>{errors[`models.${index}.adapter`] && <small className="field-error">{errors[`models.${index}.adapter`].replaceAll("_", " ")}</small>}</label><label className="endpoint-field"><span>{t("requestEndpoint")}</span><input className="mono" value={displayedEndpoint(model, form.adapter)} readOnly={modelAdapter(model, form.adapter) !== "custom"} placeholder="/v1/chat/completions" onChange={(e) => updateModel(index, { endpoint: e.target.value })} aria-invalid={Boolean(errors[`models.${index}.endpoint`])} aria-label={`${t("requestEndpoint")} ${model.id || index + 1}`} />{errors[`models.${index}.endpoint`] && <small className="field-error">{errors[`models.${index}.endpoint`].replaceAll("_", " ")}</small>}<small className="endpoint-preview">{requestURLPreview(form.base_url, model, form.adapter) || t("requestURLPending")}</small></label><label><span>{t("displayName")}</span><input value={model.name || ""} onChange={(e) => updateModel(index, { name: e.target.value })} /></label><button type="button" className="icon-button compact danger" onClick={() => removeModel(index)} title={t("removeModel")} aria-label={`${t("removeModel")} ${model.id || index + 1}`}><Trash2 size={15} /></button></div>)}</div>}
       <button type="button" className="text-button add-model" onClick={addModel}><Plus size={15} />{t("addModel")}</button></div>
     </form>
   </section>;

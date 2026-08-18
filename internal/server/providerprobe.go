@@ -14,9 +14,8 @@ import (
 	"time"
 
 	"ai-gateway/internal/config"
+	"ai-gateway/internal/endpoint"
 	"ai-gateway/internal/outbound/anthropic"
-	"ai-gateway/internal/outbound/openaichat"
-	"ai-gateway/internal/outbound/openairesponses"
 	"ai-gateway/internal/secret"
 )
 
@@ -98,21 +97,18 @@ func (s *Server) handleProbeProvider(w http.ResponseWriter, r *http.Request) {
 // provider exposes a /models endpoint.
 func (s *Server) probeProvider(ctx context.Context, id string, p config.Provider) (int, error, string) {
 	var payload any
-	var endpoint string
 	adapter := p.ModelAdapter(p.DefaultModel)
+	requestURL := endpoint.Join(p.BaseURL, adapter, p.ModelEndpoint(p.DefaultModel))
 	switch adapter {
 	case "openai-chat":
-		endpoint = openaichat.CompletionURL(p.BaseURL)
 		payload = map[string]any{
 			"model":    p.DefaultModel,
 			"messages": []map[string]string{{"role": "user", "content": probePrompt}},
 			"stream":   false,
 		}
 	case "openai-responses":
-		endpoint = openairesponses.CompletionURL(p.BaseURL)
 		payload = map[string]any{"model": p.DefaultModel, "input": probePrompt, "stream": false}
 	case "anthropic":
-		endpoint = anthropic.CompletionURL(p.BaseURL)
 		payload = map[string]any{
 			"model":      p.DefaultModel,
 			"max_tokens": 256,
@@ -126,7 +122,7 @@ func (s *Server) probeProvider(ctx context.Context, id string, p config.Provider
 	if err != nil {
 		return 0, fmt.Errorf("encode probe request: %w", err), ""
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(body))
 	if err != nil {
 		return 0, fmt.Errorf("build probe request: %w", err), ""
 	}

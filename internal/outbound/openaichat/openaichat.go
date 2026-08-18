@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"ai-gateway/internal/endpoint"
 	"ai-gateway/internal/ir"
 	"ai-gateway/internal/outbound/internal/upstream"
 	"ai-gateway/internal/secret"
@@ -62,6 +63,7 @@ func (p *Pool) SetResponseHeaderTimeout(d time.Duration) {
 // All clients of a Pool share the same connection pool.
 type Client struct {
 	baseURL   string
+	endpoint  string
 	secretRef string
 	secrets   secret.Store
 	http      *http.Client
@@ -78,13 +80,21 @@ func (p *Pool) Client(baseURL, secretRef string) *Client {
 	}
 }
 
-// CompletionURL builds the exact upstream endpoint for the openai-chat
-// adapter: <base_url>/chat/completions (docs/v1-scheme.md §10). A trailing
-// slash is trimmed so no double slash can appear, and a base_url that
-// already ends in /v1 (the presets' shape) naturally yields
-// /v1/chat/completions without a duplicated /v1.
+// CompletionURL builds the openai-chat completion URL. A base URL that
+// does not already end with /v1 receives that prefix (docs/v1-scheme.md §10).
 func CompletionURL(baseURL string) string {
-	return strings.TrimRight(baseURL, "/") + "/chat/completions"
+	return endpoint.Join(baseURL, endpoint.Chat, "")
+}
+
+// WithEndpoint returns a client that posts to a user-maintained path.
+func (c *Client) WithEndpoint(path string) *Client {
+	next := *c
+	next.endpoint = strings.TrimSpace(path)
+	return &next
+}
+
+func (c *Client) requestURL() string {
+	return endpoint.Join(c.baseURL, endpoint.Chat, c.endpoint)
 }
 
 // Do sends a chat/completions body upstream and returns the upstream
@@ -98,7 +108,7 @@ func (c *Client) Do(ctx context.Context, body []byte, stream bool) (*http.Respon
 
 // DoWithHeaders sends a request with validated provider headers.
 func (c *Client) DoWithHeaders(ctx context.Context, body []byte, stream bool, extraHeaders map[string]string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, CompletionURL(c.baseURL), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.requestURL(), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
