@@ -100,7 +100,7 @@
    `clients.codex.remote_compaction`。开启后指向/同步把
    `[model_providers.ai-gateway].name` 写成 `OpenAI`，并转发
    `POST /v1/responses/compact`。关闭则改回 `ai-gateway`。不得因此新建还原点。
-   只有 `openai-responses` 上游可以转发 compact；其它适配器 422。
+   只有解析到的模型使用 `openai-responses` 时可以转发 compact；其它适配器 422。
 10. **Responses 历史回放的 `output_text` 按文本转换。** Codex 把上一轮助手
     回复原样放进下一轮 `input`；跨协议不得因此 422。
 11. **Chat 出站工具参数是 JSON 字符串。** Responses `custom_tool_call`
@@ -144,6 +144,11 @@
     `tudou` 时，`any/claude-opus-5` 或 `agentrouter/claude-opus-5` 必须
     覆盖成功。只有 `gateway-default`、以及已登记在该禁用路由上的未加前缀
     模型，才回报 `provider "<route>" is disabled`。
+21. **出站协议绑定到模型。** 同一 provider（同一 `base_url` 与钥匙）的
+    不同模型可以分别使用 `openai-chat`、`openai-responses` 或
+    `anthropic`。`models[].adapter` 覆盖 provider 默认 adapter。数据面、
+    compact 和默认模型探测都按解析到的模型取协议。模型发现和无目录旧
+    配置仍用 provider `adapter`。桌面模型目录每一行都有接口协议选择器。
 
 相关证据在规格 §20「2026-08-15 复核：客户端可选模型目录」、
 「2026-08-16 复核：Codex 远程压缩触发条件」、
@@ -158,7 +163,8 @@
 「2026-08-17 复核：Anthropic-Beta 必须与 extra_headers 并集」和
 「2026-08-17 复核：第三方请求需要可开关的客户端伪装」和
 「2026-08-17 复核：Claude 伪装必须补齐 thinking 与系统 cache_control」和
-「2026-08-18 复核：禁用的默认路由不得挡住前缀覆盖」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
+「2026-08-18 复核：禁用的默认路由不得挡住前缀覆盖」和
+「2026-08-18 复核：出站协议绑定到模型」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
 
 ---
 

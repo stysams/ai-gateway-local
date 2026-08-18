@@ -159,6 +159,12 @@ func validateProvider(id string, p Provider) []FieldError {
 		} else {
 			modelIDs[modelID] = true
 		}
+		if adapter := strings.TrimSpace(model.Adapter); adapter != "" && !validAdapters[adapter] {
+			errs = append(errs, FieldError{
+				Field:  field + ".adapter",
+				Reason: fmt.Sprintf("must be one of openai-chat, openai-responses, anthropic; got %q", model.Adapter),
+			})
+		}
 		if model.ContextWindow < 0 {
 			errs = append(errs, FieldError{Field: field + ".context_window", Reason: "must be zero or greater"})
 		}

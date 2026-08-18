@@ -5,6 +5,8 @@
 package config
 
 import (
+	"strings"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -121,19 +123,21 @@ type Autostart struct {
 	Enabled bool `yaml:"enabled,omitempty"`
 }
 
-// Provider is a single upstream provider definition.
+// Provider is a single upstream provider definition. Adapter is the
+// default outbound protocol and the protocol used for model discovery
+// (docs/v1-scheme.md §5.2). A model may override it.
 type Provider struct {
-	Name         string            `yaml:"name"`
-	Adapter      string            `yaml:"adapter"`
-	BaseURL      string            `yaml:"base_url"`
-	ModelsURL    string            `yaml:"models_url,omitempty"`
+	Name           string            `yaml:"name"`
+	Adapter        string            `yaml:"adapter"`
+	BaseURL        string            `yaml:"base_url"`
+	ModelsURL      string            `yaml:"models_url,omitempty"`
 	ExtraHeaders   map[string]string `yaml:"extra_headers,omitempty"`
 	DisguiseClient string            `yaml:"disguise_client,omitempty"`
 	DefaultModel   string            `yaml:"default_model"`
-	Models       []ProviderModel   `yaml:"models,omitempty"`
-	Enabled      *bool             `yaml:"enabled,omitempty"`
-	SecretRef    string            `yaml:"secret_ref,omitempty"`
-	Capabilities Capabilities      `yaml:"capabilities,omitempty"`
+	Models         []ProviderModel   `yaml:"models,omitempty"`
+	Enabled        *bool             `yaml:"enabled,omitempty"`
+	SecretRef      string            `yaml:"secret_ref,omitempty"`
+	Capabilities   Capabilities      `yaml:"capabilities,omitempty"`
 }
 
 func (p Provider) EnabledValue() bool {
@@ -141,10 +145,12 @@ func (p Provider) EnabledValue() bool {
 }
 
 // ProviderModel is one model exposed by a provider. Token limits are zero
-// when the upstream model-list response did not publish them.
+// when the upstream model-list response did not publish them. Adapter, when
+// set, is the outbound protocol for this model (docs/v1-scheme.md §5.2).
 type ProviderModel struct {
 	ID              string `yaml:"id"`
 	Name            string `yaml:"name,omitempty"`
+	Adapter         string `yaml:"adapter,omitempty"`
 	ContextWindow   int    `yaml:"context_window,omitempty"`
 	MaxOutputTokens int    `yaml:"max_output_tokens,omitempty"`
 	Enabled         *bool  `yaml:"enabled,omitempty"`
@@ -152,6 +158,23 @@ type ProviderModel struct {
 
 func (m ProviderModel) EnabledValue() bool {
 	return m.Enabled == nil || *m.Enabled
+}
+
+// ModelAdapter returns the outbound adapter for a requested model
+// (docs/v1-scheme.md §5.2). A non-empty model-level adapter wins; otherwise
+// the provider default is used so catalogs without per-model adapters and
+// unpublished prefix overrides stay valid.
+func (p Provider) ModelAdapter(modelID string) string {
+	for _, model := range p.Models {
+		if model.ID != modelID {
+			continue
+		}
+		if adapter := strings.TrimSpace(model.Adapter); adapter != "" {
+			return adapter
+		}
+		break
+	}
+	return p.Adapter
 }
 
 // Capabilities describes provider feature flags.

@@ -146,7 +146,9 @@ pipeline:
    on that provider → otherwise reject with the unmatched-model message
    (callers must send `<provider-id>/<model-id>`). Ambiguous registered
    ownership without the route provider is rejected. A model containing `/`
-   must never be rejected merely as an "unknown provider".
+   must never be rejected merely as an "unknown provider". The outbound
+   protocol is `Provider.ModelAdapter(model)`: a non-empty `models[].adapter`
+   wins, otherwise the provider default `adapter`.
 5. Capability gates before any upstream call: image input unsupported → 422
    with zero upstream contact; `context_management` stripped for providers that
    do not declare it; reasoning dropped with a `reasoning_dropped` warning event.

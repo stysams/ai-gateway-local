@@ -236,6 +236,30 @@ func TestValidateProviderID(t *testing.T) {
 	}
 }
 
+func TestModelAdapter(t *testing.T) {
+	p := Provider{
+		Adapter:      "openai-chat",
+		DefaultModel: "gpt-4o",
+		Models: []ProviderModel{
+			{ID: "gpt-4o"},
+			{ID: "claude-opus", Adapter: "anthropic"},
+			{ID: "gpt-5", Adapter: "  openai-responses  "},
+		},
+	}
+	if got := p.ModelAdapter("gpt-4o"); got != "openai-chat" {
+		t.Fatalf("empty model adapter = %q, want provider default", got)
+	}
+	if got := p.ModelAdapter("claude-opus"); got != "anthropic" {
+		t.Fatalf("model adapter = %q, want anthropic", got)
+	}
+	if got := p.ModelAdapter("gpt-5"); got != "openai-responses" {
+		t.Fatalf("trimmed model adapter = %q, want openai-responses", got)
+	}
+	if got := p.ModelAdapter("unpublished"); got != "openai-chat" {
+		t.Fatalf("unpublished model = %q, want provider default", got)
+	}
+}
+
 func TestValidateAdapter(t *testing.T) {
 	for _, ok := range []struct {
 		adapter string
@@ -333,6 +357,8 @@ func TestValidateProvider(t *testing.T) {
 		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", DisguiseClient: "claude"}, ""},
 		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", DisguiseClient: "codex"}, ""},
 		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", DisguiseClient: "gpt"}, "providers.ok.disguise_client"},
+		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", Models: []ProviderModel{{ID: "m", Adapter: "anthropic"}}}, ""},
+		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", Models: []ProviderModel{{ID: "m", Adapter: "bogus"}}}, "providers.ok.models.0.adapter"},
 	}
 	for _, tc := range cases {
 		err := ValidateProvider(tc.id, tc.p)

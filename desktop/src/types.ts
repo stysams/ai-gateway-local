@@ -50,6 +50,7 @@ export interface Provider {
 export interface ProviderModel {
   id: string;
   name?: string;
+  adapter?: string;
   context_window: number;
   max_output_tokens: number;
   enabled?: boolean;

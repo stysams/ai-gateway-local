@@ -1237,6 +1237,56 @@ func TestChatToMessagesCrossProtocolDispatch(t *testing.T) {
 	}
 }
 
+func TestModelAdapterSelectsOutboundProtocol(t *testing.T) {
+	up := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if strings.Contains(r.URL.Path, "/messages") {
+			io.WriteString(w, `{"id":"msg_fake","type":"message","role":"assistant","model":"claude-opus","content":[{"type":"text","text":"claude"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+			return
+		}
+		fmt.Fprintf(w, `{"id":"chatcmpl-fake","object":"chat.completion","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"gpt"},"finish_reason":"stop"}]}`)
+	})
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	p := cfg.Providers["openrouter"]
+	p.Adapter = "openai-chat"
+	p.DefaultModel = "gpt-4o"
+	p.Models = []config.ProviderModel{
+		{ID: "gpt-4o", Adapter: "openai-chat"},
+		{ID: "claude-opus", Adapter: "anthropic"},
+	}
+	cfg.Providers["openrouter"] = p
+	cfg.Routes.Codex = config.Route{Provider: "openrouter", Model: "gpt-4o"}
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	resp, data := chatPost(t, addr, "/c/codex/v1/chat/completions",
+		[]byte(`{"model":"openrouter/gpt-4o","messages":[{"role":"user","content":"hi"}]}`), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("gpt status = %d, body %s", resp.StatusCode, data)
+	}
+	resp, data = chatPost(t, addr, "/c/codex/v1/chat/completions",
+		[]byte(`{"model":"openrouter/claude-opus","messages":[{"role":"user","content":"hi"}]}`), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("claude status = %d, body %s", resp.StatusCode, data)
+	}
+	reqs := up.requests()
+	if len(reqs) != 2 {
+		t.Fatalf("upstream requests = %d, want 2", len(reqs))
+	}
+	if reqs[0].Path != "/chat/completions" {
+		t.Fatalf("gpt path = %q, want /chat/completions", reqs[0].Path)
+	}
+	if _, ok := reqs[0].Fields["messages"]; !ok {
+		t.Fatalf("gpt upstream is not chat: %v", reqs[0].Fields)
+	}
+	if reqs[1].Path != "/v1/messages" {
+		t.Fatalf("claude path = %q, want /v1/messages", reqs[1].Path)
+	}
+	if _, ok := reqs[1].Fields["max_tokens"]; !ok {
+		t.Fatalf("claude upstream is not messages: %v", reqs[1].Fields)
+	}
+}
+
 func TestChatContentTypeValidation(t *testing.T) {
 	up := newFakeUpstream(t, nil)
 	_, addr := startDataPlane(t, up.URL, up.URL, false, nil)
@@ -1311,6 +1361,40 @@ func TestResponsesCompactForwardsSameProtocol(t *testing.T) {
 	}
 	if req.Accept != "application/json" {
 		t.Fatalf("upstream Accept = %q", req.Accept)
+	}
+}
+
+func TestResponsesCompactUsesModelAdapter(t *testing.T) {
+	up := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"object":"response.compaction","output":[{"type":"compaction"}]}`)
+	})
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	p := cfg.Providers["openrouter"]
+	p.Adapter = "openai-chat"
+	p.DefaultModel = "gpt-5"
+	p.Models = []config.ProviderModel{
+		{ID: "gpt-5", Adapter: "openai-responses"},
+		{ID: "claude-opus", Adapter: "anthropic"},
+	}
+	cfg.Providers["openrouter"] = p
+	cfg.Routes.Codex = config.Route{Provider: "openrouter", Model: "gpt-5"}
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	resp, data := chatPost(t, addr, "/c/codex/v1/responses/compact", []byte(`{"model":"gateway-default","input":[]}`), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body %s", resp.StatusCode, data)
+	}
+	if up.last().Path != "/responses/compact" {
+		t.Fatalf("upstream path = %q", up.last().Path)
+	}
+
+	resp, data = chatPost(t, addr, "/c/codex/v1/responses/compact", []byte(`{"model":"openrouter/claude-opus","input":[]}`), nil)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("claude compact status = %d, want 422, body %s", resp.StatusCode, data)
+	}
+	if !strings.Contains(string(data), "openai-responses") {
+		t.Fatalf("error = %s", data)
 	}
 }
 

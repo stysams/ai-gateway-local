@@ -37,11 +37,11 @@ func refFor(id string) string { return providerRefPrefix + id }
 // stored in config or returned by any read endpoint (docs/v1-scheme.md
 // §11.3).
 type ProviderRequest struct {
-	ID           string                 `json:"id"`
-	Name         string                 `json:"name"`
-	Adapter      string                 `json:"adapter"`
-	BaseURL      string                 `json:"base_url"`
-	ModelsURL    string                 `json:"models_url"`
+	ID             string                 `json:"id"`
+	Name           string                 `json:"name"`
+	Adapter        string                 `json:"adapter"`
+	BaseURL        string                 `json:"base_url"`
+	ModelsURL      string                 `json:"models_url"`
 	ExtraHeaders   map[string]string      `json:"extra_headers"`
 	DisguiseClient string                 `json:"disguise_client"`
 	DefaultModel   string                 `json:"default_model"`
@@ -56,6 +56,7 @@ type ProviderRequest struct {
 type ProviderModelPayload struct {
 	ID              string `json:"id"`
 	Name            string `json:"name,omitempty"`
+	Adapter         string `json:"adapter,omitempty"`
 	ContextWindow   int    `json:"context_window"`
 	MaxOutputTokens int    `json:"max_output_tokens"`
 	Enabled         *bool  `json:"enabled,omitempty"`
@@ -71,11 +72,11 @@ type CapabilitiesPayload struct {
 // ProviderResponse is the provider payload returned by the management API.
 // It never carries secret material (docs/v1-scheme.md §11.3).
 type ProviderResponse struct {
-	ID           string                 `json:"id"`
-	Name         string                 `json:"name"`
-	Adapter      string                 `json:"adapter"`
-	BaseURL      string                 `json:"base_url"`
-	ModelsURL    string                 `json:"models_url,omitempty"`
+	ID             string                 `json:"id"`
+	Name           string                 `json:"name"`
+	Adapter        string                 `json:"adapter"`
+	BaseURL        string                 `json:"base_url"`
+	ModelsURL      string                 `json:"models_url,omitempty"`
 	ExtraHeaders   map[string]string      `json:"extra_headers"`
 	DisguiseClient string                 `json:"disguise_client,omitempty"`
 	DefaultModel   string                 `json:"default_model"`
@@ -141,15 +142,15 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 // (docs/v1-scheme.md §6.3 step 1: validate before touching the key store).
 func providerFromRequest(id string, req ProviderRequest) (config.Provider, error) {
 	p := config.Provider{
-		Name:         req.Name,
-		Adapter:      req.Adapter,
-		BaseURL:      req.BaseURL,
-		ModelsURL:    req.ModelsURL,
+		Name:           req.Name,
+		Adapter:        req.Adapter,
+		BaseURL:        req.BaseURL,
+		ModelsURL:      req.ModelsURL,
 		ExtraHeaders:   cloneStringMap(req.ExtraHeaders),
 		DisguiseClient: strings.TrimSpace(req.DisguiseClient),
 		DefaultModel:   req.DefaultModel,
-		Models:       providerModelsFromPayload(req.Models),
-		Enabled:      req.Enabled,
+		Models:         providerModelsFromPayload(req.Models),
+		Enabled:        req.Enabled,
 	}
 	if req.Capabilities != nil {
 		p.Capabilities = config.Capabilities{
@@ -180,7 +181,8 @@ func providerModelsFromPayload(models []ProviderModelPayload) []config.ProviderM
 	for _, model := range models {
 		out = append(out, config.ProviderModel{
 			ID: strings.TrimSpace(model.ID), Name: strings.TrimSpace(model.Name),
-			ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens, Enabled: model.Enabled,
+			Adapter: strings.TrimSpace(model.Adapter), ContextWindow: model.ContextWindow,
+			MaxOutputTokens: model.MaxOutputTokens, Enabled: model.Enabled,
 		})
 	}
 	return out
@@ -190,8 +192,8 @@ func providerModelsPayload(models []config.ProviderModel) []ProviderModelPayload
 	out := make([]ProviderModelPayload, 0, len(models))
 	for _, model := range models {
 		out = append(out, ProviderModelPayload{
-			ID: model.ID, Name: model.Name, ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens,
-			Enabled: config.BoolPtr(model.EnabledValue()),
+			ID: model.ID, Name: model.Name, Adapter: model.Adapter, ContextWindow: model.ContextWindow,
+			MaxOutputTokens: model.MaxOutputTokens, Enabled: config.BoolPtr(model.EnabledValue()),
 		})
 	}
 	return out
@@ -305,17 +307,17 @@ func (s *Server) hasSecret(ctx context.Context, ref string) bool {
 // providerResponse renders a provider without any secret material.
 func (s *Server) providerResponse(ctx context.Context, id string, p config.Provider) ProviderResponse {
 	return ProviderResponse{
-		ID:           id,
-		Name:         p.Name,
-		Adapter:      p.Adapter,
-		BaseURL:      p.BaseURL,
-		ModelsURL:    p.ModelsURL,
+		ID:             id,
+		Name:           p.Name,
+		Adapter:        p.Adapter,
+		BaseURL:        p.BaseURL,
+		ModelsURL:      p.ModelsURL,
 		ExtraHeaders:   cloneStringMap(p.ExtraHeaders),
 		DisguiseClient: p.DisguiseClient,
 		DefaultModel:   p.DefaultModel,
-		Enabled:      p.EnabledValue(),
-		Models:       providerModelsPayload(p.Models),
-		HasSecret:    s.hasSecret(ctx, p.SecretRef),
+		Enabled:        p.EnabledValue(),
+		Models:         providerModelsPayload(p.Models),
+		HasSecret:      s.hasSecret(ctx, p.SecretRef),
 		Capabilities: CapabilitiesPayload{
 			ImageInput:        p.Capabilities.ImageInput,
 			Reasoning:         p.Capabilities.Reasoning,

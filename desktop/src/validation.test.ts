@@ -18,6 +18,12 @@ describe("validateProvider", () => {
     expect(errors["models.1.id"]).toBe("duplicate_model");
   });
 
+  it("accepts a per-model adapter and rejects an invalid one", () => {
+    expect(validateProvider({ id: "any", name: "Any", adapter: "openai-chat", base_url: "https://any.example/v1", extra_headers: [], disguise_client: "", default_model: "gpt-4o", models: [{ id: "gpt-4o", adapter: "openai-chat", context_window: 0, max_output_tokens: 0 }, { id: "claude-opus", adapter: "anthropic", context_window: 0, max_output_tokens: 0 }], api_key: "" })).toEqual({});
+    const errors = validateProvider({ id: "any", name: "Any", adapter: "openai-chat", base_url: "https://any.example/v1", extra_headers: [], disguise_client: "", default_model: "gpt-4o", models: [{ id: "gpt-4o", adapter: "other", context_window: 0, max_output_tokens: 0 }], api_key: "" });
+    expect(errors["models.0.adapter"]).toBe("invalid_adapter");
+  });
+
   it("rejects unsafe and duplicate custom headers", () => {
     const errors = validateProvider({ id: "openai-main", name: "OpenAI", adapter: "openai-responses", base_url: "https://api.openai.com/v1", extra_headers: [{ name: "Authorization", value: "secret" }, { name: "X-App", value: "one" }, { name: "x-app", value: "two" }, { name: "X-Bad Header", value: "line\nbreak" }], disguise_client: "claude", default_model: "gpt-5", models: [{ id: "gpt-5", context_window: 0, max_output_tokens: 0 }], api_key: "" });
     expect(errors["extra_headers.0.name"]).toBe("managed_header");

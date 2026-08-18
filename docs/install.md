@@ -45,18 +45,22 @@ gateway. The default management address is `http://127.0.0.1:12600`;
 ## Configure provider models
 
 In the desktop Providers view, add or edit a provider and choose **Fetch
-models** after entering its identifier, adapter, Base URL, optional custom
+models** after entering its identifier, default adapter, Base URL, optional custom
 models endpoint, and optional API key. The endpoint defaults to `<base_url>/models`.
 The gateway reads the upstream model-list endpoint and fills the model ID,
 display name, context window, and maximum output-token fields only when the
 upstream response publishes those values. Missing values remain unknown; the
 gateway does not infer token limits from a model name.
 
-One provider can retain multiple models. Select one as the default and edit any
-discovered values before saving, or add a model manually when the upstream does
-not expose a model list. These limits are currently management metadata used by
-the catalog and interface; they do not yet truncate or reject data-plane
-requests.
+One provider can retain multiple models, and each model can use a different
+outbound protocol (`openai-chat`, `openai-responses`, or `anthropic`). Use this
+when one upstream exposes both GPT and Claude models on different APIs. The
+provider-level adapter is the default and is used for model discovery; a
+model-level adapter overrides it for completions. Select one model as the
+default and edit any discovered values before saving, or add a model manually
+when the upstream does not expose a model list. Token limits are currently
+management metadata used by the catalog and interface; they do not yet truncate
+or reject data-plane requests.
 
 The Routes view shows a provider/model tree. Disabling a provider or model
 removes it from `/v1/models` and prevents requests from resolving to it.

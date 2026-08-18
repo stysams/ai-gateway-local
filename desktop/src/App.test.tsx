@@ -135,6 +135,19 @@ describe("desktop workflow", () => {
     const contextInput = screen.getByDisplayValue("131072"); await user.clear(contextInput); await user.type(contextInput, "200000"); await user.click(screen.getAllByRole("radio", { name: "Default model" })[0]); await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ method: "POST", body: expect.stringContaining('"context_window":200000') })));
     expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ body: expect.stringContaining('"Originator":"codex_cli_rs"') }));
+    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ body: expect.stringContaining('"adapter":"openai-chat"') }));
+  });
+
+  it("saves a different outbound protocol on one model", async () => {
+    const user = userEvent.setup(); render(<App />); await ready(); await user.click(screen.getByRole("button", { name: "Providers" })); await user.click(screen.getByRole("button", { name: "Add provider" }));
+    await user.type(screen.getByLabelText("Identifier"), "any"); await user.type(screen.getByLabelText("Name"), "Any"); await user.type(screen.getByLabelText("Base URL"), "https://example.com/v1");
+    await user.click(screen.getByRole("button", { name: "Add model manually" }));
+    await user.click(screen.getAllByLabelText("Model ID").at(-1)!);
+    await user.keyboard("claude-opus");
+    await user.click(screen.getAllByRole("radio", { name: "Default model" })[0]);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Protocol claude-opus" }), "anthropic");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ method: "POST", body: expect.stringContaining('"adapter":"anthropic"') })));
   });
 
   it("saves disguise_client for third-party requests", async () => {

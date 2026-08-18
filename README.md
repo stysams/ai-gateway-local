@@ -1,288 +1,293 @@
 # ai-gateway
 
-Local AI proxy gateway for Codex, Claude Code, Grok Build, and any OpenAI- or
-Anthropic-compatible app. The agent stays in those clients. This process keeps
-keys, routes, and protocol translation on a configurable local listener
-(loopback by default).
+`ai-gateway` 是一个运行在本机当前用户会话中的单用户人工智能代理网关。它让 Codex、Claude Code、Grok Build，以及兼容 OpenAI 或 Anthropic 协议的本地应用统一通过一个本地地址访问多个上游模型。
 
-OpenCodex hijacks and extends Codex. This project is a local gateway that
-clients point at themselves.
+网关负责本地路由、协议转换、模型目录、请求日志和用量统计。上游 API 密钥保存在操作系统的密钥存储中，不写入 `config.yaml`、客户端配置文件、管理接口响应或正文日志。
 
-## Status
+默认监听地址为 `127.0.0.1:12600`。桌面程序只负责管理网关，不承载 `/v1/*` 数据面请求。
 
-The implementation-ready v1 specification is in
-[docs/v1-scheme.md](docs/v1-scheme.md). It includes frozen architecture
-decisions, API and protocol contracts, task packages, tests, and acceptance
-criteria. Phase-1 progress and the next handoff live in
-[docs/progress.md](docs/progress.md). The file-by-file code map for agents
-is [docs/code-map.md](docs/code-map.md).
+## 功能概览
 
-**Task package A (repository bootstrap & headless skeleton) is implemented.**
-Scope delivered:
+- 支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages。
+- 为 Codex、Claude Code、Grok Build 和通用应用分别配置默认路由。
+- 一个提供商可以维护多个模型，每个模型可以单独选择 Chat、Responses 或 Messages 接口，并可从上游模型接口发现模型元数据。
+- 支持图片输入、推理或思考内容，以及不支持能力时的明确降级提示。
+- 为每个请求记录脱敏的 JSONL 事件，并汇总上游真实返回的令牌用量。
+- 支持客户端指向网关、漂移检测、还原和 Codex 远程压缩开关。
+- 提供 Windows 桌面程序、系统托盘和命令行管理工具。
+- 默认只监听回环地址；需要局域网访问时可以显式改为 `0.0.0.0`。
 
-- Go module `ai-gateway`, `go 1.26`, toolchain pinned to `go1.26.6` (fetched
-  automatically via `GOTOOLCHAIN=auto`).
-- Config model, defaults, full validation and same-directory atomic writes.
-  Unknown top-level YAML fields are retained on read and preserved on
-  write-back. A missing config file is generated on first `serve`.
-- Single-instance lock (`gateway.lock`, exclusive) with platform-isolated
-  implementations (Windows `LockFileEx`, Unix `flock`) and the diagnostic
-  `gateway.pid.json`.
-- CLI: `serve`, `stop`, `status`, `version` with the unified exit-code table.
-- HTTP on `127.0.0.1` by default, with an explicit `0.0.0.0` local-network mode;
-  port conflicts fail loudly and never silently switch ports
-  ports; graceful shutdown (signals, console close, management API).
-- Endpoints: `GET /healthz`, `GET /readyz`, `GET /api/v1/status`,
-  `POST /api/v1/shutdown`.
+## 安装
 
-**Task package B (system key store) is implemented.** Scope delivered:
+### Windows 发布包
 
-- `secret.Store` (Put/Get/Delete/Available) with distinct not-found and
-  unavailable errors; API keys enter only through the write path and never
-  appear in YAML, responses or logs.
-- Windows: per-user DPAPI ciphertext files in `<data root>/secrets/` with
-  atomic writes and strictest file permissions. macOS and Linux ship
-  explicit build-time implementations (Keychain / Secret Service) that fail
-  loudly — no plaintext fallback of any kind.
-- Provider CRUD (`GET/POST /api/v1/providers`, `GET/PUT/DELETE
-  /api/v1/providers/{id}`) with the §6.3 secret transaction: validate → write
-  key → atomic config write → restore old key on failure; partial failures
-  are reported explicitly for doctor. Delete never restores a provider, but
-  surfaces key-deletion warnings.
-- `readyz` and `GET /api/v1/doctor` check store availability and every
-  required secret (missing + orphan refs); `serve` refuses to start when a
-  configured provider needs a key that is missing or the store is
-  unavailable, with a remediation hint.
+从发布目录取得 Windows amd64 压缩包，例如：
 
-**Task package C (routing & OpenAI Chat same-protocol forwarding) is implemented.**
-Scope delivered:
+```text
+dist/ai-gateway-0.1.0-rc1-windows-amd64.zip
+```
 
-- `internal/route`: the four fixed client ids (codex/claude/grok/generic),
-  the reserved `gateway-default` model, and the §7.4 resolution order
-  (route default → empty/gateway-default → provider-prefix override with
-  prefix stripping → unique generic model ownership → listed route-provider
-  model → unmatched model rejected).
-- `internal/inbound/chat` + `internal/outbound/openaichat`: Chat
-  Completions parsing/rewriting that only touches `model` and `stream` and
-  preserves every unknown field with its exact raw value (field-level
-  lossless; document key order/whitespace are not guaranteed); upstream URL
-  built exactly as
-  `<base_url>/chat/completions` without double slashes or a duplicated
-  `/v1`.
-- Data plane: `POST /v1/chat/completions` (≡ generic) and
-  `POST /c/{client}/v1/chat/completions` (unknown client or path → 404),
-  JSON-only with the 128 MiB limit and Content-Type validation (missing or
-  non-JSON → 415), OpenAI-native error shape, adapter dispatch gate
-  (non-`openai-chat` providers answer 422 and never receive Chat
-  requests), upstream status/body/key-header forwarding (Retry-After,
-  X-Request-Id, OpenAI-Request-ID, rate-limit headers, Location — never
-  Set-Cookie, Authorization or hop-by-hop), live SSE piping with per-chunk
-  flush (never buffered), client disconnect cancelling the upstream,
-  502/504 mapping (shared connection pool with a five-minute
-  `ResponseHeaderTimeout`, no overall stream deadline), redirects never
-  followed (status + Location
-  passed through, provider Authorization cannot leak to a second target),
-  per-provider `Authorization: Bearer` injection from the key store
-  (zeroed after use, never logged; store failures map to 500, not 502) and
-  full inbound auth/header dropping.
-- `GET /v1/models` and `/c/{client}/v1/models` returning
-  `gateway-default` plus each persisted or discovered
-  `<provider-id>/<model-id>`. `display_name` equals that selectable id,
-  except `/c/claude/v1/models`, whose wire `id` is a reversible
-  `claude-gw*` picker alias so Claude Code's `/model` command lists every
-  enabled model.
-- Desensitized fixtures under `testdata/protocols/chat/` and fake-upstream
-  integration tests covering every C-package branch (four-client
-  isolation, prefix override/passthrough, unknown-field preservation,
-  auth injection/dropping without leaks, non-streaming, upstream 4xx/5xx,
-  prompt SSE flush, client cancel).
+解压整个目录到稳定的当前用户目录，例如：
 
-**Task package D (IR & three-protocol conversion) is implemented.** Scope
-  delivered:
+```text
+%LOCALAPPDATA%\Programs\ai-gateway
+```
 
-- `internal/ir`: protocol-independent Request/Message/Block/Tool/ToolCall/
-  ToolResult/Usage/Event types plus a stateful `Sequencer` validating the
-  unified event stream (stable tool ids, ordered argument-delta
-  concatenation, single `response.completed`, no success events after an
-  error) and aggregating non-streaming responses. ir imports no concrete
-  protocol package and adapters never call each other.
-- Inbound: `internal/inbound/chat`, `responses`, `messages` parse requests
-  into ir (text, system, tools, tool_choice, tool calls/results) with
-  unknown-field preservation for same-protocol passthrough, and encode ir
-  events as each protocol's non-streaming and SSE responses.
-- Outbound: `internal/outbound/openaichat`, `openairesponses`, `anthropic`
-  generate requests from ir and parse non-streaming and SSE responses into
-  ir events; URLs are exactly `<base>/chat/completions`, `<base>/responses`,
-  `<base>/v1/messages` (no duplicate slashes or /v1); OpenAI-style Bearer,
-  Anthropic `x-api-key` + fixed `anthropic-version: 2023-06-01`; secrets
-  zeroed after use, store errors → 500, never 502.
-- Data plane: `POST /v1/responses`, `/v1/messages` and all
-  `/c/{client}/v1/...` endpoints (no prefix ≡ generic). Same-protocol paths
-  rewrite only model/stream/auth and forward upstream bytes; all six
-  cross-protocol directions go through the IR pipeline only, streaming via
-  a per-event SSE pipeline with flush after every event. Broken upstream
-  streams end with a protocol error event, never a fabricated completion;
-  client disconnect cancels the upstream.
+压缩包包含：
 
-**Task package E (images, reasoning & capability downgrade) is implemented.**
-Scope delivered:
+- `ai-gateway.exe`：无头网关和命令行程序。
+- `ai-gateway-desktop.exe`：桌面窗口、系统托盘和桌面管理流程。
+- `README.md`、`LICENSE` 和 `docs/install.md`。
 
-- URL and base64/data-URL image inputs are parsed into the common IR and
-  generated in the native Chat, Responses and Messages request forms.
-- Every data-plane path checks `capabilities.image_input` before contacting
-  the upstream. Unsupported images return 422 and the upstream receives no
-  request; supported images retain their URL/base64 source and detail.
-- Request-level `reasoning_effort`, Responses `reasoning`, and Messages
-  `thinking` are represented explicitly in IR. The directly equivalent
-  Chat/Responses effort settings convert in both directions; Anthropic
-  thinking modes and budgets are never guessed into OpenAI effort levels.
-- Non-streaming and SSE reasoning/thinking output is parsed into unified
-  reasoning events and encoded separately from answer text in all three
-  inbound protocols.
-- When provider capability is disabled or the target protocol cannot express
-  reasoning without semantic loss, the gateway removes it before the
-  upstream call and appends a `reasoning_dropped` warning JSONL event.
-- Protocol fixtures and tests cover URL/base64 preservation, provider
-  rejection with zero upstream access, OpenAI reasoning preservation,
-  explicit cross-protocol downgrade, warning files, non-streaming responses
-  and SSE reasoning events.
+双击 `ai-gateway-desktop.exe` 即可启动桌面程序。桌面程序会在网关未运行时启动独立的 `serve` 进程；再次启动桌面程序只会聚焦已有窗口，不会创建第二个网关进程或托盘图标。
 
-**Task package F (request logs and usage) is implemented.** Every accepted
-data-plane request receives an `X-Request-Id` and an independent JSONL file
-containing request, route, authentication-free upstream request, upstream and
-client events, warnings, and a terminal result. `GET /api/v1/logs`,
-`GET /api/v1/logs/{request_id}`, and `GET /api/v1/usage` provide filtered
-queries and actual upstream token accounting; missing usage is explicitly
-incomplete and is never estimated. `PUT /api/v1/logging` takes effect on the
-next request, and doctor reports log writability, size, parseability, and
-interrupted files.
+关闭窗口只会隐藏桌面窗口，网关仍然运行。需要停止网关时，请使用托盘菜单中的停止操作，或执行 `ai-gateway.exe stop`。
 
-**Task package G (complete management API) is implemented.** Config reads and
-validated atomic updates preserve unknown top-level YAML fields. A provider is
-a multi-model container: its editable model catalog persists model identifiers,
-display names, context windows, and maximum output-token metadata. Provider
-CRUD, real upstream probes, and draft model discovery use adapter-specific
-authentication; upstream metadata is used only when published and unknown
-limits remain unknown. Route updates cover all four clients and apply on the
-next data-plane request.
-Log toggling, filtered log queries, and usage queries complete the headless
-management surface.
+启用登录启动后不要直接移动安装目录。需要移动时，先关闭登录启动，移动目录，再重新启用，否则诊断工具会报告旧的可执行文件路径。
 
-**Task package H (transactional client point and restore) is implemented.**
-Codex, Claude Code, and Grok Build adapters preserve unrelated configuration,
-create SHA-256 backup manifests, atomically point at client-specific loopback
-paths, detect drift, and restore exact original bytes and the prior Codex
-environment value. A route is the client's preferred model at startup only:
-pointed clients keep the provider-neutral `gateway-default` model in that slot,
-so route changes apply at request time without rewriting the pointed client or
-replacing the original restore point. Every enabled
-`<provider-id>/<model-id>` stays selectable inside the client — through
-`/c/{client}/v1/models` for all three clients, as a cloned
-`model_catalog_json` sidecar for Codex, as
-`<CLAUDE_CONFIG_DIR>/cache/gateway-models.json` for Claude Code, and as
-native `[model."ai-gateway:<provider-id>/<model-id>"]` entries in Grok
-Build. Client status, point, restore, and doctor APIs are covered by
-unit and HTTP integration tests. See [docs/install.md](docs/install.md) for the
-operator flow and the required Windows client compatibility check.
+### 从源码构建
 
-**Task package I (Wails desktop main flow) is implemented.** The desktop shell
-pins Wails `v3.0.0-beta.8` and embeds a React, TypeScript, and Vite frontend with
-an npm lockfile. It starts the loopback gateway when needed and offers Overview,
-Providers, Routes, Clients, Logs, Usage, and Settings views through management
-HTTP APIs only. The provider editor can fetch an upstream model list before
-saving, choose a default model, and manually override token-limit metadata.
-A client route sets that client's default selected model; the picker inside
-each client lists every enabled model as `<provider-id>/<model-id>`. The interface
-includes first-run body-log risk acceptance,
-Chinese and English, light and dark themes, keyboard operation, responsive
-layouts, and automated 1440×900 and 390×844 browser tests.
+开发环境需要：
 
-**Task package J (tray, login start, and release) is implemented.** The native
-tray reports gateway state, opens the main window, independently switches the
-Codex, Claude, and Grok routes through management HTTP, toggles request logging, body persistence
-and login start, starts or stops the gateway, and exits the desktop without
-stopping the separate gateway process. A second desktop launch focuses the
-existing window and does not create another process or tray icon. Closing the
-window hides it while the tray remains active. Current-user login registration uses Windows Task
-Scheduler with XML readback validation, launchd on macOS, and user systemd on
-Linux. Windows release packaging injects version metadata into both binaries;
-cross-builds produce macOS and Linux headless binaries.
+- Go `1.26+`，项目工具链固定为 `go1.26.6`。
+- Node.js 和 npm。
+- Windows 桌面构建需要 Wails `v3.0.0-beta.8` 所需的本机 WebView 工具链。
 
-The repository is a release candidate, not a completed Windows acceptance.
-The real-client/provider flow and Windows logoff/login secret check in
-`docs/v1-scheme.md` §19 still require an environment with installed clients,
-credentials, and Task Scheduler permission. On this development machine,
-Task Scheduler returned `0x80070005` for current-user task creation; no probe
-or product task was left behind.
-
-## Build & verify
-
-Requires Go 1.26+ (the pinned `go1.26.6` toolchain is downloaded
-automatically). `go test -race` additionally needs a C toolchain
-(mingw-w64 gcc on Windows) because it uses cgo.
+常用构建命令：
 
 ```powershell
 go build ./...
-go test ./...
-go vet ./...
-.\scripts\verify.ps1   # full suite; -race and desktop steps report SKIPPED when unavailable
-.\scripts\build-desktop.ps1 -Version 0.1.0-test
-.\scripts\build-release.ps1 -Version 0.1.0-test -Commit unknown
-.\scripts\build-cross.ps1 -Version 0.1.0-test -Commit unknown
+npm --prefix desktop ci
+npm --prefix desktop run build
 ```
 
-A code change that ships in `ai-gateway.exe` or `ai-gateway-desktop.exe` is
-not finished until `scripts\build-release.ps1` has rebuilt the Windows zip.
-Commit first so `-Commit` is a real hash. Same `0.1.0-rc1` zip may be
-overwritten unless a new version was requested. Documentation-only edits do
-not need a package.
-
-## Usage
-
-```text
-ai-gateway serve        run the gateway in the foreground (127.0.0.1:12600 by default)
-ai-gateway stop         request a graceful shutdown via the management API
-ai-gateway status       show gateway status
-ai-gateway doctor       show the live diagnostic report
-ai-gateway autostart on enable current-user login start
-ai-gateway autostart off disable current-user login start
-ai-gateway version      print version information
-```
-
-`serve --port N` overrides the configured listen port for that run only; the
-config file stays the single source of truth.
-
-## Local AI applications
-
-Open the **AI 中台** / **Local API** view in the desktop application to copy
-the current connection values and inspect every enabled model. For a local
-third-party application that supports an OpenAI-compatible provider, use:
-
-```text
-Base URL:     http://127.0.0.1:12600/v1
-API key:     ai-gateway
-Model:       gateway-default or <provider-id>/<model-id>
-Models URL:  http://127.0.0.1:12600/v1/models
-```
-
-The API key is a non-secret placeholder for applications that require a
-non-empty value. The loopback data plane does not validate it and never sends
-the inbound credential upstream. `gateway-default` follows the generic route;
-selecting `<provider-id>/<model-id>` addresses an enabled model directly.
-
-The local data plane accepts OpenAI Chat Completions at
-`POST /v1/chat/completions`, OpenAI Responses at `POST /v1/responses`, and
-Anthropic Messages at `POST /v1/messages`. `GET /api/v1/local-access` returns
-the actual runtime URLs and the same enabled model catalog used by
-`GET /v1/models`.
-
-Data root: `%USERPROFILE%\.ai-gateway` on Windows, `~/.ai-gateway` elsewhere
-(`AI_GATEWAY_DATA_DIR` overrides it).
+前端构建会更新 `cmd/desktop/assets/`，这些资源会被桌面程序嵌入。完整 Windows 发布包使用：
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:12600/healthz   # -> {"status":"ok"}
+.\scripts\build-release.ps1 -Version 0.1.0-rc1 -Commit <完整提交哈希>
 ```
 
-## License
+交叉构建只生成 macOS 和 Linux 的无头网关程序。桌面程序需要在目标系统本机进行构建：
 
-MIT
+```powershell
+.\scripts\build-cross.ps1 -Version 0.1.0-rc1 -Commit <完整提交哈希>
+```
+
+## 快速开始
+
+### 1. 启动网关
+
+使用桌面程序，或者在终端前台启动：
+
+```powershell
+.\ai-gateway.exe serve
+```
+
+默认地址为 `http://127.0.0.1:12600`。可以只为本次运行临时覆盖端口，配置文件不会被修改：
+
+```powershell
+.\ai-gateway.exe serve --port 12601
+```
+
+启动成功后检查健康状态：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:12600/healthz
+Invoke-RestMethod http://127.0.0.1:12600/readyz
+```
+
+两个接口都应返回成功结果。`readyz` 还会检查配置、系统密钥存储和必需的提供商密钥。日志目录、客户端指向和登录启动等完整检查请使用 `doctor`。
+
+### 2. 添加提供商
+
+在桌面程序中打开“提供商”页面，选择“添加提供商”，填写：
+
+1. 提供商标识，例如 `openrouter` 或 `ollama`。
+2. 显示名称。
+3. 适配器：`openai-chat`、`openai-responses` 或 `anthropic`。
+4. 上游基础地址，例如 `https://openrouter.ai/api/v1`。
+5. API 密钥（如果上游需要）。
+6. 默认模型和模型目录。
+
+填写基础地址后，可以使用“获取模型”读取上游模型列表。只有上游明确返回的上下文窗口和最大输出令牌才会被填入；缺少的数据会保持未知，网关不会根据模型名称猜测限制。
+
+API 密钥只通过写入接口进入系统密钥存储。读取提供商列表、配置或日志时不会返回明文密钥。
+
+### 3. 配置路由
+
+在“路由”页面为 Codex、Claude Code、Grok Build 和通用应用选择默认模型。
+
+路由是客户端启动时的首选模型，不是唯一可用模型。客户端被指向网关后，仍然可以从模型目录选择任何已启用的 `提供商标识/模型标识`。
+
+在提供商模型树中禁用提供商或模型后，它会从 `/v1/models` 中移除，也不会再参与路由解析。
+
+### 4. 连接本地应用
+
+在桌面程序的“AI 中台”页面查看当前连接参数。常见的 OpenAI 兼容应用可以使用：
+
+```text
+Base URL:   http://127.0.0.1:12600/v1
+API Key:    ai-gateway
+Model:      gateway-default 或 <provider-id>/<model-id>
+Models URL: http://127.0.0.1:12600/v1/models
+```
+
+`ai-gateway` 只是要求非空密钥的应用使用的占位值，不是网关凭据。回环数据面不会验证这个值，也不会把它转发给上游。
+
+`gateway-default` 使用“通用应用”路由。指定完整的 `提供商标识/模型标识` 可以直接选择某个已启用模型。
+
+### 5. 指向客户端
+
+桌面程序的“客户端”页面可以为 Codex、Claude Code 和 Grok Build 执行指向、查看状态和还原。指向操作会：
+
+- 创建带有 SHA-256 清单的备份。
+- 原子写入客户端配置。
+- 将客户端默认地址改为本机网关对应的客户端路径。
+- 同步该客户端可用的模型目录。
+- 在失败时尝试还原原始内容。
+
+也可以使用管理接口执行相同操作，具体接口见下方“管理接口”。开始真实客户端验收前，请确认客户端已经安装，并准备好至少一个可用的上游提供商。
+
+## 命令行使用
+
+在 Windows 发布目录中执行：
+
+```powershell
+.\ai-gateway.exe serve             # 前台运行网关
+.\ai-gateway.exe stop              # 请求优雅关闭
+.\ai-gateway.exe status            # 查看运行状态
+.\ai-gateway.exe doctor            # 查看诊断报告
+.\ai-gateway.exe autostart on      # 开启当前用户登录启动
+.\ai-gateway.exe autostart off     # 关闭当前用户登录启动
+.\ai-gateway.exe version            # 查看版本、提交、构建时间和平台
+```
+
+`serve --port N` 只覆盖本次运行使用的端口。配置文件仍然是下一次启动的唯一来源。
+
+`status`、`stop` 和 `doctor` 会根据正在运行实例记录的监听地址访问管理接口，因此也可以正确处理使用临时端口启动的实例。
+
+## 支持的接口
+
+### 数据面
+
+通用应用使用无客户端前缀的路径：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/v1/models` | 查看通用应用的模型目录 |
+| `POST` | `/v1/chat/completions` | OpenAI Chat Completions |
+| `POST` | `/v1/responses` | OpenAI Responses |
+| `POST` | `/v1/responses/compact` | Codex 远程压缩转发 |
+| `POST` | `/v1/messages` | Anthropic Messages |
+
+Codex、Claude Code 和 Grok Build 使用客户端前缀：
+
+```text
+GET  /c/{client}/v1/models
+POST /c/{client}/v1/chat/completions
+POST /c/{client}/v1/responses
+POST /c/{client}/v1/responses/compact
+POST /c/{client}/v1/messages
+```
+
+`{client}` 只能是 `codex`、`claude`、`grok` 或 `generic`。无前缀的 `/v1/*` 等价于 `/c/generic/v1/*`。
+
+### 管理面
+
+管理接口统一使用 `/api/v1` 前缀，与数据面共用监听器，不需要鉴权。默认的 `127.0.0.1` 配置只允许本机访问；如果将监听地址改为 `0.0.0.0`，管理接口也会随之向局域网暴露：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/v1/status` | 网关状态、客户端状态和路由 |
+| `POST` | `/api/v1/shutdown` | 请求优雅关闭 |
+| `GET` | `/api/v1/doctor` | 配置、密钥、日志和客户端诊断 |
+| `GET` / `PUT` | `/api/v1/config` | 读取或更新配置 |
+| `GET` / `POST` | `/api/v1/providers` | 列出或创建提供商 |
+| `GET` / `PUT` / `DELETE` | `/api/v1/providers/{id}` | 读取、更新或删除提供商 |
+| `PUT` | `/api/v1/providers/{id}/availability` | 更新提供商或模型可用性 |
+| `POST` | `/api/v1/providers/{id}/probe` | 探测提供商连通性 |
+| `GET` | `/api/v1/providers/{id}/models` | 读取提供商模型列表 |
+| `POST` | `/api/v1/provider-models/discover` | 发现未保存提供商的模型 |
+| `PUT` | `/api/v1/routes/{client}` | 更新客户端路由；当前路由从状态接口读取 |
+| `GET` | `/api/v1/clients/{client}` | 查看客户端指向状态 |
+| `POST` | `/api/v1/clients/{client}/point` | 指向网关并创建备份 |
+| `POST` | `/api/v1/clients/{client}/restore` | 还原客户端配置 |
+| `PUT` | `/api/v1/clients/{client}/remote-compaction` | 更新客户端远程压缩设置 |
+| `GET` | `/api/v1/logs` | 查询请求日志 |
+| `GET` | `/api/v1/logs/{request_id}` | 查看单个请求详情 |
+| `GET` | `/api/v1/usage` | 查看用量汇总 |
+| `PUT` | `/api/v1/logging` | 开关请求日志和正文保存 |
+| `PUT` | `/api/v1/autostart` | 开关当前用户登录启动 |
+| `GET` | `/api/v1/local-access` | 获取当前连接参数和模型目录 |
+
+## 配置和数据目录
+
+配置文件和运行数据默认位于：
+
+```text
+Windows: %USERPROFILE%\.ai-gateway
+macOS/Linux: ~/.ai-gateway
+```
+
+可以使用环境变量覆盖数据根目录：
+
+```powershell
+$env:AI_GATEWAY_DATA_DIR = "D:\ai-gateway-data"
+```
+
+数据目录通常包含：
+
+- `config.yaml`：网关配置和路由，不包含明文 API 密钥。
+- `secrets/`：Windows DPAPI 等系统密钥存储产生的密文文件。
+- `logs/`：请求 JSONL 日志，是否保存正文由日志设置控制。
+- `gateway.lock`：单实例锁。
+- `gateway.pid.json`：运行实例的进程和监听地址元数据。
+
+默认只监听 `127.0.0.1`。如果确实需要局域网内的其他设备访问，在桌面“设置”页面将监听地址改为 `0.0.0.0`，并确认防火墙、网络边界和管理接口暴露风险。
+
+## 日志和安全
+
+- 回环数据面当前不要求鉴权；应用填写的占位 API key 会被忽略。
+- 管理接口不提供远程管理鉴权。默认回环监听较安全；切换为 `0.0.0.0` 会同时暴露数据面和管理面。
+- 上游密钥只进入当前操作系统的密钥存储，不回退到明文文件。
+- 请求日志不会记录上游认证头；正文日志可能包含用户输入，首次启用时需要在桌面程序中确认风险。
+- 日志、配置、客户端文件和管理响应都不应包含真实 API key、Cookie 或个人隐私数据。
+- 启用 `0.0.0.0` 前请先完成网络隔离和访问控制评估。
+
+## 开发和验证
+
+运行 Go 测试、静态检查和桌面端测试：
+
+```powershell
+go test ./...
+go vet ./...
+npm --prefix desktop run test
+npm --prefix desktop run lint
+npm --prefix desktop run build
+.\scripts\verify.ps1
+```
+
+启用竞态测试还需要 cgo 和可执行的 C 编译器（Windows 通常使用 mingw-w64 gcc）：
+
+```powershell
+go test -race ./...
+```
+
+桌面前端的开发服务器：
+
+```powershell
+npm --prefix desktop run dev
+```
+
+默认访问地址为 `http://127.0.0.1:5173/`。开发服务器只用于预览前端，桌面程序正式使用的是 `cmd/desktop/assets/` 中的嵌入资源。
+
+完整协议、架构、管理接口合同和 Windows 最终验收步骤请参阅：
+
+- [协议和架构规格](docs/v1-scheme.md)
+- [安装、运行和还原指南](docs/install.md)
+- [开发进度和发布约定](docs/progress.md)
+- [代码结构说明](docs/code-map.md)
+
+## 许可证
+
+本项目使用 MIT 许可证，详见 [LICENSE](LICENSE)。

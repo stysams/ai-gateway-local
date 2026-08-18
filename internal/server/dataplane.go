@@ -31,8 +31,8 @@ const maxChatBody = 128 << 20
 // chatAdapter is the adapter name for the Chat protocol.
 const chatAdapter = "openai-chat"
 
-// adapterProtocol maps a provider adapter onto its wire protocol. The
-// config validation guarantees the closed set.
+// adapterProtocol maps an outbound adapter onto its wire protocol. The
+// adapter may come from the selected model or the provider default.
 func adapterProtocol(adapter string) ir.Protocol {
 	switch adapter {
 	case "openai-chat":
@@ -218,10 +218,11 @@ func (s *Server) serveDataPlaneWith(w http.ResponseWriter, r *http.Request, clie
 			fmt.Sprintf("provider %q does not exist", res.Provider), "")
 		return
 	}
-	outProto := adapterProtocol(cfgProvider.Adapter)
+	adapter := cfgProvider.ModelAdapter(res.Model)
+	outProto := adapterProtocol(adapter)
 	if outProto == "" {
 		writeInboundError(w, http.StatusUnprocessableEntity, inProto,
-			fmt.Sprintf("provider %q uses unknown adapter %q", res.Provider, cfgProvider.Adapter),
+			fmt.Sprintf("provider %q model %q uses unknown adapter %q", res.Provider, res.Model, adapter),
 			"unsupported_adapter")
 		return
 	}
@@ -231,13 +232,13 @@ func (s *Server) serveDataPlaneWith(w http.ResponseWriter, r *http.Request, clie
 		// other adapter would require inventing a compact translation.
 		if outProto != ir.ProtocolResponses {
 			writeInboundError(w, http.StatusUnprocessableEntity, inProto,
-				fmt.Sprintf("remote compaction requires an openai-responses upstream; provider %q uses %q", res.Provider, cfgProvider.Adapter),
+				fmt.Sprintf("remote compaction requires an openai-responses upstream; provider %q model %q uses %q", res.Provider, res.Model, adapter),
 				"unsupported_compact")
 			return
 		}
 		stream = false
 	}
-	if err := trace.route(res.Provider, res.Model, cfgProvider.Adapter, inProto, outProto); err != nil {
+	if err := trace.route(res.Provider, res.Model, adapter, inProto, outProto); err != nil {
 		trace.setError(err)
 		writeInboundError(w, http.StatusInternalServerError, inProto, err.Error(), "request_log_failed")
 		return
@@ -300,7 +301,7 @@ func (s *Server) serveDataPlaneWith(w http.ResponseWriter, r *http.Request, clie
 	}
 	if opts.compact {
 		writeInboundError(w, http.StatusUnprocessableEntity, inProto,
-			fmt.Sprintf("remote compaction requires an openai-responses upstream; provider %q uses %q", res.Provider, cfgProvider.Adapter),
+			fmt.Sprintf("remote compaction requires an openai-responses upstream; provider %q model %q uses %q", res.Provider, res.Model, adapter),
 			"unsupported_compact")
 		return
 	}

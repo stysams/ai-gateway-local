@@ -99,7 +99,8 @@ func (s *Server) handleProbeProvider(w http.ResponseWriter, r *http.Request) {
 func (s *Server) probeProvider(ctx context.Context, id string, p config.Provider) (int, error, string) {
 	var payload any
 	var endpoint string
-	switch p.Adapter {
+	adapter := p.ModelAdapter(p.DefaultModel)
+	switch adapter {
 	case "openai-chat":
 		endpoint = openaichat.CompletionURL(p.BaseURL)
 		payload = map[string]any{
@@ -119,7 +120,7 @@ func (s *Server) probeProvider(ctx context.Context, id string, p config.Provider
 			"stream":     false,
 		}
 	default:
-		return 0, fmt.Errorf("provider %q uses unsupported adapter %q", id, p.Adapter), ""
+		return 0, fmt.Errorf("provider %q model %q uses unsupported adapter %q", id, p.DefaultModel, adapter), ""
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -139,13 +140,13 @@ func (s *Server) probeProvider(ctx context.Context, id string, p config.Provider
 	}
 	if key != nil {
 		defer secret.Zero(key)
-		if p.Adapter == "anthropic" {
+		if adapter == "anthropic" {
 			req.Header.Set("x-api-key", string(key))
 			req.Header.Set("anthropic-version", anthropic.APIVersion)
 		} else {
 			req.Header.Set("Authorization", "Bearer "+string(key))
 		}
-	} else if p.Adapter == "anthropic" {
+	} else if adapter == "anthropic" {
 		req.Header.Set("anthropic-version", anthropic.APIVersion)
 	}
 	resp, err := providerProbeClient.Do(req)

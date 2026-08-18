@@ -16,6 +16,7 @@
 | CLI 命令、退出码、启动/停止 | `cmd/gateway/main.go` → `internal/app/app.go` | `internal/process/` |
 | 监听地址、端口、数据根 | `internal/config/config.go` `Listen` | `internal/app/datadir.go`、`internal/server/server.go` |
 | `config.yaml` 字段、校验、原子写 | `internal/config/config.go`、`validate.go` | `internal/config/manager.go` |
+| 模型出站协议 | `config.Provider.ModelAdapter` | `dataplane.go` `serveDataPlane`；桌面模型目录 |
 | 管理 API 路由表 | `internal/server/handlers.go` `routes()` | 对应 `internal/server/*.go` |
 | 数据面整条管道 | `internal/server/dataplane.go` `serveDataPlane` | `handlers.go` 里的 `/v1/*` 注册 |
 | §7.4 模型解析 | `internal/route/route.go` `Resolve` | `internal/route/availability_test.go` |
@@ -272,7 +273,7 @@ OpenAI 系用 Bearer。Anthropic 用 `x-api-key` + 固定 `anthropic-version: 20
 | 文件 | 职责 |
 |---|---|
 | `config.go` | 结构体、`Defaults`、`EnabledValue` / `HostValue` / `PortValue`、指针可选字段、`Extra` 保未知顶层键 |
-| `validate.go` | 完整校验；provider id、adapter、URL、路由引用、模型目录与默认模型一致 |
+| `validate.go` | 完整校验；provider id、adapter、模型 adapter、URL、路由引用、模型目录与默认模型一致 |
 | `manager.go` | `Load` / `LoadOrCreate` / `Snapshot` / `Write`；同目录临时文件原子替换；写之前完整校验 |
 
 数据面永远读 `Manager.Snapshot()`，不要自己读磁盘。
