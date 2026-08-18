@@ -254,10 +254,9 @@ func appendMergedMessage(messages []map[string]any, role string, content []map[s
 	return append(messages, map[string]any{"role": role, "content": content})
 }
 
-// toolChoiceForMessages maps the IR tool_choice onto the Messages form.
-// The "required" mode has no Messages equivalent ("any" allows the model to
-// pick any tool, which is not the same contract), so it is rejected by the
-// caller via ErrToolChoice. This function returns nil for an unset choice.
+// toolChoiceForMessages maps the IR tool_choice onto the official Messages
+// object form (docs/v1-scheme.md §10, §20). Anthropic and Bedrock-backed
+// proxies reject the OpenAI string "auto"/"none".
 func toolChoiceForMessages(tc json.RawMessage) any {
 	if len(tc) == 0 {
 		return nil
@@ -266,19 +265,28 @@ func toolChoiceForMessages(tc json.RawMessage) any {
 	if err := json.Unmarshal(tc, &s); err == nil {
 		switch s {
 		case "auto":
-			return "auto"
+			return map[string]any{"type": "auto"}
 		case "none":
-			return "none"
+			return map[string]any{"type": "none"}
 		case "required":
-			return "any"
+			return map[string]any{"type": "any"}
 		}
-		return s
+		return nil
 	}
 	var named struct {
 		Type string `json:"type"`
 		Name string `json:"name"`
 	}
-	if err := json.Unmarshal(tc, &named); err == nil && named.Type == "function" {
+	if err := json.Unmarshal(tc, &named); err != nil || named.Type == "" {
+		return nil
+	}
+	switch named.Type {
+	case "auto", "none", "any":
+		return map[string]any{"type": named.Type}
+	case "function", "tool":
+		if named.Name == "" {
+			return nil
+		}
 		return map[string]any{"type": "tool", "name": named.Name}
 	}
 	return nil

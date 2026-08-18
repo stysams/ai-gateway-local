@@ -27,6 +27,7 @@
 | Claude Code `tool_result` / `tool_reference` | `inbound/messages` `parseMessages` | 拆成 `RoleTool`；出站 Responses 写 `function_call_output` |
 | 同协议转发 | `dataplane.go` `serveSameProtocol` | `inbound/*/Parse` + `Rewrite` |
 | 跨协议转换 | `dataplane.go` `serveCrossProtocol` | `internal/ir/ir.go`，再进 inbound / outbound |
+| Messages 出站 `tool_choice` | `outbound/anthropic` `toolChoiceForMessages` | 官方对象形；入站 `inbound/messages` 先归一化 |
 | 入站协议外形 | `internal/inbound/{chat,responses,messages}` | `Parse` / `ParseRequest` / `Encode*` / `WriteError` |
 | 出站协议外形与上游 HTTP | `internal/outbound/{openaichat,openairesponses,anthropic}` | `outbound/internal/upstream` |
 | 入站 `Anthropic-Beta` 与 `extra_headers` 并集 | `server/anthropicbeta.go` `mergeInboundAnthropicBeta` | `dataplane.go` 组 `providerInfo` 时调用 |

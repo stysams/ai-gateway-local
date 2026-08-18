@@ -744,9 +744,16 @@ GET  /readyz
   个 `function_call` 必须紧跟对应 `call_id` 的 `function_call_output`。
   Claude Code 把 `tool_result` 放在 `role: user` 消息里，并可与后续文本
   共存；跨协议不得丢掉该块，也不得只留下旁边的用户文本（证据见 §20）。
-- `anthropic`：`POST <base_url>/v1/messages`
+- `anthropic`：`POST <base_url>/v1/messages`。出站 `tool_choice` 必须是官方
+  对象形 `{"type":"auto"}` / `{"type":"none"}` / `{"type":"any"}` /
+  `{"type":"tool","name":"..."}`，不得把 IR 字符串 `"auto"` 原样写出。
+  证据见 §20。
 
 URL 拼接必须避免重复 `/v1` 或重复斜杠。`base_url` 语义以配置预设为准，不得通过字符串猜测供应商。
+`openai-chat` 与 `openai-responses` 把路径接在 `base_url` 后面，因此 OpenAI
+兼容面位于 `/v1/chat/completions`、`/v1/responses` 的上游必须把 `/v1` 写进
+`base_url`。`anthropic` 适配器在 `base_url` 已以 `/v1` 结尾时不再重复拼接，
+因此同一 `https://host/v1` 可以同时服务 Messages 与 Responses。证据见 §20。
 
 ### 10.1 认证
 
@@ -2484,6 +2491,62 @@ provider id 则覆盖）冲突。禁用检查只能发生在真正使用当前�
 - `POST /responses/compact` 看解析后的模型 adapter，不是 provider
   默认 adapter。
 - 探测默认模型时使用该模型的 adapter。
+
+### 2026-08-18 复核：AgentRouter OpenAI 面必须带 /v1
+
+实验对象：Codex Desktop，入站 `POST /c/codex/v1/responses`，模型
+`agentrouter/gpt-5.6-sol`（`models[].adapter` 为 `openai-responses`）。
+当时 provider `agentrouter` 的 `base_url` 是 `https://agentrouter.org`
+（Anthropic 面的写法）。
+
+证据文件：`%USERPROFILE%\.ai-gateway\logs\2026-08-18\req_44f3e79b73684f8a680fb94a.jsonl`。
+
+- 出站 URL 被拼成 `https://agentrouter.org/responses`。
+- 上游 200，`Content-Type` 为网站 HTML（`<!doctype html>`，含
+  `gtag('config', 'G-PY29DXE5ZT')` 与 React 入口脚本）。
+- 同协议按原文转发这段 HTML，旧实现把结果记成 200 success。
+- Codex 报
+  `stream disconnected before completion: stream closed before response.completed`。
+
+AgentRouter 文档把两种协议写成不可混用的 Base URL：
+
+- Anthropic：`https://co.agentrouter.org`（客户端自己加 `/v1/messages`）
+- OpenAI 兼容：`https://co.agentrouter.org/v1`（必须带 `/v1`）
+
+本网关的 `anthropic` 适配器在 `base_url` 已以 `/v1` 结尾时写成
+`<base>/messages`，因此把该供应商的 `base_url` 改成
+`https://agentrouter.org/v1` 后，Messages 仍是
+`https://agentrouter.org/v1/messages`，Responses 变成
+`https://agentrouter.org/v1/responses`。禁止按主机名猜测并自动补 `/v1`：
+土豆上游的真实路径是 `https://api.2dou.net/responses`，补 `/v1` 会打错。
+
+同协议遇到 `text/html` 流时仍按原文转发状态和字节，但必须记
+`upstream_not_event_stream` 警告，并且结果标失败，不得再记成 success。
+
+### 2026-08-18 复核：Messages 出站 tool_choice 必须是对象
+
+实验对象：同一 Codex Desktop，入站 `POST /c/codex/v1/responses`，模型
+`agentrouter/claude-opus-5` 或 `gateway-default`（出站 `anthropic`）。
+
+证据文件：
+
+- `%USERPROFILE%\.ai-gateway\logs\2026-08-18\req_bbb56ea5ca34b37f38d39dd1.jsonl`
+- `%USERPROFILE%\.ai-gateway\logs\2026-08-18\req_50843251f0f8fe538fbb9967.jsonl`
+
+- 出站 `https://agentrouter.org/v1/messages` 已打到上游。
+- AgentRouter 返回 400：`tool_choice must be an object`。
+- 经 Bedrock 的另一次返回
+  `ValidationException: invalid type: string "auto", expected internally tagged enum CreateMessageParamsToolChoice`。
+
+官方 Messages `tool_choice` 是带 `type` 的对象
+（`auto` / `none` / `any` / `tool`），不是 OpenAI 字符串 `"auto"`。
+IR 仍用字符串 `"auto"` / `"none"` / `"required"` 作为规范形；出站
+Anthropic 必须写成 `{"type":"auto"}`、`{"type":"none"}`、
+`{"type":"any"}`。入站 Messages 的官方对象形必须先归一化到 IR。
+
+同日更早、User-Agent 仍是默认 `ai-gateway` 时，同一上游返回 401
+`unauthorized client detected`。这是供应商客户端识别，不是协议转换错误；
+用已核验的 `extra_headers` 覆盖 `User-Agent` 后才能进入 `tool_choice` 校验。
 
 ---
 

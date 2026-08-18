@@ -275,3 +275,43 @@ func TestDoctorReportsLogSizeAndInterruptedFile(t *testing.T) {
 		t.Fatalf("last_parseable = %v", report.Logs.LastParseable)
 	}
 }
+
+func TestSameProtocolHTMLStreamIsLoggedFailed(t *testing.T) {
+	const page = "<!doctype html><html lang=\"zh\"><body>marketing site</body></html>"
+	up := newFakeUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, page)
+	})
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	cfg.Providers["openrouter"] = config.Provider{
+		Name: "OpenRouter", Adapter: "openai-responses",
+		BaseURL: up.URL, DefaultModel: "gpt-test",
+	}
+	cfg.Routes.Codex = config.Route{Provider: "openrouter", Model: "gpt-test"}
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	resp, body := chatPost(t, addr, "/c/codex/v1/responses",
+		[]byte(`{"model":"gateway-default","input":[{"role":"user","content":"ping"}],"stream":true}`), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want forwarded 200, body %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "marketing site") {
+		t.Fatalf("same-protocol must forward HTML bytes verbatim: %s", body)
+	}
+	id := resp.Header.Get("X-Request-Id")
+	if id == "" {
+		t.Fatal("missing X-Request-Id")
+	}
+	_, detail := httpJSON(t, addr, http.MethodGet, "/api/v1/logs/"+id, nil)
+	text := string(detail)
+	if !strings.Contains(text, `"code":"upstream_not_event_stream"`) {
+		t.Fatalf("detail missing HTML-stream warning: %s", detail)
+	}
+	if !strings.Contains(text, `"status":"failed"`) {
+		t.Fatalf("HTML stream must not be logged as success: %s", detail)
+	}
+	if !strings.Contains(text, "upstream returned HTML instead of an event stream") {
+		t.Fatalf("detail missing HTML-stream error: %s", detail)
+	}
+}

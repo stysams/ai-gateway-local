@@ -101,6 +101,20 @@ func isJSONContentType(raw string) bool {
 	return mt == "application/json" || strings.HasSuffix(mt, "+json")
 }
 
+// isHTMLContentType reports whether a response Content-Type is HTML. Some
+// OpenAI-compatible hosts serve their website at `/responses` when the
+// configured base_url omitted `/v1` (docs/v1-scheme.md §20).
+func isHTMLContentType(raw string) bool {
+	if strings.TrimSpace(raw) == "" {
+		return false
+	}
+	mt, _, err := mime.ParseMediaType(raw)
+	if err != nil {
+		return false
+	}
+	return mt == "text/html"
+}
+
 // ---- endpoints -------------------------------------------------------------
 
 // handleChatCompletions serves POST /v1/chat/completions (no prefix is
@@ -356,6 +370,14 @@ func (s *Server) serveSameProtocol(w http.ResponseWriter, r *http.Request, proto
 		return
 	}
 	defer upResp.Body.Close()
+	if stream && upResp.StatusCode < 400 && isHTMLContentType(upResp.Header.Get("Content-Type")) {
+		if err := s.writeUpstreamNotEventStream(trace, proto, provider.id, upResp.Header.Get("Content-Type"), upResp.StatusCode); err != nil {
+			trace.setError(err)
+			writeInboundError(w, http.StatusInternalServerError, proto, err.Error(), "warning_log_failed")
+			return
+		}
+		trace.setError(errors.New("upstream returned HTML instead of an event stream"))
+	}
 	// 同协议：保留上游状态码与错误体（4xx/5xx 原样）。
 	forwardHeadersOnly(w, upResp)
 	w.WriteHeader(upResp.StatusCode)
@@ -835,6 +857,25 @@ func (s *Server) writeContextManagementDropped(trace *requestTrace, inProto, out
 		},
 	}); err != nil {
 		return fmt.Errorf("write context management downgrade warning: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) writeUpstreamNotEventStream(trace *requestTrace, proto ir.Protocol, providerID, contentType string, statusCode int) error {
+	if trace == nil {
+		return nil
+	}
+	if err := trace.session.Append("warning", map[string]any{
+		"code":    "upstream_not_event_stream",
+		"message": "upstream returned HTML instead of an event stream; the client will not see response.completed",
+		"details": map[string]any{
+			"protocol":     proto,
+			"provider":     providerID,
+			"content_type": contentType,
+			"status_code":  statusCode,
+		},
+	}); err != nil {
+		return fmt.Errorf("write upstream content-type warning: %w", err)
 	}
 	return nil
 }

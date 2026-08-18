@@ -468,7 +468,20 @@ func normalizeToolChoice(raw json.RawMessage) json.RawMessage {
 		Type string `json:"type"`
 		Name string `json:"name"`
 	}
-	if err := json.Unmarshal(raw, &named); err == nil && named.Type == "tool" && named.Name != "" {
+	if err := json.Unmarshal(raw, &named); err != nil || named.Type == "" {
+		return nil
+	}
+	switch named.Type {
+	case "auto", "none":
+		out, _ := json.Marshal(named.Type)
+		return out
+	case "any":
+		out, _ := json.Marshal("required")
+		return out
+	case "tool":
+		if named.Name == "" {
+			return nil
+		}
 		out, _ := json.Marshal(map[string]any{"type": "function", "name": named.Name})
 		return out
 	}

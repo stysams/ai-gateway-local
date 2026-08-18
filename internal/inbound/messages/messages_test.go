@@ -139,12 +139,24 @@ func TestParseRequestImageAndThinking(t *testing.T) {
 }
 
 func TestToolChoiceNormalization(t *testing.T) {
-	req, err := ParseRequest([]byte(`{"model":"m","messages":[],"tool_choice":{"type":"tool","name":"f"}}`))
-	if err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{`{"type":"tool","name":"f"}`, `{"name":"f","type":"function"}`},
+		{`{"type":"auto"}`, `"auto"`},
+		{`{"type":"none"}`, `"none"`},
+		{`{"type":"any"}`, `"required"`},
+		{`"auto"`, `"auto"`},
 	}
-	if string(req.ToolChoice) != `{"name":"f","type":"function"}` {
-		t.Errorf("tool_choice = %s", req.ToolChoice)
+	for _, tc := range cases {
+		req, err := ParseRequest([]byte(`{"model":"m","messages":[],"tool_choice":` + tc.in + `}`))
+		if err != nil {
+			t.Fatalf("tool_choice %s: %v", tc.in, err)
+		}
+		if string(req.ToolChoice) != tc.want {
+			t.Errorf("tool_choice %s = %s, want %s", tc.in, req.ToolChoice, tc.want)
+		}
 	}
 }
 

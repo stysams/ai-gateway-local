@@ -158,10 +158,12 @@ func TestGenerateRequestToolChoiceMapping(t *testing.T) {
 		in   string
 		want string
 	}{
-		{`"auto"`, `"auto"`},
-		{`"none"`, `"none"`},
-		{`"required"`, `"any"`}, // required 在 Messages 中最近似 any
+		{`"auto"`, `{"type":"auto"}`},
+		{`"none"`, `{"type":"none"}`},
+		{`"required"`, `{"type":"any"}`},
+		{`{"type":"auto"}`, `{"type":"auto"}`},
 		{`{"type":"function","name":"f"}`, `{"name":"f","type":"tool"}`},
+		{`{"type":"tool","name":"f"}`, `{"name":"f","type":"tool"}`},
 	}
 	for _, tc := range cases {
 		req := testIRRequest()

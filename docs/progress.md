@@ -153,6 +153,12 @@
     选项，也去掉模型的上下文窗口与最大输出令牌。保存时用默认模型的
     协议回写 provider `adapter`。上下文由客户端与上游协商；Claude 1M
     窗口用模型 ID 后缀 `[1m]`，例如 `claude-opus-5[1m]`。
+23. **Messages 出站 `tool_choice` 必须是官方对象。** IR 仍用 `"auto"` /
+    `"none"` / `"required"`；出站 Anthropic 写成 `{"type":"auto"}`、
+    `{"type":"none"}`、`{"type":"any"}`。AgentRouter / Bedrock 拒绝字符串
+    `"auto"`。同协议若收到 `text/html` 流，仍按原文转发，但记
+    `upstream_not_event_stream` 并标失败。AgentRouter 的 OpenAI 面必须把
+    `/v1` 写进 `base_url`，禁止按主机名自动补。
 
 相关证据在规格 §20「2026-08-15 复核：客户端可选模型目录」、
 「2026-08-16 复核：Codex 远程压缩触发条件」、
@@ -168,7 +174,9 @@
 「2026-08-17 复核：第三方请求需要可开关的客户端伪装」和
 「2026-08-17 复核：Claude 伪装必须补齐 thinking 与系统 cache_control」和
 「2026-08-18 复核：禁用的默认路由不得挡住前缀覆盖」和
-「2026-08-18 复核：出站协议绑定到模型」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
+「2026-08-18 复核：出站协议绑定到模型」和
+「2026-08-18 复核：AgentRouter OpenAI 面必须带 /v1」和
+「2026-08-18 复核：Messages 出站 tool_choice 必须是对象」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
 
 ---
 
