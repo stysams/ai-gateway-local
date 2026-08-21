@@ -35,9 +35,9 @@ type ConfigAutostartPayload struct {
 	Enabled bool `json:"enabled"`
 }
 type ConfigProviderPayload struct {
-	Name         string                 `json:"name"`
-	Adapter      string                 `json:"adapter"`
-	BaseURL      string                 `json:"base_url"`
+	Name           string                 `json:"name"`
+	Adapter        string                 `json:"adapter"`
+	BaseURL        string                 `json:"base_url"`
 	ModelsURL      string                 `json:"models_url,omitempty"`
 	ExtraHeaders   map[string]string      `json:"extra_headers,omitempty"`
 	DisguiseClient string                 `json:"disguise_client,omitempty"`
