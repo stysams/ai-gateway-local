@@ -212,7 +212,14 @@ inbound protocol's native error shape; management errors use the
   `backups/<client>/<utc>/` → atomic rewrite → verify → roll back everything on
   any failure. Pointed clients use the provider-neutral `gateway-default` model;
   changing a route must **not** rewrite a pointed client's config file and must
-  not replace the original restore point.
+  not replace the original restore point. Adapters rewrite **only** the model
+  and routing keys, byte-splicing through the leaf packages `point/tomledit`
+  (TOML) and `point/jsonedit` (JSON): comments, key order, quoting style and
+  every unrelated `[mcp_servers.*]` / `[plugins.*]` / `permissions` / `hooks`
+  block keep their original bytes, and a repeated point is byte-identical. Only
+  a target inside an inline table, array or array of tables falls back to
+  `transformWhole` re-encoding. Never replace a `Transform` with
+  unmarshal → mutate map → marshal.
 
 ## Testing conventions
 

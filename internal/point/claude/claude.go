@@ -8,6 +8,7 @@ import (
 	"io"
 
 	"ai-gateway/internal/point/clientcatalog"
+	"ai-gateway/internal/point/jsonedit"
 )
 
 const apiKeyPlaceholder = "sk-ai-gateway-local"
@@ -31,25 +32,24 @@ var modelKeys = []string{
 // the same way OpenCodex's `ocx claude` does (docs/v1-scheme.md §12.4).
 const discoveryKey = "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
 
+// envKey is the settings.json member holding Claude Code's environment slots.
+const envKey = "env"
+
 // Transform merges the gateway's env slots into Claude Code's user settings,
-// leaving every unrelated `env` variable untouched.
+// leaving every unrelated `env` variable untouched (docs/v1-scheme.md §12.4).
+//
+// Only the named slots are rewritten: permissions, hooks, status line, MCP
+// switches and every other member keep their original bytes, order and
+// formatting (§12.1, 2026-08-21 evidence in §20).
 func Transform(original []byte, baseURL string, settings clientcatalog.Settings) ([]byte, error) {
-	doc, err := parse(original)
+	out, err := jsonedit.SetObjectStrings(original, envKey, targets(baseURL, settings))
 	if err != nil {
-		return nil, err
+		if errors.Is(err, jsonedit.ErrNotObject) {
+			return nil, fmt.Errorf("Claude settings field %q must be an object", envKey)
+		}
+		return nil, fmt.Errorf("edit Claude settings: %w", err)
 	}
-	env, err := object(doc, "env")
-	if err != nil {
-		return nil, err
-	}
-	for name, value := range targets(baseURL, settings) {
-		env[name] = value
-	}
-	out, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return nil, fmt.Errorf("encode Claude settings: %w", err)
-	}
-	return append(out, '\n'), nil
+	return out, nil
 }
 
 func Check(data []byte, baseURL string, settings clientcatalog.Settings) (bool, error) {
@@ -57,12 +57,12 @@ func Check(data []byte, baseURL string, settings clientcatalog.Settings) (bool, 
 	if err != nil {
 		return false, err
 	}
-	env, ok := doc["env"].(map[string]any)
+	env, ok := doc[envKey].(map[string]any)
 	if !ok {
 		return false, nil
 	}
-	for name, value := range targets(baseURL, settings) {
-		if env[name] != value {
+	for _, kv := range targets(baseURL, settings) {
+		if env[kv.Key] != kv.Value {
 			return false, nil
 		}
 	}
@@ -76,22 +76,24 @@ func Managed(data []byte, baseURL string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	env, ok := doc["env"].(map[string]any)
+	env, ok := doc[envKey].(map[string]any)
 	if !ok {
 		return false, nil
 	}
 	return env["ANTHROPIC_BASE_URL"] == baseURL+"/c/claude", nil
 }
 
-func targets(baseURL string, settings clientcatalog.Settings) map[string]string {
-	out := map[string]string{
-		"ANTHROPIC_BASE_URL": baseURL + "/c/claude",
-		"ANTHROPIC_API_KEY":  apiKeyPlaceholder,
-		discoveryKey:         "1",
+// targets is the ordered set of env slots the gateway owns. The order is fixed
+// so a repeated point writes byte-identical settings.
+func targets(baseURL string, settings clientcatalog.Settings) []jsonedit.KV {
+	out := []jsonedit.KV{
+		{Key: "ANTHROPIC_BASE_URL", Value: baseURL + "/c/claude"},
+		{Key: "ANTHROPIC_API_KEY", Value: apiKeyPlaceholder},
+		{Key: discoveryKey, Value: "1"},
 	}
 	preferred := settings.Model()
 	for _, key := range modelKeys {
-		out[key] = preferred
+		out = append(out, jsonedit.KV{Key: key, Value: preferred})
 	}
 	return out
 }
@@ -110,22 +112,4 @@ func parse(data []byte) (map[string]any, error) {
 		return nil, errors.New("parse Claude settings: trailing JSON data")
 	}
 	return doc, nil
-}
-
-func object(parent map[string]any, key string) (map[string]any, error) {
-	if current, ok := parent[key]; ok {
-		if current == nil {
-			out := map[string]any{}
-			parent[key] = out
-			return out, nil
-		}
-		out, ok := current.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("Claude settings field %q must be an object", key)
-		}
-		return out, nil
-	}
-	out := map[string]any{}
-	parent[key] = out
-	return out, nil
 }

@@ -1,0 +1,16 @@
+theme = "dark"
+
+# MCP servers
+[mcp.servers.example-files]
+command = "npx"
+args = ["-y", "@example/files-mcp"]
+
+[models]
+default = "grok-4"
+
+[model."grok-4"]
+model = "grok-4"
+name = "Grok 4"
+
+[plugin.sample]
+enabled = true

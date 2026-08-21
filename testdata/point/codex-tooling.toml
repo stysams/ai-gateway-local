@@ -1,0 +1,37 @@
+# Codex configuration with the tool wiring a point must not disturb.
+model = "gpt-5-codex"
+model_provider = "openai"
+approval_policy = "on-request"   # trailing comment
+model_reasoning_effort = "high"
+
+[history]
+persistence = "save-all"
+max_bytes = 10485760
+
+# MCP servers
+[mcp_servers.example-docs]
+command = "npx"
+args = ["-y", "@example/docs-mcp@latest"]
+startup_timeout_sec = 20
+
+[mcp_servers.example-docs.env]
+EXAMPLE_DOCS_MODE = "offline"
+
+[mcp_servers."example-git"]
+command = "uvx"
+args = ["mcp-server-git", "--repository", "/tmp/example"]
+
+[tools]
+web_search = true
+
+[plugins.'docs@example-bundled']
+enabled = true
+
+[profiles.review]
+model = "gpt-5"
+model_provider = "openai"
+
+[model_providers.openai]
+name = "OpenAI"
+base_url = "https://api.openai.com/v1"
+wire_api = "responses"

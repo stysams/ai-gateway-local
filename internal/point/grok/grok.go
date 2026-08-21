@@ -5,10 +5,19 @@ import (
 	"strings"
 
 	"ai-gateway/internal/point/clientcatalog"
+	"ai-gateway/internal/point/tomledit"
 	"github.com/pelletier/go-toml/v2"
 )
 
 const apiKeyPlaceholder = "sk-ai-gateway-local"
+
+// modelTable holds one table per selectable model; modelsTable holds the picker
+// state, whose defaultKey names the startup entry (docs/v1-scheme.md §12.5).
+const (
+	modelTable  = "model"
+	modelsTable = "models"
+	defaultKey  = "default"
+)
 
 // preferredKey holds the startup model; `[models] default` always points at it,
 // so changing a route only rewrites this one entry.
@@ -23,16 +32,57 @@ const catalogPrefix = "ai-gateway:"
 // can express many models at once: `[model."<id>"]` tables are additive to the
 // built-in models rather than replacing them, and ids containing `/` and `:`
 // both parse correctly (docs/v1-scheme.md §12.5, evidence in §20).
+//
+// Only `[models] default` and the gateway's own `[model."ai-gateway*"]` tables
+// are touched. §12.5 requires the user's other models, MCP, plugin, permission
+// and UI configuration to be preserved, so the rest of the document keeps its
+// original bytes (2026-08-21 evidence in §20). A shape tomledit cannot splice
+// falls back to re-encoding the whole document.
 func Transform(original []byte, baseURL string, settings clientcatalog.Settings) ([]byte, error) {
+	if out, err := transformInPlace(original, baseURL, settings); err == nil {
+		return out, nil
+	}
+	return transformWhole(original, baseURL, settings)
+}
+
+func transformInPlace(original []byte, baseURL string, settings clientcatalog.Settings) ([]byte, error) {
+	doc, err := tomledit.Parse(original)
+	if err != nil {
+		return nil, err
+	}
+	want := entries(settings)
+	for _, key := range doc.ChildNames([]string{modelTable}) {
+		if !ownedKey(key) || containsKey(want, key) {
+			continue
+		}
+		if err := doc.DeleteTree([]string{modelTable, key}); err != nil {
+			return nil, err
+		}
+	}
+	for _, item := range want {
+		if err := doc.SetStrings([]string{modelTable, item.key}, entryKeys(baseURL, item)); err != nil {
+			return nil, err
+		}
+	}
+	if err := doc.SetString([]string{modelsTable, defaultKey}, preferredKey); err != nil {
+		return nil, err
+	}
+	return doc.Bytes()
+}
+
+// transformWhole is the fallback for a config.toml whose model tables live in an
+// inline table or an array of tables. It re-encodes the document, which keeps
+// every unknown field and its semantics but not the original layout (§12.1).
+func transformWhole(original []byte, baseURL string, settings clientcatalog.Settings) ([]byte, error) {
 	doc, err := parse(original)
 	if err != nil {
 		return nil, err
 	}
-	models, err := object(doc, "models")
+	models, err := object(doc, modelsTable)
 	if err != nil {
 		return nil, err
 	}
-	modelSet, err := object(doc, "model")
+	modelSet, err := object(doc, modelTable)
 	if err != nil {
 		return nil, err
 	}
@@ -41,13 +91,14 @@ func Transform(original []byte, baseURL string, settings clientcatalog.Settings)
 			delete(modelSet, key)
 		}
 	}
-	for _, entry := range entries(settings) {
-		modelSet[entry.key] = map[string]any{
-			"model": entry.model, "base_url": baseURL + "/c/grok/v1",
-			"name": entry.model, "api_backend": "responses", "api_key": apiKeyPlaceholder,
+	for _, item := range entries(settings) {
+		table := map[string]any{}
+		for _, kv := range entryKeys(baseURL, item) {
+			table[kv.Key] = kv.Value
 		}
+		modelSet[item.key] = table
 	}
-	models["default"] = preferredKey
+	models[defaultKey] = preferredKey
 	out, err := toml.Marshal(doc)
 	if err != nil {
 		return nil, fmt.Errorf("encode Grok config: %w", err)
@@ -55,29 +106,41 @@ func Transform(original []byte, baseURL string, settings clientcatalog.Settings)
 	return out, nil
 }
 
+// entryKeys is the ordered set of keys inside one `[model."<key>"]` table. The
+// order matches the §12.5 example.
+func entryKeys(baseURL string, item entry) []tomledit.KV {
+	return []tomledit.KV{
+		{Key: "model", Value: item.model},
+		{Key: "base_url", Value: baseURL + "/c/grok/v1"},
+		{Key: "name", Value: item.model},
+		{Key: "api_backend", Value: "responses"},
+		{Key: "api_key", Value: apiKeyPlaceholder},
+	}
+}
+
 func Check(data []byte, baseURL string, settings clientcatalog.Settings) (bool, error) {
 	doc, err := parse(data)
 	if err != nil {
 		return false, err
 	}
-	models, ok := doc["models"].(map[string]any)
-	if !ok || models["default"] != preferredKey {
+	models, ok := doc[modelsTable].(map[string]any)
+	if !ok || models[defaultKey] != preferredKey {
 		return false, nil
 	}
-	modelSet, ok := doc["model"].(map[string]any)
+	modelSet, ok := doc[modelTable].(map[string]any)
 	if !ok {
 		return false, nil
 	}
 	want := entries(settings)
-	for _, entry := range want {
-		p, ok := modelSet[entry.key].(map[string]any)
+	for _, item := range want {
+		p, ok := modelSet[item.key].(map[string]any)
 		if !ok {
 			return false, nil
 		}
-		if p["model"] != entry.model || p["base_url"] != baseURL+"/c/grok/v1" ||
-			p["name"] != entry.model || p["api_backend"] != "responses" ||
-			p["api_key"] != apiKeyPlaceholder {
-			return false, nil
+		for _, kv := range entryKeys(baseURL, item) {
+			if p[kv.Key] != kv.Value {
+				return false, nil
+			}
 		}
 	}
 	// A gateway-owned entry that is no longer part of the catalog means the file
@@ -97,7 +160,7 @@ func Managed(data []byte, baseURL string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	modelSet, ok := doc["model"].(map[string]any)
+	modelSet, ok := doc[modelTable].(map[string]any)
 	if !ok {
 		return false, nil
 	}

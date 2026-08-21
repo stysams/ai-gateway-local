@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": ["Read", "Bash(git status:*)"],
+    "deny": []
+  },
+  "enabledMcpjsonServers": ["example-docs"],
+  "enableAllProjectMcpServers": false,
+  "hooks": {
+    "Stop": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "example-notify" }] }]
+  },
+  "statusLine": { "type": "command", "command": "example-status" },
+  "cleanupPeriodDays": 30,
+  "env": {
+    "KEEP_ME": "yes",
+    "ANTHROPIC_MODEL": "example-old-model"
+  }
+}

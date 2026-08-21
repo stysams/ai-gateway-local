@@ -4,11 +4,16 @@ import (
 	"fmt"
 
 	"ai-gateway/internal/point/clientcatalog"
+	"ai-gateway/internal/point/tomledit"
 	"github.com/pelletier/go-toml/v2"
 )
 
 const PlaceholderEnvironment = "AI_GATEWAY_PLACEHOLDER_KEY"
 const PlaceholderValue = "ai-gateway-local"
+
+// providerID is the [model_providers.<id>] table the gateway owns, and the
+// value of the root model_provider key (docs/v1-scheme.md §12.3).
+const providerID = "ai-gateway"
 
 // ProviderDisplayName is the default [model_providers.ai-gateway].name.
 // Codex only treats a provider as OpenAI (and therefore uses remote
@@ -29,10 +34,42 @@ func providerDisplayName(settings clientcatalog.Settings) string {
 // point transaction; this function only records the absolute path. Entries
 // must clone a native bundled template and keep base_instructions
 // (docs/v1-scheme.md §12.3, 2026-08-16 evidence).
+//
+// Only the model and routing keys the gateway owns are rewritten. Everything
+// else in config.toml — comments, key order, quoting style, `[mcp_servers.*]`,
+// `[plugins.*]`, `[projects.*]` and the rest of the user's tool configuration —
+// keeps its original bytes (§12.1, 2026-08-21 evidence in §20). A shape
+// tomledit cannot splice falls back to re-encoding the whole document.
 func Transform(original []byte, baseURL string, settings clientcatalog.Settings, catalogPath string) ([]byte, error) {
 	if catalogPath == "" {
 		return nil, fmt.Errorf("Codex catalog path is required")
 	}
+	if out, err := transformInPlace(original, baseURL, settings, catalogPath); err == nil {
+		return out, nil
+	}
+	return transformWhole(original, baseURL, settings, catalogPath)
+}
+
+func transformInPlace(original []byte, baseURL string, settings clientcatalog.Settings, catalogPath string) ([]byte, error) {
+	doc, err := tomledit.Parse(original)
+	if err != nil {
+		return nil, err
+	}
+	for _, kv := range rootKeys(settings, catalogPath) {
+		if err := doc.SetString([]string{kv.Key}, kv.Value); err != nil {
+			return nil, err
+		}
+	}
+	if err := doc.SetStrings([]string{"model_providers", providerID}, providerKeys(baseURL, settings)); err != nil {
+		return nil, err
+	}
+	return doc.Bytes()
+}
+
+// transformWhole is the fallback for a config.toml whose gateway keys live in an
+// inline table or an array of tables. It re-encodes the document, which keeps
+// every unknown field and its semantics but not the original layout (§12.1).
+func transformWhole(original []byte, baseURL string, settings clientcatalog.Settings, catalogPath string) ([]byte, error) {
 	doc, err := parse(original)
 	if err != nil {
 		return nil, err
@@ -41,18 +78,39 @@ func Transform(original []byte, baseURL string, settings clientcatalog.Settings,
 	if err != nil {
 		return nil, err
 	}
-	doc["model_provider"] = "ai-gateway"
-	doc["model"] = settings.Model()
-	doc["model_catalog_json"] = catalogPath
-	providers["ai-gateway"] = map[string]any{
-		"name": providerDisplayName(settings), "base_url": baseURL + "/c/codex/v1",
-		"wire_api": "responses", "env_key": PlaceholderEnvironment,
+	for _, kv := range rootKeys(settings, catalogPath) {
+		doc[kv.Key] = kv.Value
 	}
+	provider := map[string]any{}
+	for _, kv := range providerKeys(baseURL, settings) {
+		provider[kv.Key] = kv.Value
+	}
+	providers[providerID] = provider
 	out, err := toml.Marshal(doc)
 	if err != nil {
 		return nil, fmt.Errorf("encode Codex config: %w", err)
 	}
 	return out, nil
+}
+
+// rootKeys is the ordered set of root keys the gateway owns. The order matches
+// the §12.3 example so a freshly created config.toml reads like the spec.
+func rootKeys(settings clientcatalog.Settings, catalogPath string) []tomledit.KV {
+	return []tomledit.KV{
+		{Key: "model_provider", Value: providerID},
+		{Key: "model", Value: settings.Model()},
+		{Key: "model_catalog_json", Value: catalogPath},
+	}
+}
+
+// providerKeys is the ordered set of keys inside [model_providers.ai-gateway].
+func providerKeys(baseURL string, settings clientcatalog.Settings) []tomledit.KV {
+	return []tomledit.KV{
+		{Key: "name", Value: providerDisplayName(settings)},
+		{Key: "base_url", Value: baseURL + "/c/codex/v1"},
+		{Key: "wire_api", Value: "responses"},
+		{Key: "env_key", Value: PlaceholderEnvironment},
+	}
 }
 
 func Check(data []byte, baseURL string, settings clientcatalog.Settings) (bool, error) {
@@ -68,10 +126,13 @@ func Check(data []byte, baseURL string, settings clientcatalog.Settings) (bool, 
 	if catalogPath == "" {
 		return false, nil
 	}
-	if doc["model_provider"] != "ai-gateway" || doc["model"] != settings.Model() ||
-		p["name"] != providerDisplayName(settings) || p["base_url"] != baseURL+"/c/codex/v1" ||
-		p["wire_api"] != "responses" || p["env_key"] != PlaceholderEnvironment {
+	if doc["model_provider"] != providerID || doc["model"] != settings.Model() {
 		return false, nil
+	}
+	for _, kv := range providerKeys(baseURL, settings) {
+		if p[kv.Key] != kv.Value {
+			return false, nil
+		}
 	}
 	return CatalogMatches(catalogPath, settings)
 }
@@ -89,7 +150,7 @@ func Managed(data []byte, baseURL string) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	return doc["model_provider"] == "ai-gateway" && p["base_url"] == baseURL+"/c/codex/v1", nil
+	return doc["model_provider"] == providerID && p["base_url"] == baseURL+"/c/codex/v1", nil
 }
 
 func providerBlock(doc map[string]any) (map[string]any, bool) {
@@ -97,7 +158,7 @@ func providerBlock(doc map[string]any) (map[string]any, bool) {
 	if !ok {
 		return nil, false
 	}
-	p, ok := providers["ai-gateway"].(map[string]any)
+	p, ok := providers[providerID].(map[string]any)
 	return p, ok
 }
 

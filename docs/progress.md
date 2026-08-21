@@ -163,6 +163,17 @@
     `base_url` 尚未以 `/v1` 结尾时自动补上。不走 `/v1` 的上游把模型
     `adapter` 写成 `custom`，并自己维护 `endpoint`。桌面在输入框下方
     显示实际调用 URL。`provider.adapter` 仍只回写报文协议。
+25. **指向只改模型与路由键，其余字节原样保留。** 三个适配器不再整档
+    重新序列化客户端配置。`internal/point/tomledit` 与
+    `internal/point/jsonedit` 做字节级拼接：已有键只替换值的字节区间，
+    缺失键只插入一行，Grok 失效的 `[model."ai-gateway:*"]` 只删该表行区间。
+    注释、键顺序、引号风格，以及 `[mcp_servers.*]`、`[plugins.*]`、
+    `[projects.*]`、`[profiles.*]`、Claude 的 `permissions` / `hooks` /
+    `statusLine` / `enabledMcpjsonServers` 全部不动；CRLF 文件插入的行也用
+    CRLF。已指向配置重复 point 是字节级幂等。目标键落在内联表、数组或
+    表数组里时报 `ErrUnsupportedShape`，退回整档重新序列化（仍保留未知
+    字段语义）。不要为了省事把 `Transform` 改回 `Unmarshal` → 改 map →
+    `Marshal`。
 
 相关证据在规格 §20「2026-08-15 复核：客户端可选模型目录」、
 「2026-08-16 复核：Codex 远程压缩触发条件」、
@@ -181,7 +192,8 @@
 「2026-08-18 复核：出站协议绑定到模型」和
 「2026-08-18 复核：AgentRouter OpenAI 面必须带 /v1」和
 「2026-08-18 复核：Messages 出站 tool_choice 必须是对象」和
-「2026-08-18 复核：预设端点默认补 /v1，例外走自定义路径」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
+「2026-08-18 复核：预设端点默认补 /v1，例外走自定义路径」和
+「2026-08-21 复核：整档重新序列化会重排用户的 MCP 与工具配置」。不要重新发明 Codex 目录方案，也不要只靠 Claude 启动发现而不写缓存。
 
 ---
 
@@ -194,6 +206,10 @@
 | Grok Build | `[models] default = "ai-gateway"`；每个已启用模型一条 `ai-gateway:` 前缀表 | 配置目录与内置模型并存 | restore 只删网关写过的条目，必须保留用户自己的模型。 |
 
 切换路由只改网关配置。客户端文件里只要还是 `gateway-default`，就不要去改它。
+
+指向和目录同步都是最小改写：只重写上表列出的模型与路由键，客户端配置里其它字节
+（注释、键顺序、引号风格，以及 MCP、工具、插件、权限、UI、profile 配置）必须原样
+保留。见规格 §12.1 与 §20 的 2026-08-21 条。
 
 Grok 目录增删发生在 point 与设置同步（可用性、目录变化）时，不得新建还原点。若旧 Grok 配置里 `name` 还是友好名称，检查会报漂移；再执行一次指向即可就地刷新，不会替换最初还原点。
 
@@ -280,7 +296,7 @@ internal/inbound/*   入站解析与编码
 internal/outbound/*  出站生成与解析
 internal/server      管理面 + 数据面；serveDataPlane 是唯一数据面管道
 internal/logstore    JSONL 与用量
-internal/point       指向事务；clientcatalog 是叶子包
+internal/point       指向事务；clientcatalog、tomledit、jsonedit 是叶子包
 internal/autostart   当前用户登录启动
 desktop/             React 前端；独立 stub go.mod，根模块 ./... 不会走进去
 testdata/            脱敏夹具，禁止真实钥匙、账号、个人路径

@@ -999,7 +999,11 @@ restore 必须：
 
 - 没有可还原 manifest 时返回 409 和可读说明。
 
-客户端配置重新序列化可以改变空白和键顺序，但必须保留未知字段及其语义；备份必须保留精确原始字节。
+客户端配置写入必须是最小改写：point 与目录同步只允许重写本节列出的模型与路由键，
+文件里其它一切字节保持原样——注释、键顺序、引号风格，以及 MCP、工具、插件、权限、
+UI、profile 等与网关无关的配置。已经指向的配置重复 point 必须是字节级幂等。
+目标键落在内联表、数组或表数组里时无法就地拼接，此时才允许整档重新序列化；
+整档重排仍必须保留未知字段及其语义。备份必须保留精确原始字节。
 
 ### 12.2 Backup manifest
 
@@ -2572,6 +2576,39 @@ Anthropic 必须写成 `{"type":"auto"}`、`{"type":"none"}`、
 同日更早、User-Agent 仍是默认 `ai-gateway` 时，同一上游返回 401
 `unauthorized client detected`。这是供应商客户端识别，不是协议转换错误；
 用已核验的 `extra_headers` 覆盖 `User-Agent` 后才能进入 `tool_choice` 校验。
+
+---
+
+### 2026-08-21 复核：整档重新序列化会重排用户的 MCP 与工具配置
+
+实验对象：本机已被 ai-gateway 指向过的真实 `%USERPROFILE%\.codex\config.toml`，
+以及把同一份带注释的配置喂给当时的 `point/codex`、`point/grok`、`point/claude`
+适配器的复现实验。
+
+当时三个适配器都走 `Unmarshal` 到 `map[string]any`、改键、再 `Marshal` 的整档路径。
+复现结果：
+
+- 所有注释被删除，包括行尾注释（`approval_policy = "on-request"   # ask me`
+  变成 `approval_policy = 'on-request'`）。
+- 顶层键与所有表按字典序重排，用户写的分组顺序消失。
+- 双引号字符串一律改写成 TOML 字面量单引号；`0xdeadbeef` 变成 `3735928559`，
+  `1_000_000` 变成 `1000000`，`"""多行"""` 变成带 `\n` 转义的单行。
+- 内联表被展开成独立 `[table]` 块；`[mcp_servers]`、`[marketplaces]`
+  这类空表头被凭空插入。
+- Claude Code 的 `settings.json` 被 `json.MarshalIndent` 全量重排，
+  `permissions`、`hooks`、`statusLine`、`enabledMcpjsonServers` 全部换位；
+  `targets()` 当时返回 map，追加顺序不确定。
+
+语义没有丢：把重排后的文档再解析回 `map[string]any` 与原文档 `DeepEqual` 相等，
+`[mcp_servers.*]` 的命令、参数、env 都在。丢的是用户手写的文件形态，而
+`[mcp_servers.*]`、`[plugins.*]`、`[projects.*]` 正是被重排得最明显的部分。
+
+由此把 §12.1 从“可以改变空白和键顺序”收紧为最小改写，并新增
+`internal/point/tomledit` 与 `internal/point/jsonedit` 两个叶子包做字节级拼接：
+只替换网关拥有的键值范围，插入缺失键时只插入一行，删除失效的
+`[model."ai-gateway:*"]` 时只删除该表的行区间。目标键落在内联表、数组或表数组里
+时报 `ErrUnsupportedShape`，适配器退回整档重新序列化——退回路径仍受既有契约测试
+约束，不是桩实现。
 
 ---
 

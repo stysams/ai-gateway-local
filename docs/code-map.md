@@ -36,6 +36,7 @@
 | 图片 / reasoning / context_management 门 | `dataplane.go` `inspectRequestFeatures`、`normalizeReasoning`、`Drop*` | 各 inbound 的 `InspectFeatures` / `DropReasoning` |
 | 钥匙读写与事务 | `internal/secret/` | `internal/server/providers.go`（§6.3） |
 | 指向 / 还原 / 漂移 | `internal/point/point.go` | `point/{codex,claude,grok}`、`point/clientcatalog` |
+| 客户端配置最小改写 | `internal/point/tomledit`（TOML）、`internal/point/jsonedit`（JSON） | 三个适配器的 `Transform`；无法就地拼接时退回 `transformWhole` |
 | Codex `/model` 目录 sidecar | `internal/point/codex/catalog.go` `BuildCatalog` | `codex/template.go`、`point.go` 多文件备份 |
 | 路由变更同步客户端目录 | `internal/server/clients.go` `applyClientSettingsChanges` | `point.Manager.SyncSettings` |
 | 正文日志与用量 | `internal/server/trace.go` | `internal/logstore/store.go`、`server/logs.go` |
@@ -326,6 +327,8 @@ OpenAI 系用 Bearer。Anthropic 用 `x-api-key` + 固定 `anthropic-version: 20
 | Grok Build | `point/grok` | `~/.grok/config.toml` | `[model."ai-gateway"]` 首选；其余 `[model."ai-gateway:<id>"]`；`name` = 模型 id |
 
 `point/clientcatalog` 是叶子包：`ReservedModel`、`Settings{PreferredModel, Catalog}`。适配器可以 import 它，不能 import `internal/point`（避免环）。
+
+`point/tomledit` 与 `point/jsonedit` 也是叶子包，只做字节级拼接：`Transform` 只重写模型与路由键，注释、键顺序、引号风格和 MCP / 工具 / 插件 / 权限 / profile 配置一律原样保留（§12.1，证据见 §20 的 2026-08-21 条）。目标键落在内联表、数组或表数组里时 `tomledit` 报 `ErrUnsupportedShape`，适配器退回 `transformWhole` 的整档重新序列化。改这里之前先看 `tomledit_test.go` 的形状用例。
 
 `server/clients.go` `clientSettings` 从 `modelCatalog` 填 `Catalog`，`PreferredModel` 固定为 `gateway-default`。这样切路由不必改客户端文件。
 

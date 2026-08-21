@@ -177,6 +177,120 @@ func TestPointRestorePreservesOriginalBytesUnknownFieldsAndEnvironment(t *testin
 	}
 }
 
+// A point owns the model and routing keys and nothing else. MCP servers, tool
+// tables, hooks, permissions, plugin and profile blocks — and the comments,
+// key order and quoting style around them — must come back out of the
+// transaction byte-for-byte (docs/v1-scheme.md §12.1 and §12.5, 2026-08-21
+// evidence in §20).
+func TestPointRewritesOnlyModelAndRoutingLines(t *testing.T) {
+	settings := Settings{PreferredModel: reservedModel, Catalog: []clientcatalog.Entry{
+		{ID: "example/model-a", DisplayName: "Model A"},
+	}}
+	cases := []struct {
+		client  Client
+		fixture string
+		// rewritten is the exact set of fixture lines a point is allowed to
+		// change. Every other line must survive verbatim and in order.
+		rewritten []string
+	}{
+		{ClientCodex, "codex-tooling.toml", []string{
+			`model = "gpt-5-codex"`,
+			`model_provider = "openai"`,
+		}},
+		{ClientGrok, "grok-tooling.toml", []string{
+			`default = "grok-4"`,
+		}},
+		{ClientClaude, "claude-tooling.json", []string{
+			`    "ANTHROPIC_MODEL": "example-old-model"`,
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.client), func(t *testing.T) {
+			home := t.TempDir()
+			target := clientTarget(home, tc.client, nil)
+			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			original, err := os.ReadFile(filepath.Join("..", "..", "testdata", "point", tc.fixture))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(target, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			m := testManager(t, home, NewMemoryEnvironment(), map[string]string{}, nil)
+			result, err := m.Point(tc.client, testBaseURL, settings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.PointState != StatePointed {
+				t.Fatalf("point result = %+v", result)
+			}
+			modified, err := os.ReadFile(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			kept, dropped := diffLines(string(original), string(modified))
+			if !equalStrings(dropped, tc.rewritten) {
+				t.Errorf("rewritten lines = %q, want %q\n%s", dropped, tc.rewritten, modified)
+			}
+			if len(kept)+len(dropped) != len(strings.Split(string(original), "\n")) {
+				t.Fatalf("diff lost lines: kept=%d dropped=%d", len(kept), len(dropped))
+			}
+		})
+	}
+}
+
+// diffLines aligns original against modified on their longest common
+// subsequence of whole lines. kept is what survived with its exact bytes and
+// its position; dropped is every original line the alignment could not match,
+// which is precisely the set a point was allowed to rewrite.
+func diffLines(original, modified string) (kept, dropped []string) {
+	src := strings.Split(original, "\n")
+	dst := strings.Split(modified, "\n")
+	// lengths[i][j] is the LCS length of src[i:] and dst[j:].
+	lengths := make([][]int, len(src)+1)
+	for i := range lengths {
+		lengths[i] = make([]int, len(dst)+1)
+	}
+	for i := len(src) - 1; i >= 0; i-- {
+		for j := len(dst) - 1; j >= 0; j-- {
+			if src[i] == dst[j] {
+				lengths[i][j] = lengths[i+1][j+1] + 1
+				continue
+			}
+			lengths[i][j] = max(lengths[i+1][j], lengths[i][j+1])
+		}
+	}
+	i, j := 0, 0
+	for i < len(src) {
+		switch {
+		case j < len(dst) && src[i] == dst[j]:
+			kept = append(kept, src[i])
+			i++
+			j++
+		case j < len(dst) && lengths[i][j+1] > lengths[i+1][j]:
+			j++
+		default:
+			dropped = append(dropped, src[i])
+			i++
+		}
+	}
+	return kept, dropped
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestPointAndRestoreWhenOriginalFileDoesNotExist(t *testing.T) {
 	for _, client := range []Client{ClientCodex, ClientClaude, ClientGrok} {
 		t.Run(string(client), func(t *testing.T) {
