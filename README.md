@@ -6,6 +6,8 @@
 
 默认监听地址为 `127.0.0.1:12600`。桌面程序只负责管理网关，不承载 `/v1/*` 数据面请求。
 
+> 当前状态：第一期已验收（带遗留问题），第二期优化已启动。未完成的真实验收证据和延期问题保留在 [`docs/progress.md`](docs/progress.md) 第 12、13 节。
+
 ## 功能概览
 
 - 支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages。
@@ -286,6 +288,7 @@ npm --prefix desktop run dev
 - [协议和架构规格](docs/v1-scheme.md)
 - [安装、运行和还原指南](docs/install.md)
 - [开发进度和发布约定](docs/progress.md)
+- [优化任务路线图](docs/optimization-roadmap.md)
 - [代码结构说明](docs/code-map.md)
 
 ## 许可证

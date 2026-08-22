@@ -217,7 +217,7 @@ Before removing the installed directory, restore all three clients, run
 installation without `autostart off` leaves a stale task that `doctor` will
 report.
 
-Before release, complete all twenty Windows acceptance steps in
-`docs/v1-scheme.md` §19. Automated transaction, protocol, desktop, and build
-tests do not replace the installed-client, real-provider, and logoff/login
-checks.
+The 2026-08-22 product decision accepted phase 1 with residual issues. The
+original twenty-step Windows evidence remains in `docs/progress.md` §12-13;
+the installed-client, real-provider, tray, and logoff/login checks are deferred
+for concentrated follow-up and do not block phase-2 optimization work.

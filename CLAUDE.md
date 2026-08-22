@@ -234,8 +234,9 @@ inbound protocol's native error shape; management errors use the
 - Golden/fixture updates only happen as part of an explicit behaviour-change
   task; never bulk-overwrite them to silence a failing test.
 - `docs/v1-scheme.md` §19 defines the real-client Windows acceptance run that
-  mocks cannot substitute; it is still outstanding (see README "Status": this is
-  a release candidate, not a completed acceptance).
+  mocks cannot substitute. The 2026-08-22 product decision accepted phase 1
+  with residual issues; the original evidence remains in `docs/progress.md`
+  §12-13 and does not block phase-2 work.
 
 ## Repo notes
 
