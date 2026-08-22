@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"ai-gateway/internal/config"
 	"ai-gateway/internal/endpoint"
@@ -28,6 +29,17 @@ import (
 
 // maxChatBody bounds data-plane request bodies (docs/v1-scheme.md §9.3).
 const maxChatBody = 128 << 20
+
+func requestHeaderBytes(header http.Header) int {
+	total := 0
+	for name, values := range header {
+		total += len(name)
+		for _, value := range values {
+			total += len(value)
+		}
+	}
+	return total
+}
 
 // chatAdapter is the adapter name for the Chat protocol.
 const chatAdapter = "openai-chat"
@@ -182,18 +194,36 @@ func (s *Server) serveDataPlane(w http.ResponseWriter, r *http.Request, client r
 }
 
 func (s *Server) serveDataPlaneWith(w http.ResponseWriter, r *http.Request, client route.ClientID, inProto ir.Protocol, opts dataPlaneOptions) {
+	started := time.Now()
+	firstByte := time.Duration(0)
+	tracked := &responseStatusWriter{ResponseWriter: w, onFirstWrite: func() {
+		if firstByte == 0 {
+			firstByte = time.Since(started)
+		}
+	}}
+	w = tracked
+	defer func() { s.metrics.observe(r.Context(), started, firstByte, tracked.status) }()
 	if !isJSONContentType(r.Header.Get("Content-Type")) {
 		writeInboundError(w, http.StatusUnsupportedMediaType, inProto,
 			"Content-Type must be application/json", "invalid_content_type")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxChatBody)
+	cfg := s.cfg.View()
+	if cfg == nil {
+		writeInboundError(w, http.StatusInternalServerError, inProto, "config not loaded", "")
+		return
+	}
+	if limit := cfg.Limits.RequestHeaderBytes; limit > 0 && requestHeaderBytes(r.Header) > limit {
+		writeInboundError(w, http.StatusRequestHeaderFieldsTooLarge, inProto, "request headers exceed configured limit", "request_headers_too_large")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, int64(cfg.Limits.RequestBodyBytesValue()))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			writeInboundError(w, http.StatusRequestEntityTooLarge, inProto,
-				"request body exceeds 128 MiB", "request_too_large")
+				"request body exceeds configured limit", "request_too_large")
 			return
 		}
 		writeInboundError(w, http.StatusBadRequest, inProto, "cannot read request body", "")
@@ -206,18 +236,11 @@ func (s *Server) serveDataPlaneWith(w http.ResponseWriter, r *http.Request, clie
 		return
 	}
 
-	cfg := s.cfg.View()
-	if cfg == nil {
-		writeInboundError(w, http.StatusInternalServerError, inProto, "config not loaded", "")
-		return
-	}
 	trace, err := s.startTrace(cfg, client, inProto, r, body)
 	if err != nil {
 		writeInboundError(w, http.StatusInternalServerError, inProto, err.Error(), "request_log_failed")
 		return
 	}
-	tracked := &responseStatusWriter{ResponseWriter: w}
-	w = tracked
 	if trace != nil {
 		w.Header().Set("X-Request-Id", trace.requestID())
 	}
@@ -233,6 +256,16 @@ func (s *Server) serveDataPlaneWith(w http.ResponseWriter, r *http.Request, clie
 			fmt.Sprintf("provider %q does not exist", res.Provider), "")
 		return
 	}
+	if !s.limiter.allowRate(cfg.Limits.ClientRatePerMinute, client, time.Now()) {
+		writeInboundError(w, http.StatusTooManyRequests, inProto, "client request rate limit reached", "client_rate_limit")
+		return
+	}
+	release, ok := s.limiter.tryAcquire(cfg.Limits, client, res.Provider)
+	if !ok {
+		writeInboundError(w, http.StatusTooManyRequests, inProto, "gateway concurrency limit reached", "concurrency_limit")
+		return
+	}
+	defer release()
 	adapter := cfgProvider.ModelAdapter(res.Model)
 	outProto := adapterProtocol(adapter)
 	if outProto == "" {
@@ -312,7 +345,7 @@ func (s *Server) serveDataPlaneWith(w http.ResponseWriter, r *http.Request, clie
 				return
 			}
 		}
-		s.serveSameProtocol(w, r, inProto, body, res.Model, stream, provider, trace, opts)
+		s.serveSameProtocol(w, r, inProto, body, res.Model, stream, provider, trace, opts, time.Duration(cfg.Limits.StreamIdleSeconds)*time.Second)
 		return
 	}
 	if opts.compact {
@@ -321,7 +354,7 @@ func (s *Server) serveDataPlaneWith(w http.ResponseWriter, r *http.Request, clie
 			"unsupported_compact")
 		return
 	}
-	s.serveCrossProtocol(w, r, inProto, outProto, body, res.Model, stream, provider, trace)
+	s.serveCrossProtocol(w, r, inProto, outProto, body, res.Model, stream, provider, trace, time.Duration(cfg.Limits.StreamIdleSeconds)*time.Second)
 }
 
 // parseForRouting extracts model and stream for routing without committing
@@ -354,7 +387,7 @@ func parseForRouting(proto ir.Protocol, body []byte) (string, bool, error) {
 
 // serveSameProtocol rewrites only model/stream, rewrites authentication and
 // forwards the upstream response at the HTTP level (docs/v1-scheme.md §8.3).
-func (s *Server) serveSameProtocol(w http.ResponseWriter, r *http.Request, proto ir.Protocol, body []byte, model string, stream bool, provider providerInfo, trace *requestTrace, opts dataPlaneOptions) {
+func (s *Server) serveSameProtocol(w http.ResponseWriter, r *http.Request, proto ir.Protocol, body []byte, model string, stream bool, provider providerInfo, trace *requestTrace, opts dataPlaneOptions, idleTimeout time.Duration) {
 	outBody, err := rewriteForProtocol(proto, body, model, stream)
 	if err != nil {
 		writeInboundError(w, http.StatusBadRequest, proto, err.Error(), "")
@@ -383,12 +416,12 @@ func (s *Server) serveSameProtocol(w http.ResponseWriter, r *http.Request, proto
 	// 同协议：保留上游状态码与错误体（4xx/5xx 原样）。
 	forwardHeadersOnly(w, upResp)
 	w.WriteHeader(upResp.StatusCode)
-	s.pipeBody(w, upResp, proto, stream, trace)
+	s.pipeBody(w, upResp, proto, stream, trace, idleTimeout)
 }
 
 // ---- cross-protocol IR pipeline --------------------------------------------
 
-func (s *Server) serveCrossProtocol(w http.ResponseWriter, r *http.Request, inProto, outProto ir.Protocol, body []byte, model string, stream bool, provider providerInfo, trace *requestTrace) {
+func (s *Server) serveCrossProtocol(w http.ResponseWriter, r *http.Request, inProto, outProto ir.Protocol, body []byte, model string, stream bool, provider providerInfo, trace *requestTrace, idleTimeout time.Duration) {
 	req, err := parseRequestIR(inProto, body)
 	if err != nil {
 		if errors.Is(err, ir.ErrUnsupportedContent) {
@@ -456,7 +489,7 @@ func (s *Server) serveCrossProtocol(w http.ResponseWriter, r *http.Request, inPr
 
 	customNames := ir.CustomToolNames(req.Tools)
 	if stream {
-		s.streamCrossProtocol(w, inProto, outProto, model, upResp, trace, customNames)
+		s.streamCrossProtocol(w, inProto, outProto, model, upResp, trace, customNames, idleTimeout)
 		return
 	}
 	s.nonStreamCrossProtocol(w, inProto, outProto, model, upResp, trace, customNames)
@@ -467,7 +500,7 @@ func (s *Server) serveCrossProtocol(w http.ResponseWriter, r *http.Request, inPr
 // inbound protocol's SSE encoding, flushing after every event. A broken
 // upstream stream ends with a protocol error event, never a fabricated
 // success.
-func (s *Server) streamCrossProtocol(w http.ResponseWriter, inProto, outProto ir.Protocol, model string, upResp *http.Response, trace *requestTrace, customNames map[string]bool) {
+func (s *Server) streamCrossProtocol(w http.ResponseWriter, inProto, outProto ir.Protocol, model string, upResp *http.Response, trace *requestTrace, customNames map[string]bool, idleTimeout time.Duration) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
@@ -477,7 +510,7 @@ func (s *Server) streamCrossProtocol(w http.ResponseWriter, inProto, outProto ir
 	}
 	collector := &usageCollector{}
 	upEvents := &sseEventLogger{trace: trace, upstream: true}
-	reader := newOutStreamReader(outProto, &usageTrackingReader{r: upResp.Body, c: collector, events: upEvents})
+	reader := newOutStreamReader(outProto, &usageTrackingReader{r: withIdleTimeout(upResp.Body, idleTimeout), c: collector, events: upEvents})
 	seq := ir.NewSequencer()
 	customIDs := map[string]bool{}
 	next := func() (ir.Event, error) {
@@ -613,19 +646,31 @@ func upstreamRequestURL(proto ir.Protocol, p providerInfo, compact bool) string 
 
 // upstreamDo dispatches to the adapter pool matching the wire protocol.
 func (s *Server) upstreamDo(ctx context.Context, proto ir.Protocol, p providerInfo, body []byte, stream bool, compact bool) (*http.Response, error) {
+	if !s.circuits.allow(p.id, time.Now()) {
+		return nil, errProviderCircuitOpen
+	}
+	var (
+		resp *http.Response
+		err  error
+	)
 	switch proto {
 	case ir.ProtocolChat:
-		return s.upstreamsChat.Client(p.baseURL, p.secretRef).WithEndpoint(p.endpoint).DoWithHeaders(ctx, body, stream, p.extraHeaders)
+		resp, err = s.upstreamsChat.Client(p.baseURL, p.secretRef).WithEndpoint(p.endpoint).DoWithHeaders(ctx, body, stream, p.extraHeaders)
 	case ir.ProtocolResponses:
 		client := s.upstreamsResponses.Client(p.baseURL, p.secretRef).WithEndpoint(p.endpoint)
 		if compact {
-			return client.DoCompactWithHeaders(ctx, body, p.extraHeaders)
+			resp, err = client.DoCompactWithHeaders(ctx, body, p.extraHeaders)
+		} else {
+			resp, err = client.DoWithHeaders(ctx, body, stream, p.extraHeaders)
 		}
-		return client.DoWithHeaders(ctx, body, stream, p.extraHeaders)
 	case ir.ProtocolMessages:
-		return s.upstreamsAnthropic.Client(p.baseURL, p.secretRef).WithEndpoint(p.endpoint).DoWithHeaders(ctx, body, stream, p.extraHeaders)
+		resp, err = s.upstreamsAnthropic.Client(p.baseURL, p.secretRef).WithEndpoint(p.endpoint).DoWithHeaders(ctx, body, stream, p.extraHeaders)
+	default:
+		return nil, fmt.Errorf("unknown upstream protocol %q", proto)
 	}
-	return nil, fmt.Errorf("unknown upstream protocol %q", proto)
+	failed := err != nil || (resp != nil && resp.StatusCode >= 500)
+	s.circuits.observe(p.id, failed, time.Now())
+	return resp, err
 }
 
 // writeUpstreamError maps upstream failures: missing/unreadable secret →
@@ -637,6 +682,8 @@ func (s *Server) writeUpstreamError(w http.ResponseWriter, proto ir.Protocol, er
 		errors.Is(err, anthropic.ErrSecretMissing), errors.Is(err, anthropic.ErrSecretStore),
 		errors.Is(err, openairesponses.ErrSecretMissing), errors.Is(err, openairesponses.ErrSecretStore):
 		writeInboundError(w, http.StatusInternalServerError, proto, err.Error(), "")
+	case errors.Is(err, errProviderCircuitOpen):
+		writeInboundError(w, http.StatusServiceUnavailable, proto, "provider circuit is open after repeated upstream failures", "provider_circuit_open")
 	case errors.As(err, &urlErr) && urlErr.Timeout():
 		writeInboundError(w, http.StatusGatewayTimeout, proto, "upstream did not respond in time", "")
 	default:
@@ -655,7 +702,7 @@ func forwardHeadersOnly(w http.ResponseWriter, upResp *http.Response) {
 
 // pipeBody writes the upstream body; streaming responses flush after every
 // chunk, non-streaming responses are copied through.
-func (s *Server) pipeBody(w http.ResponseWriter, upResp *http.Response, proto ir.Protocol, stream bool, trace *requestTrace) {
+func (s *Server) pipeBody(w http.ResponseWriter, upResp *http.Response, proto ir.Protocol, stream bool, trace *requestTrace, idleTimeout time.Duration) {
 	if !stream {
 		body, err := io.ReadAll(upResp.Body)
 		if err != nil {
@@ -672,18 +719,21 @@ func (s *Server) pipeBody(w http.ResponseWriter, upResp *http.Response, proto ir
 	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		_, _ = io.Copy(w, upResp.Body)
+		reader := withIdleTimeout(upResp.Body, idleTimeout)
+		defer reader.Close()
+		_, _ = io.Copy(w, reader)
 		return
 	}
+	reader := withIdleTimeout(upResp.Body, idleTimeout)
+	defer reader.Close()
 	buf := make([]byte, 32*1024)
 	collector := &usageCollector{}
 	events := &sseEventLogger{trace: trace, upstream: true, client: true}
 	for {
-		n, err := upResp.Body.Read(buf)
+		n, err := reader.Read(buf)
 		if n > 0 {
-			chunk := append([]byte(nil), buf[:n]...)
-			events.feed(chunk)
-			collector.feed(chunk)
+			events.feed(buf[:n])
+			collector.feed(buf[:n])
 			if _, werr := w.Write(buf[:n]); werr != nil {
 				trace.setError(werr)
 				return

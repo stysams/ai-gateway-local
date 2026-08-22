@@ -5,6 +5,7 @@
 package config
 
 import (
+	"sort"
 	"strings"
 
 	"ai-gateway/internal/endpoint"
@@ -26,15 +27,46 @@ const (
 // unknown top-level YAML fields (yaml.v3 inline map) so they survive a
 // read-modify-write cycle.
 type Config struct {
-	Version   int                  `yaml:"version"`
-	Listen    Listen               `yaml:"listen,omitempty"`
-	Logging   Logging              `yaml:"logging,omitempty"`
-	UI        UI                   `yaml:"ui,omitempty"`
-	Autostart Autostart            `yaml:"autostart,omitempty"`
-	Providers map[string]Provider  `yaml:"providers,omitempty"`
-	Routes    Routes               `yaml:"routes,omitempty"`
-	Clients   Clients              `yaml:"clients,omitempty"`
-	Extra     map[string]yaml.Node `yaml:",inline"`
+	Version     int                  `yaml:"version"`
+	Listen      Listen               `yaml:"listen,omitempty"`
+	Logging     Logging              `yaml:"logging,omitempty"`
+	Limits      Limits               `yaml:"limits,omitempty"`
+	UI          UI                   `yaml:"ui,omitempty"`
+	Autostart   Autostart            `yaml:"autostart,omitempty"`
+	Providers   map[string]Provider  `yaml:"providers,omitempty"`
+	Routes      Routes               `yaml:"routes,omitempty"`
+	Clients     Clients              `yaml:"clients,omitempty"`
+	Extra       map[string]yaml.Node `yaml:",inline"`
+	modelOwners map[string][]string
+}
+
+// Limits bounds active data-plane requests. Zero disables a limit. A request
+// is rejected immediately when any configured limit is already occupied; it
+// is never queued behind an active request.
+type Limits struct {
+	Global              int `yaml:"global,omitempty"`
+	PerClient           int `yaml:"per_client,omitempty"`
+	PerProvider         int `yaml:"per_provider,omitempty"`
+	StreamIdleSeconds   int `yaml:"stream_idle_seconds,omitempty"`
+	RequestBodyBytes    int `yaml:"request_body_bytes,omitempty"`
+	RequestHeaderBytes  int `yaml:"request_header_bytes,omitempty"`
+	ClientRatePerMinute int `yaml:"client_rate_per_minute,omitempty"`
+}
+
+const (
+	MaxConcurrencyLimit      = 1024
+	DefaultStreamIdleSeconds = 300
+	MaxStreamIdleSeconds     = 86400
+	DefaultRequestBodyBytes  = 128 << 20
+	MaxRequestHeaderBytes    = 1 << 20
+	MaxClientRatePerMinute   = 100000
+)
+
+func (l Limits) RequestBodyBytesValue() int {
+	if l.RequestBodyBytes <= 0 {
+		return DefaultRequestBodyBytes
+	}
+	return l.RequestBodyBytes
 }
 
 // Clients holds per-client gateway preferences that are not routes.
@@ -92,7 +124,9 @@ type Logging struct {
 	// explicit false. It only takes effect when Enabled is true.
 	Body *bool `yaml:"body,omitempty"`
 	// Dir is relative to the data root; empty means DefaultLogDir.
-	Dir string `yaml:"dir,omitempty"`
+	Dir           string `yaml:"dir,omitempty"`
+	RetentionDays int    `yaml:"retention_days,omitempty"`
+	QuotaBytes    int    `yaml:"quota_bytes,omitempty"`
 }
 
 // EnabledValue returns the effective enabled flag (default true).
@@ -244,10 +278,11 @@ func (r Routes) route(name string) Route {
 // but deliberately omits secret_ref: secrets belong to the system key store
 // (task package B), and a default config must not require one to start.
 func Defaults() *Config {
-	return &Config{
+	c := &Config{
 		Version:   1,
 		Listen:    Listen{Port: IntPtr(DefaultPort)},
 		Logging:   Logging{Enabled: BoolPtr(true), Body: BoolPtr(true), Dir: DefaultLogDir},
+		Limits:    Limits{StreamIdleSeconds: DefaultStreamIdleSeconds},
 		UI:        UI{Language: DefaultLanguage},
 		Autostart: Autostart{Enabled: false},
 		Providers: map[string]Provider{
@@ -272,6 +307,7 @@ func Defaults() *Config {
 			Generic: Route{Provider: "ollama", Model: "qwen3"},
 		},
 	}
+	return c
 }
 
 // normalize fills missing optional fields with their defaults. It must run
@@ -283,11 +319,106 @@ func (c *Config) normalize() {
 	if c.UI.Language == "" {
 		c.UI.Language = DefaultLanguage
 	}
+	if c.Limits.StreamIdleSeconds == 0 {
+		c.Limits.StreamIdleSeconds = DefaultStreamIdleSeconds
+	}
+	c.rebuildModelIndex()
+}
+
+// ModelOwners returns enabled providers that explicitly declare model. The
+// normal path reads the index published with the config; an unindexed config
+// (for example one assembled directly in a unit test) computes the same
+// result as a compatibility fallback.
+func (c *Config) ModelOwners(model string) []string {
+	return append([]string(nil), c.modelOwnersView(model)...)
+}
+
+// ModelOwnersView returns the immutable provider slice published with the
+// config. Read-only hot paths may use it without allocating; callers must not
+// mutate the returned slice.
+func (c *Config) ModelOwnersView(model string) []string {
+	return c.modelOwnersView(model)
+}
+
+func (c *Config) modelOwnersView(model string) []string {
+	if c == nil {
+		return nil
+	}
+	if c.modelOwners != nil {
+		return c.modelOwners[model]
+	}
+	return c.computeModelOwners(model)
+}
+
+func (c *Config) rebuildModelIndex() {
+	if c == nil {
+		return
+	}
+	index := make(map[string][]string)
+	for id, provider := range c.Providers {
+		if !provider.EnabledValue() {
+			continue
+		}
+		for model := range providerDeclaredModels(provider) {
+			index[model] = append(index[model], id)
+		}
+	}
+	for model := range index {
+		sort.Strings(index[model])
+	}
+	c.modelOwners = index
+}
+
+func (c *Config) computeModelOwners(model string) []string {
+	var owners []string
+	for id, provider := range c.Providers {
+		if provider.EnabledValue() && providerDeclaredModels(provider)[model] {
+			owners = append(owners, id)
+		}
+	}
+	sort.Strings(owners)
+	return owners
+}
+
+func providerDeclaredModels(provider Provider) map[string]bool {
+	declared := map[string]bool{}
+	if provider.ModelEnabled(provider.DefaultModel) {
+		declared[provider.DefaultModel] = true
+	}
+	for _, model := range provider.Models {
+		if model.ID != "" && model.EnabledValue() {
+			declared[model.ID] = true
+		}
+	}
+	return declared
+}
+
+func (p Provider) ModelEnabled(modelID string) bool {
+	if modelID == p.DefaultModel {
+		for _, model := range p.Models {
+			if model.ID == modelID {
+				return model.EnabledValue()
+			}
+		}
+		return true
+	}
+	for _, model := range p.Models {
+		if model.ID == modelID {
+			return model.EnabledValue()
+		}
+	}
+	return false
 }
 
 // clone returns a deep copy safe to hand out as a snapshot.
 func (c *Config) clone() *Config {
 	out := *c
+	if c.modelOwners != nil {
+		out.modelOwners = make(map[string][]string, len(c.modelOwners))
+		for model, owners := range c.modelOwners {
+			out.modelOwners[model] = append([]string(nil), owners...)
+		}
+	}
 	if c.Listen.Port != nil {
 		p := *c.Listen.Port
 		out.Listen.Port = &p

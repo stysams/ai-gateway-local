@@ -47,6 +47,9 @@ func TestDefaults(t *testing.T) {
 	if c.Logging.Dir != DefaultLogDir {
 		t.Errorf("Logging.Dir = %q, want %q", c.Logging.Dir, DefaultLogDir)
 	}
+	if c.Limits.Global != 0 || c.Limits.PerClient != 0 || c.Limits.PerProvider != 0 || c.Limits.StreamIdleSeconds != DefaultStreamIdleSeconds {
+		t.Errorf("Limits = %+v, want concurrency disabled and stream idle default", c.Limits)
+	}
 	if c.UI.Language != DefaultLanguage {
 		t.Errorf("UI.Language = %q, want %q", c.UI.Language, DefaultLanguage)
 	}
@@ -66,6 +69,52 @@ func TestDefaults(t *testing.T) {
 	}
 	if err := c.Validate(); err != nil {
 		t.Errorf("Defaults().Validate() = %v, want nil", err)
+	}
+}
+
+func TestValidateConcurrencyLimits(t *testing.T) {
+	cases := []struct {
+		name  string
+		value int
+		valid bool
+	}{
+		{"disabled", 0, true},
+		{"one", 1, true},
+		{"maximum", MaxConcurrencyLimit, true},
+		{"negative", -1, false},
+		{"too large", MaxConcurrencyLimit + 1, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Defaults()
+			c.Limits.Global = tc.value
+			err := c.Validate()
+			if (err == nil) != tc.valid {
+				t.Fatalf("global=%d: Validate()=%v, valid=%v", tc.value, err, tc.valid)
+			}
+		})
+	}
+}
+
+func TestModelOwnersPublishedOnWriteAndSnapshot(t *testing.T) {
+	m := NewManager(filepath.Join(t.TempDir(), "config.yaml"))
+	cfg := Defaults()
+	p := cfg.Providers["ollama"]
+	p.Models = []ProviderModel{{ID: "qwen3"}, {ID: "shared"}}
+	cfg.Providers["ollama"] = p
+	other := cfg.Providers["openrouter"]
+	other.Models = []ProviderModel{{ID: other.DefaultModel}, {ID: "shared"}}
+	cfg.Providers["openrouter"] = other
+	if err := m.Write(cfg); err != nil {
+		t.Fatal(err)
+	}
+	view := m.View()
+	owners := view.ModelOwners("shared")
+	if len(owners) != 2 || owners[0] != "ollama" || owners[1] != "openrouter" {
+		t.Fatalf("owners=%v, want sorted published owners", owners)
+	}
+	if got := view.ModelOwners("missing"); got != nil {
+		t.Fatalf("missing owners=%v, want nil", got)
 	}
 }
 

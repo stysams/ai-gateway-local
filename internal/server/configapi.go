@@ -12,6 +12,7 @@ type ConfigPayload struct {
 	Version   int                              `json:"version"`
 	Listen    ConfigListenPayload              `json:"listen"`
 	Logging   ConfigLoggingPayload             `json:"logging"`
+	Limits    *ConfigLimitsPayload             `json:"limits,omitempty"`
 	UI        ConfigUIPayload                  `json:"ui"`
 	Autostart ConfigAutostartPayload           `json:"autostart"`
 	Providers map[string]ConfigProviderPayload `json:"providers"`
@@ -23,9 +24,20 @@ type ConfigListenPayload struct {
 	Port int    `json:"port"`
 }
 type ConfigLoggingPayload struct {
-	Enabled bool   `json:"enabled"`
-	Body    *bool  `json:"body,omitempty"`
-	Dir     string `json:"dir"`
+	Enabled       bool   `json:"enabled"`
+	Body          *bool  `json:"body,omitempty"`
+	Dir           string `json:"dir"`
+	RetentionDays int    `json:"retention_days"`
+	QuotaBytes    int    `json:"quota_bytes"`
+}
+type ConfigLimitsPayload struct {
+	Global              int `json:"global"`
+	PerClient           int `json:"per_client"`
+	PerProvider         int `json:"per_provider"`
+	StreamIdleSeconds   int `json:"stream_idle_seconds"`
+	RequestBodyBytes    int `json:"request_body_bytes"`
+	RequestHeaderBytes  int `json:"request_header_bytes"`
+	ClientRatePerMinute int `json:"client_rate_per_minute"`
 }
 type ConfigUIPayload struct {
 	Language              string `json:"language"`
@@ -58,7 +70,8 @@ func configPayload(cfg *config.Config) ConfigPayload {
 	out := ConfigPayload{
 		Version:   cfg.Version,
 		Listen:    ConfigListenPayload{Port: cfg.Listen.PortValue()},
-		Logging:   ConfigLoggingPayload{Enabled: cfg.Logging.EnabledValue(), Body: config.BoolPtr(cfg.Logging.BodyValue()), Dir: cfg.Logging.Dir},
+		Logging:   ConfigLoggingPayload{Enabled: cfg.Logging.EnabledValue(), Body: config.BoolPtr(cfg.Logging.BodyValue()), Dir: cfg.Logging.Dir, RetentionDays: cfg.Logging.RetentionDays, QuotaBytes: cfg.Logging.QuotaBytes},
+		Limits:    &ConfigLimitsPayload{Global: cfg.Limits.Global, PerClient: cfg.Limits.PerClient, PerProvider: cfg.Limits.PerProvider, StreamIdleSeconds: cfg.Limits.StreamIdleSeconds, RequestBodyBytes: cfg.Limits.RequestBodyBytes, RequestHeaderBytes: cfg.Limits.RequestHeaderBytes, ClientRatePerMinute: cfg.Limits.ClientRatePerMinute},
 		UI:        ConfigUIPayload{Language: cfg.UI.Language, LoggingNoticeAccepted: cfg.UI.LoggingNoticeAccepted},
 		Autostart: ConfigAutostartPayload{Enabled: cfg.Autostart.Enabled},
 		Providers: make(map[string]ConfigProviderPayload, len(cfg.Providers)),
@@ -86,6 +99,14 @@ func routeStatus(r config.Route) RouteStatus {
 }
 
 func (p ConfigPayload) toConfig() *config.Config {
+	limits := config.Limits{}
+	if p.Limits != nil {
+		limits = config.Limits{
+			Global: p.Limits.Global, PerClient: p.Limits.PerClient, PerProvider: p.Limits.PerProvider,
+			StreamIdleSeconds: p.Limits.StreamIdleSeconds, RequestBodyBytes: p.Limits.RequestBodyBytes,
+			RequestHeaderBytes: p.Limits.RequestHeaderBytes, ClientRatePerMinute: p.Limits.ClientRatePerMinute,
+		}
+	}
 	providers := make(map[string]config.Provider, len(p.Providers))
 	for id, provider := range p.Providers {
 		providers[id] = config.Provider{
@@ -100,7 +121,8 @@ func (p ConfigPayload) toConfig() *config.Config {
 	return &config.Config{
 		Version:   p.Version,
 		Listen:    config.Listen{Host: p.Listen.Host, Port: config.IntPtr(p.Listen.Port)},
-		Logging:   config.Logging{Enabled: config.BoolPtr(p.Logging.Enabled), Body: p.Logging.Body, Dir: p.Logging.Dir},
+		Logging:   config.Logging{Enabled: config.BoolPtr(p.Logging.Enabled), Body: p.Logging.Body, Dir: p.Logging.Dir, RetentionDays: p.Logging.RetentionDays, QuotaBytes: p.Logging.QuotaBytes},
+		Limits:    limits,
 		UI:        config.UI{Language: p.UI.Language, LoggingNoticeAccepted: p.UI.LoggingNoticeAccepted},
 		Autostart: config.Autostart{Enabled: p.Autostart.Enabled},
 		Providers: providers,
@@ -140,6 +162,9 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := payload.toConfig()
+	if payload.Limits == nil {
+		next.Limits = current.Limits
+	}
 	if payload.Logging.Body == nil && current.Logging.Body != nil {
 		body := *current.Logging.Body
 		next.Logging.Body = &body

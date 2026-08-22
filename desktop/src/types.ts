@@ -6,6 +6,7 @@ export interface Status {
   version: string;
   pid: number;
   listen: string;
+  active_requests?: number;
   logging_enabled: boolean;
   logging_body_enabled: boolean;
   autostart_enabled: boolean;
@@ -66,7 +67,16 @@ export interface DiscoveredProviderModel {
 export interface Config {
   version: number;
   listen: { host?: string; port: number };
-  logging: { enabled: boolean; body: boolean; dir: string };
+  logging: { enabled: boolean; body: boolean; dir: string; retention_days: number; quota_bytes: number };
+  limits?: {
+    global: number;
+    per_client: number;
+    per_provider: number;
+    stream_idle_seconds: number;
+    request_body_bytes: number;
+    request_header_bytes: number;
+    client_rate_per_minute: number;
+  };
   ui: { language: string; logging_notice_accepted: boolean };
   autostart: { enabled: boolean };
   providers: Record<string, Omit<Provider, "id" | "has_secret"> & { secret_ref?: string }>;

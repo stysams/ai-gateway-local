@@ -48,6 +48,24 @@ func TestCompletionURL(t *testing.T) {
 	}
 }
 
+func BenchmarkStreamReaderEvents(b *testing.B) {
+	chunk := `data: {"id":"chatcmpl-bench","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hello"}}]}` + "\n\n"
+	stream := strings.Repeat(chunk, 32) + "data: [DONE]\n\n"
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		r := NewStreamReader(strings.NewReader(stream))
+		for {
+			_, err := r.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+}
+
 func TestDoWithHeadersOverlaysAdapterDefaults(t *testing.T) {
 	var got http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

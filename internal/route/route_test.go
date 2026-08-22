@@ -1,6 +1,8 @@
 package route
 
 import (
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -178,6 +180,26 @@ func TestResolveGenericAmbiguousModelOwnership(t *testing.T) {
 	}
 	if res.Provider != "ollama" {
 		t.Errorf("route owner did not break ambiguity: %+v", res)
+	}
+}
+
+func BenchmarkResolveGenericIndexedOwners(b *testing.B) {
+	cfg := testConfig()
+	for i := 0; i < 128; i++ {
+		id := "provider-" + strconv.Itoa(i)
+		cfg.Providers[id] = config.Provider{Name: id, Adapter: "openai-chat", BaseURL: "https://example.com", DefaultModel: "model-" + strconv.Itoa(i)}
+	}
+	m := config.NewManager(filepath.Join(b.TempDir(), "config.yaml"))
+	if err := m.Write(cfg); err != nil {
+		b.Fatal(err)
+	}
+	cfg = m.View()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := Resolve(Generic, "model-127", cfg); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 

@@ -49,6 +49,9 @@ type Server struct {
 	autostart          autostart.Registrar
 	modelMu            sync.RWMutex
 	modelCache         map[string][]ProviderModel
+	limiter            *requestLimiter
+	metrics            *gatewayMetrics
+	circuits           *circuitBreaker
 
 	// txMu serializes provider write transactions (create/update/delete):
 	// each transaction reads a config snapshot, mutates it and atomically
@@ -79,6 +82,9 @@ func New(cfg *config.Manager, secrets secret.Store, version string, pid int) *Se
 	s.points = point.New(filepath.Dir(cfg.Path()))
 	s.autostart = autostart.NewCurrentExecutable()
 	s.modelCache = make(map[string][]ProviderModel)
+	s.limiter = newRequestLimiter()
+	s.metrics = newGatewayMetrics()
+	s.circuits = newCircuitBreaker()
 	s.httpSrv = &http.Server{
 		Handler:           desktopCORS(s.routes()),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -106,6 +112,9 @@ func (s *Server) Listen(addr string) error {
 	allowAllInterfaces := false
 	if cfg := s.cfg.View(); cfg != nil {
 		allowAllInterfaces = cfg.Listen.HostValue() == allInterfacesHost
+		if _, err := s.warnings.Retain(cfg.Logging.Dir, cfg.Logging.RetentionDays, int64(cfg.Logging.QuotaBytes), time.Now()); err != nil {
+			return fmt.Errorf("retain logs: %w", err)
+		}
 	}
 	if host != loopbackHost && !(host == allInterfacesHost && allowAllInterfaces) {
 		return fmt.Errorf("listen on %s: refused: supported hosts are %s and %s", addr, loopbackHost, allInterfacesHost)
@@ -150,7 +159,11 @@ func (s *Server) Addr() string {
 // Shutdown gracefully stops accepting new requests and waits up to the
 // context deadline for in-flight requests to finish.
 func (s *Server) Shutdown(ctx context.Context) error {
-	return s.httpSrv.Shutdown(ctx)
+	err := s.httpSrv.Shutdown(ctx)
+	if logErr := s.warnings.Close(); err == nil {
+		err = logErr
+	}
+	return err
 }
 
 // RequestShutdown asks the server to begin graceful shutdown. It is idempotent.

@@ -21,6 +21,7 @@ import (
 
 func TestConfigAPIAtomicRoundTripPreservesUnknownTopLevelAndSecrets(t *testing.T) {
 	cfg := config.Defaults()
+	cfg.Limits.Global = 1
 	cfg.Extra = map[string]yaml.Node{"future_feature": {Kind: yaml.ScalarNode, Tag: "!!str", Value: "keep-me"}}
 	p := cfg.Providers["openrouter"]
 	p.SecretRef = "provider.openrouter"
@@ -67,6 +68,14 @@ func TestConfigAPIAtomicRoundTripPreservesUnknownTopLevelAndSecrets(t *testing.T
 	}
 	if got.Providers["openrouter"].ExtraHeaders["User-Agent"] != "claude-cli/2.1.228 (external, cli)" {
 		t.Fatalf("extra_headers lost after settings save: %v", got.Providers["openrouter"].ExtraHeaders)
+	}
+	payload.Limits.Global = 0
+	resp, body = httpJSON(t, addr, http.MethodPut, "/api/v1/config", payload)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT config explicit zero: %d %s", resp.StatusCode, body)
+	}
+	if got := s.cfg.Snapshot().Limits.Global; got != 0 {
+		t.Fatalf("explicit zero did not disable global limit: %d", got)
 	}
 	disk, err := os.ReadFile(s.cfg.Path())
 	if err != nil {

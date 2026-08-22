@@ -975,6 +975,137 @@ func TestChatStreamingClientCancelCancelsUpstream(t *testing.T) {
 	}
 }
 
+func TestDataPlaneConcurrencyLimitRejectsImmediatelyAndReleases(t *testing.T) {
+	started := make(chan struct{})
+	releaseUpstream := make(chan struct{})
+	var startedOnce sync.Once
+	up := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		startedOnce.Do(func() { close(started) })
+		<-releaseUpstream
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-limit","object":"chat.completion","choices":[]}`)
+	})
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	cfg.Limits = config.Limits{Global: 1, PerClient: 1, PerProvider: 1, StreamIdleSeconds: 300}
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	firstDone := make(chan *http.Response, 1)
+	go func() {
+		resp, err := http.Post("http://"+addr+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"gateway-default","messages":[]}`))
+		if err != nil {
+			t.Errorf("first request: %v", err)
+			return
+		}
+		firstDone <- resp
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first request did not reach upstream")
+	}
+
+	second, body := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
+	if second.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second status=%d, body=%s; want 429", second.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "concurrency_limit") {
+		t.Fatalf("second error missing concurrency_limit: %s", body)
+	}
+	close(releaseUpstream)
+	first := <-firstDone
+	first.Body.Close()
+
+	third, thirdBody := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
+	if third.StatusCode != http.StatusOK {
+		t.Fatalf("third status=%d, body=%s; slot was not released", third.StatusCode, thirdBody)
+	}
+}
+
+func TestDataPlaneRequestLimitsRejectBeforeUpstream(t *testing.T) {
+	up := newFakeUpstream(t, nil)
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	cfg.Limits.RequestBodyBytes = 32
+	cfg.Limits.RequestHeaderBytes = 256
+	cfg.Limits.StreamIdleSeconds = 300
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	tooLarge, body := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[{"role":"user","content":"this request is larger than thirty-two bytes"}]}`), nil)
+	if tooLarge.StatusCode != http.StatusRequestEntityTooLarge || !strings.Contains(string(body), "request_too_large") {
+		t.Fatalf("body limit status=%d body=%s", tooLarge.StatusCode, body)
+	}
+	if len(up.requests()) != 0 {
+		t.Fatal("oversized body reached upstream")
+	}
+
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/v1/chat/completions", strings.NewReader(`{"model":"gateway-default","messages":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Large", strings.Repeat("x", 512))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headerBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge || !strings.Contains(string(headerBody), "request_headers_too_large") {
+		t.Fatalf("header limit status=%d body=%s", resp.StatusCode, headerBody)
+	}
+	if len(up.requests()) != 0 {
+		t.Fatal("oversized headers reached upstream")
+	}
+}
+
+func TestDataPlaneClientRateLimitRejectsBeforeUpstream(t *testing.T) {
+	up := newFakeUpstream(t, nil)
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	cfg.Limits.ClientRatePerMinute = 1
+	cfg.Limits.StreamIdleSeconds = 300
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	first, firstBody := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first status=%d body=%s", first.StatusCode, firstBody)
+	}
+	second, secondBody := chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
+	if second.StatusCode != http.StatusTooManyRequests || !strings.Contains(string(secondBody), "client_rate_limit") {
+		t.Fatalf("second status=%d body=%s; want client rate 429", second.StatusCode, secondBody)
+	}
+	if got := len(up.requests()); got != 1 {
+		t.Fatalf("rate-limited request reached upstream: %d requests", got)
+	}
+}
+
+func TestDataPlaneStreamIdleTimeoutReleasesSlot(t *testing.T) {
+	up := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done()
+	})
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	cfg.Limits.Global = 1
+	cfg.Limits.StreamIdleSeconds = 1
+	server, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	started := time.Now()
+	resp, err := http.Post("http://"+addr+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"gateway-default","stream":true,"messages":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if elapsed := time.Since(started); elapsed < 700*time.Millisecond || elapsed > 4*time.Second {
+		t.Fatalf("stream idle timeout elapsed=%s, want about one second", elapsed)
+	}
+	if active := server.limiter.activeCount(); active != 0 {
+		t.Fatalf("active slot not released after idle timeout: %d", active)
+	}
+}
+
 func TestChatConcurrentNoCrossTalk(t *testing.T) {
 	// 两个带各自认证的 provider；并发请求必须不串路由、不串认证。
 	upA := newFakeUpstream(t, nil)

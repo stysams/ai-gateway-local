@@ -14,6 +14,7 @@ type StatusResponse struct {
 	Version            string                  `json:"version"`
 	PID                int                     `json:"pid"`
 	Listen             string                  `json:"listen"`
+	ActiveRequests     int64                   `json:"active_requests"`
 	LoggingEnabled     bool                    `json:"logging_enabled"`
 	LoggingBodyEnabled bool                    `json:"logging_body_enabled"`
 	AutostartEnabled   bool                    `json:"autostart_enabled"`
@@ -38,6 +39,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	management := http.NewServeMux()
 	management.HandleFunc("GET /api/v1/status", s.handleStatus)
+	management.HandleFunc("GET /api/v1/metrics", s.handleMetrics)
 	management.HandleFunc("GET /api/v1/local-access", s.handleLocalAccess)
 	management.HandleFunc("POST /api/v1/shutdown", s.handleShutdown)
 	management.HandleFunc("GET /api/v1/doctor", s.handleDoctor)
@@ -76,6 +78,10 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /v1/models", s.handleModels)
 	mux.HandleFunc("GET /c/{client}/v1/models", s.handleModelsClient)
 	return mux
+}
+
+func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.metricsSnapshot())
 }
 
 // handleHealthz answers whether the process and HTTP loop are alive. It never
@@ -128,6 +134,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		Version:            s.version,
 		PID:                s.pid,
 		Listen:             s.ListenString(cfg),
+		ActiveRequests:     s.limiter.activeCount(),
 		LoggingEnabled:     cfg.Logging.EnabledValue(),
 		LoggingBodyEnabled: cfg.Logging.BodyValue(),
 		AutostartEnabled:   cfg.Autostart.Enabled,

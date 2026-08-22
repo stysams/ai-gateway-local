@@ -531,10 +531,11 @@ type lineScanner struct {
 	max   int
 	buf   []byte
 	chunk []byte
+	tmp   []byte
 }
 
 func newLineScanner(r io.Reader, max int) *lineScanner {
-	return &lineScanner{r: r, max: max}
+	return &lineScanner{r: r, max: max, tmp: make([]byte, 32*1024)}
 }
 
 func (s *lineScanner) Next() (string, error) {
@@ -553,10 +554,9 @@ func (s *lineScanner) Next() (string, error) {
 		if len(s.buf) > s.max {
 			return "", fmt.Errorf("SSE line exceeds %d bytes", s.max)
 		}
-		tmp := make([]byte, 32*1024)
-		n, err := s.r.Read(tmp)
+		n, err := s.r.Read(s.tmp)
 		if n > 0 {
-			s.chunk = append(s.chunk[:0], tmp[:n]...)
+			s.chunk = append(s.chunk[:0], s.tmp[:n]...)
 			continue
 		}
 		if err != nil {

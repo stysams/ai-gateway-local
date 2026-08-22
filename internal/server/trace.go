@@ -49,6 +49,7 @@ func (s *Server) startTrace(cfg *config.Config, client route.ClientID, proto ir.
 		fields["body_omitted"] = true
 	}
 	if err := session.Append("request", fields); err != nil {
+		_ = session.Close()
 		return nil, err
 	}
 	return t, nil
@@ -264,11 +265,13 @@ func (t *requestTrace) finish(ctx context.Context, statusCode int) {
 		fields["error"] = t.errText
 	}
 	_ = t.session.Append("result", fields)
+	_ = t.session.Close()
 }
 
 type responseStatusWriter struct {
 	http.ResponseWriter
-	status int
+	status       int
+	onFirstWrite func()
 }
 
 func (w *responseStatusWriter) WriteHeader(status int) {
@@ -281,6 +284,10 @@ func (w *responseStatusWriter) WriteHeader(status int) {
 func (w *responseStatusWriter) Write(p []byte) (int, error) {
 	if w.status == 0 {
 		w.WriteHeader(http.StatusOK)
+	}
+	if len(p) > 0 && w.onFirstWrite != nil {
+		w.onFirstWrite()
+		w.onFirstWrite = nil
 	}
 	return w.ResponseWriter.Write(p)
 }

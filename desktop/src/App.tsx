@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity, Boxes, Cable, Check, ChevronRight, CircleAlert, Copy, Database, FileClock,
-  Languages, Moon, Network, Plus, Power, RefreshCw, RotateCcw, Save, Server, Settings, Sun,
-  TerminalSquare, Trash2, X,
+  Activity, Boxes, Cable, Check, ChevronRight, CircleAlert, Copy, Database,
+  Plus, RefreshCw, RotateCcw, Save, Server, Settings,
+  Trash2, X,
 } from "lucide-react";
 import { ClientsIcon, GatewayMark, LogsIcon, OverviewIcon, ProvidersIcon, RoutesIcon, SettingsIcon, UsageIcon, type AppIcon } from "./icons";
 import { api } from "./api";
@@ -12,11 +12,13 @@ import { CLAUDE_CODE_HEADERS, CODEX_HEADERS, mergeHeaderPreset } from "./headerP
 import { translator, type Language, type MessageKey } from "./i18n";
 import type { ClientID, Config, LocalAccess, LogSummary, PointClient, PointStatus, Provider, ProviderModel, Route, Status, UsageGroup, UsageReport } from "./types";
 import { validateProvider, type DisguiseClient, type ProviderFormValue } from "./validation";
+import { SettingsPage, type Theme } from "./pages/SettingsPage";
 
 type Page = "overview" | "localAccess" | "providers" | "routes" | "clients" | "logs" | "usage" | "settings";
-type Theme = "light" | "dark" | "system";
 type ToastKind = "error" | "success";
 type Toast = { id: number; kind: ToastKind; message: string };
+type RefreshResource = "status" | "localAccess" | "config" | "providers" | "clients" | "logs" | "usage";
+type RunOperation = (operation: () => Promise<unknown>, message?: string, resources?: RefreshResource[]) => Promise<void>;
 const pointClients: PointClient[] = ["codex", "claude", "grok"];
 const allClients: ClientID[] = ["codex", "claude", "grok", "generic"];
 
@@ -83,6 +85,7 @@ export function App() {
   const [busy, setBusy] = useState(true);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const nextToastId = useRef(0);
+  const refreshSequence = useRef(0);
   const activeNavRef = useRef<HTMLButtonElement | null>(null);
   const t = useMemo(() => translator(language), [language]);
 
@@ -105,15 +108,17 @@ export function App() {
     window.setTimeout(() => setToasts((current) => current.filter((toast) => toast.id !== id)), kind === "error" ? 7000 : 4200);
   }, []);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (resources?: RefreshResource[]) => {
+    const sequence = ++refreshSequence.current;
+    const requested = new Set(resources || ["status", "localAccess", "config", "providers", "clients", "logs", "usage"]);
     setBusy(true);
     try {
       const [nextStatus, nextLocalAccess, nextConfig, nextProviders, nextLogs, nextUsage, ...nextClients] = await Promise.all([
-        api.status(), api.localAccess(), api.config(), api.providers(), api.logs(), api.usage(), ...pointClients.map(api.client),
+        requested.has("status") ? api.status() : Promise.resolve(null), requested.has("localAccess") ? api.localAccess() : Promise.resolve(null), requested.has("config") ? api.config() : Promise.resolve(null), requested.has("providers") ? api.providers() : Promise.resolve(null), requested.has("logs") ? api.logs() : Promise.resolve(null), requested.has("usage") ? api.usage() : Promise.resolve(null), ...(requested.has("clients") ? pointClients.map(api.client) : pointClients.map(() => Promise.resolve(null))),
       ]);
-      setStatus(nextStatus); setLocalAccess(nextLocalAccess); setConfig(nextConfig); setProviders(nextProviders); setLogs(nextLogs.items); setLogCursor(nextLogs.next_cursor); setUsage(nextUsage);
-      setClients(Object.fromEntries(nextClients.map((value) => [value.client, value])));
-      if (nextConfig.ui.language === "zh-CN" || nextConfig.ui.language === "en-US") setLanguage(nextConfig.ui.language);
+      if (sequence !== refreshSequence.current) return;
+      if (nextStatus) setStatus(nextStatus); if (nextLocalAccess) setLocalAccess(nextLocalAccess); if (nextConfig) { setConfig(nextConfig); if (nextConfig.ui.language === "zh-CN" || nextConfig.ui.language === "en-US") setLanguage(nextConfig.ui.language); } if (nextProviders) setProviders(nextProviders); if (nextLogs) { setLogs(nextLogs.items); setLogCursor(nextLogs.next_cursor); } if (nextUsage) setUsage(nextUsage);
+      if (nextClients[0]) setClients(Object.fromEntries(nextClients.filter((value): value is PointStatus => value !== null).map((value) => [value.client, value])));
     } catch (reason) { pushToast("error", reason instanceof Error ? reason.message : String(reason)); }
     finally { setBusy(false); }
   }, [pushToast]);
@@ -122,15 +127,15 @@ export function App() {
     queueMicrotask(() => void refresh());
   }, [refresh]);
 
-  const run = async (operation: () => Promise<unknown>, message?: string) => {
+  const run: RunOperation = async (operation, message, resources) => {
     setToasts([]);
-    try { await operation(); if (message) pushToast("success", message); await refresh(); }
+    try { await operation(); if (message) pushToast("success", message); await refresh(resources); }
     catch (reason) { pushToast("error", reason instanceof Error ? reason.message : String(reason)); }
   };
 
   const acceptRisk = async () => {
     if (!config) return;
-    await run(() => api.updateConfig({ ...config, ui: { ...config.ui, logging_notice_accepted: true } }));
+    await run(() => api.updateConfig({ ...config, ui: { ...config.ui, logging_notice_accepted: true } }), undefined, ["config"]);
   };
 
   const loadMoreLogs = async () => {
@@ -261,7 +266,7 @@ function Metric({ label, value, note, icon: Icon }: { label: string; value: stri
   return <div className="metric"><div className="metric-label"><Icon size={16} />{label}</div><strong>{value}</strong><span>{note}</span></div>;
 }
 
-function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (key: MessageKey) => string; run: (op: () => Promise<unknown>, message?: string) => Promise<void>; notify: (kind: ToastKind, message: string) => void }) {
+function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (key: MessageKey) => string; run: RunOperation; notify: (kind: ToastKind, message: string) => void }) {
   const [open, setOpen] = useState(false); const [editing, setEditing] = useState<string>(); const [form, setForm] = useState(emptyProvider); const [errors, setErrors] = useState<Record<string, string>>({}); const [fetching, setFetching] = useState(false);
   const [probe, setProbe] = useState<{ provider: string; result: { ok: boolean; status: number; latency_ms: number; models?: number; error?: string; response?: string } } | null>(null);
   const edit = (p: Provider) => {
@@ -317,7 +322,7 @@ function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (k
     event.preventDefault();
     const adapter = discoveryAdapter(form);
     const nextErrors = validateProvider({ ...form, adapter }, Boolean(editing)); setErrors(nextErrors); if (Object.keys(nextErrors).length) return;
-    await run(() => api.saveProvider({ ...(editing ? {} : { id: form.id }), name: form.name, adapter, base_url: form.base_url, models_url: form.models_url?.trim() || undefined, extra_headers: headerRecord(form.extra_headers), disguise_client: form.disguise_client, default_model: form.default_model, models: form.models.map((model) => { const nextAdapter = modelAdapter(model, adapter); return { id: model.id.trim(), name: model.name?.trim() || undefined, adapter: nextAdapter, endpoint: nextAdapter === "custom" ? model.endpoint?.trim() || undefined : undefined, enabled: model.enabled }; }), api_key: form.api_key || undefined, capabilities: { image_input: true, reasoning: true, context_management: false } }, editing), t("success"));
+    await run(() => api.saveProvider({ ...(editing ? {} : { id: form.id }), name: form.name, adapter, base_url: form.base_url, models_url: form.models_url?.trim() || undefined, extra_headers: headerRecord(form.extra_headers), disguise_client: form.disguise_client, default_model: form.default_model, models: form.models.map((model) => { const nextAdapter = modelAdapter(model, adapter); return { id: model.id.trim(), name: model.name?.trim() || undefined, adapter: nextAdapter, endpoint: nextAdapter === "custom" ? model.endpoint?.trim() || undefined : undefined, enabled: model.enabled }; }), api_key: form.api_key || undefined, capabilities: { image_input: true, reasoning: true, context_management: false } }, editing), t("success"), ["providers", "status", "config"]);
   setOpen(false); setEditing(undefined); setForm(emptyProvider);
   };
   const probeProvider = async (provider: Provider) => {
@@ -367,13 +372,13 @@ function formatProbeResponse(value?: string): string {
 
 function Field({ label, error, wide, children }: { label: string; error?: string; wide?: boolean; children: React.ReactNode }) { return <label className={wide ? "field wide" : "field"}><span>{label}</span>{children}{error && <small className="field-error">{error.replaceAll("_", " ")}</small>}</label>; }
 
-function Routes({ status, providers, t, run }: { status: Status; providers: Provider[]; t: (key: MessageKey) => string; run: (op: () => Promise<unknown>, message?: string) => Promise<void> }) {
+function Routes({ status, providers, t, run }: { status: Status; providers: Provider[]; t: (key: MessageKey) => string; run: RunOperation }) {
   const catalog = useMemo(() => enabledCatalog(providers), [providers]);
   const [override, setOverride] = useState<Partial<Record<ClientID, Route>>>({});
   const draft = useMemo(() => reconcileClientRoutes(override, status.routes, catalog), [override, status.routes, catalog]);
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(() => new Set());
-  const toggleProvider = (provider: Provider, enabled: boolean) => run(() => api.updateProviderAvailability(provider.id, { enabled }), t("success"));
-  const toggleModel = (provider: Provider, model: ProviderModel, enabled: boolean) => run(() => api.updateProviderAvailability(provider.id, { models: { [model.id]: enabled } }), t("success"));
+  const toggleProvider = (provider: Provider, enabled: boolean) => run(() => api.updateProviderAvailability(provider.id, { enabled }), t("success"), ["providers", "status"]);
+  const toggleModel = (provider: Provider, model: ProviderModel, enabled: boolean) => run(() => api.updateProviderAvailability(provider.id, { models: { [model.id]: enabled } }), t("success"), ["providers", "status"]);
   const toggleExpanded = (id: string) => setExpandedProviders((current) => {
     const next = new Set(current);
     if (next.has(id)) next.delete(id); else next.add(id);
@@ -387,7 +392,7 @@ function Routes({ status, providers, t, run }: { status: Status; providers: Prov
   const applyRoute = (client: ClientID) => {
     const next = draft[client];
     if (!isCatalogRoute(next, catalog)) return;
-    void run(() => api.updateRoute(client, next), t("success"));
+    void run(() => api.updateRoute(client, next), t("success"), ["status", "config"]);
   };
   return <section><SectionHeader title={t("routes")} description={t("routesDescription")} />
     <div className="route-clients primary-route-block"><h3>{t("clientRoutes")}</h3><p className="muted">{t("clientRoutesDescription")}</p><div className="route-list">{allClients.map((client) => {
@@ -402,7 +407,7 @@ function Routes({ status, providers, t, run }: { status: Status; providers: Prov
   </section>;
 }
 
-function Clients({ clients, t, run }: { clients: Record<string, PointStatus>; t: (key: MessageKey) => string; run: (op: () => Promise<unknown>, message?: string) => Promise<void> }) {
+function Clients({ clients, t, run }: { clients: Record<string, PointStatus>; t: (key: MessageKey) => string; run: RunOperation }) {
   return <section><SectionHeader title={t("clients")} description={t("clientsDescription")} /><div className="client-list">{pointClients.map((client) => { const value = clients[client]; return <article className="client-item" key={client}><div className="client-main"><div className="client-title"><div className="client-icon"><ClientsIcon size={18} /></div><div><h3>{client}</h3><State value={value?.point_state || "unknown"} /></div></div><dl><dt>{t("target")}</dt><dd className="mono">{value?.target || "—"}</dd></dl><div className="client-actions"><button className="primary" disabled={value?.point_state === "pointed" || value?.point_state === "client_not_installed"} onClick={() => { if (confirm(t("confirmPoint"))) void run(() => api.point(client), t("success")); }}><Cable size={16} />{t("point")}</button><button className="secondary" disabled={!value?.backup_available} onClick={() => { if (confirm(t("confirmRestore"))) void run(() => api.restore(client), t("success")); }}><RotateCcw size={16} />{t("restore")}</button></div></div>{value?.message && <p className="client-message muted">{value.message}</p>}{client === "codex" && <details className="client-advanced" open><summary>{t("advancedSettings")}</summary><div className="client-option"><label className="switch"><input type="checkbox" checked={Boolean(value?.remote_compaction)} onChange={(event) => void run(() => api.setCodexRemoteCompaction(event.target.checked), t("success"))} aria-label={t("remoteCompaction")} /><span /><b>{t("remoteCompaction")}</b></label><p className="muted">{t("remoteCompactionHint")}</p></div></details>}</article>; })}</div></section>;
 }
 
@@ -419,8 +424,9 @@ async function copyText(value: string) {
   if (!copied) throw new Error("Clipboard is unavailable");
 }
 
-function Logs({ items, hasMore, loadMore, enabled, body, t, run, notify }: { items: LogSummary[]; hasMore: boolean; loadMore: () => Promise<void>; enabled: boolean; body: boolean; t: (key: MessageKey) => string; run: (op: () => Promise<unknown>, message?: string) => Promise<void>; notify: (kind: ToastKind, message: string) => void }) {
+function Logs({ items, hasMore, loadMore, enabled, body, t, run, notify }: { items: LogSummary[]; hasMore: boolean; loadMore: () => Promise<void>; enabled: boolean; body: boolean; t: (key: MessageKey) => string; run: RunOperation; notify: (kind: ToastKind, message: string) => void }) {
   const [detail, setDetail] = useState<{ id: string; events: unknown[] } | null>(null);
+  const [detailCount, setDetailCount] = useState(100);
   const [copied, setCopied] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const copyLog = async (id: string, events?: unknown[]) => {
@@ -439,10 +445,10 @@ function Logs({ items, hasMore, loadMore, enabled, body, t, run, notify }: { ite
     setLoadingMore(true);
     try { await loadMore(); } finally { setLoadingMore(false); }
   };
-  return <section><div className="log-toolbar"><SectionHeader title={t("requestLog")} description={`${enabled ? (body ? t("loggingWithBody") : t("loggingMetadataOnly")) : t("disabled")} · ${items.length} ${t(items.length === 1 ? "requestEntry" : "requestEntries")}`} action={<div className="header-switches"><label className="switch"><input type="checkbox" checked={enabled} onChange={(e) => void run(() => api.setLogging(e.target.checked))} aria-label={t("logging")} /><span /><b>{t("logging")}</b></label><label className="switch"><input type="checkbox" checked={enabled && body} disabled={!enabled} onChange={(e) => void run(() => api.setLoggingBody(e.target.checked))} aria-label={t("bodyLogging")} /><span /><b>{t("bodyLogging")}</b></label></div>} /></div>
+  return <section><div className="log-toolbar"><SectionHeader title={t("requestLog")} description={`${enabled ? (body ? t("loggingWithBody") : t("loggingMetadataOnly")) : t("disabled")} · ${items.length} ${t(items.length === 1 ? "requestEntry" : "requestEntries")}`} action={<div className="header-switches"><label className="switch"><input type="checkbox" checked={enabled} onChange={(e) => void run(() => api.setLogging(e.target.checked), undefined, ["config", "status", "logs"])} aria-label={t("logging")} /><span /><b>{t("logging")}</b></label><label className="switch"><input type="checkbox" checked={enabled && body} disabled={!enabled} onChange={(e) => void run(() => api.setLoggingBody(e.target.checked), undefined, ["config", "status", "logs"])} aria-label={t("bodyLogging")} /><span /><b>{t("bodyLogging")}</b></label></div>} /></div>
     {!enabled && <div className="empty-state inline"><CircleAlert size={18} /><span>{t("disabled")}</span></div>}
-    {items.length === 0 ? <Empty text={t("noLogs")} /> : <><div className="table-wrap log-scroll"><table className="log-table"><thead><tr><th>{t("status")}</th><th>{t("route")}</th><th>{t("clients")}</th><th>{t("requests")}</th><th /></tr></thead><tbody>{items.map((item) => <tr key={item.request_id}><td className="log-status"><State value={item.status} /></td><td className="log-route"><strong>{item.provider || "—"}</strong><small className="mono">{item.model || "—"}</small></td><td className="log-client mono">{item.client || "generic"}</td><td className="log-request"><strong className="mono">{new Date(item.started_at).toLocaleTimeString()}</strong><small>{item.duration_ms || 0} ms · {item.status_code || "—"}</small></td><td className="actions log-actions"><button className="icon-button compact" onClick={() => void copyLog(item.request_id)} title={t("copyRequestLog")} aria-label={`${t("copyRequestLog")} ${item.request_id}`}><Copy size={15} /></button><button className="text-button" onClick={() => void run(async () => { const value = await api.logDetail(item.request_id); setDetail({ id: value.request_id, events: value.events }); })}>{t("details")}</button></td></tr>)}</tbody></table></div>{hasMore && <div className="load-more"><button className="secondary" disabled={loadingMore} onClick={() => void onLoadMore()}>{loadingMore && <RefreshCw size={15} className="spin" />}{loadingMore ? t("loadingMore") : t("loadMore")}</button></div>}</>}
-    {detail && <div className="drawer-backdrop" onMouseDown={() => setDetail(null)}><aside className="drawer" onMouseDown={(e) => e.stopPropagation()} aria-label={t("details")}><div className="drawer-title"><div><p className="eyebrow">REQUEST</p><h2 className="mono">{detail.id}</h2></div><div className="drawer-title-actions"><button className="secondary copy-button" onClick={() => void copyDetail()}><Copy size={15} />{copied ? t("copied") : t("copyRequestLog")}</button><button className="icon-button" onClick={() => setDetail(null)} aria-label={t("close")}><X size={17} /></button></div></div><pre>{JSON.stringify({ request_id: detail.id, events: detail.events }, null, 2)}</pre></aside></div>}
+    {items.length === 0 ? <Empty text={t("noLogs")} /> : <><div className="table-wrap log-scroll"><table className="log-table"><thead><tr><th>{t("status")}</th><th>{t("route")}</th><th>{t("clients")}</th><th>{t("requests")}</th><th /></tr></thead><tbody>{items.map((item) => <tr key={item.request_id}><td className="log-status"><State value={item.status} /></td><td className="log-route"><strong>{item.provider || "—"}</strong><small className="mono">{item.model || "—"}</small></td><td className="log-client mono">{item.client || "generic"}</td><td className="log-request"><strong className="mono">{new Date(item.started_at).toLocaleTimeString()}</strong><small>{item.duration_ms || 0} ms · {item.status_code || "—"}</small></td><td className="actions log-actions"><button className="icon-button compact" onClick={() => void copyLog(item.request_id)} title={t("copyRequestLog")} aria-label={`${t("copyRequestLog")} ${item.request_id}`}><Copy size={15} /></button><button className="text-button" onClick={() => void run(async () => { const value = await api.logDetail(item.request_id); setDetailCount(100); setDetail({ id: value.request_id, events: value.events }); })}>{t("details")}</button></td></tr>)}</tbody></table></div>{hasMore && <div className="load-more"><button className="secondary" disabled={loadingMore} onClick={() => void onLoadMore()}>{loadingMore && <RefreshCw size={15} className="spin" />}{loadingMore ? t("loadingMore") : t("loadMore")}</button></div>}</>}
+    {detail && <div className="drawer-backdrop" onMouseDown={() => setDetail(null)}><aside className="drawer" onMouseDown={(e) => e.stopPropagation()} aria-label={t("details")}><div className="drawer-title"><div><p className="eyebrow">REQUEST</p><h2 className="mono">{detail.id}</h2></div><div className="drawer-title-actions"><button className="secondary copy-button" onClick={() => void copyDetail()}><Copy size={15} />{copied ? t("copied") : t("copyRequestLog")}</button><button className="icon-button" onClick={() => setDetail(null)} aria-label={t("close")}><X size={17} /></button></div></div><pre>{JSON.stringify({ request_id: detail.id, events: detail.events.slice(0, detailCount) }, null, 2)}</pre>{detailCount < detail.events.length && <div className="load-more"><button className="secondary" onClick={() => setDetailCount((count) => Math.min(count + 100, detail.events.length))}>{t("loadMoreEvents")}</button></div>}</aside></div>}
   </section>;
 }
 
@@ -452,18 +458,6 @@ function Usage({ usage, t }: { usage: UsageReport | null; t: (key: MessageKey) =
 }
 
 function UsageTable({ title, groups, t }: { title: string; groups: Record<string, UsageGroup>; t: (key: MessageKey) => string }) { return <div className="usage-block"><h3>{title}</h3><div className="table-wrap"><table><thead><tr><th>{title}</th><th className="number">{t("requests")}</th><th className="number">{t("tokens")}</th><th>{t("status")}</th></tr></thead><tbody>{Object.entries(groups).map(([key, group]) => <tr key={key}><td className="mono">{key}</td><td className="number mono">{group.requests}</td><td className="number mono">{group.usage?.total_tokens?.toLocaleString() || "—"}</td><td>{group.incomplete ? <State value="incomplete" /> : <State value="ok" />}</td></tr>)}</tbody></table></div></div>; }
-
-function SettingsPage({ config, language, theme, setLanguage, setTheme, t, run }: { config: Config; language: Language; theme: Theme; setLanguage: (v: Language) => void; setTheme: (v: Theme) => void; t: (key: MessageKey) => string; run: (op: () => Promise<unknown>, message?: string) => Promise<void> }) {
-  const [host, setHost] = useState(config.listen.host || "127.0.0.1"); const [port, setPort] = useState(config.listen.port); const [logDir, setLogDir] = useState(config.logging.dir);
-  const save = () => run(() => api.updateConfig({ ...config, listen: { host, port }, logging: { ...config.logging, dir: logDir }, ui: { ...config.ui, language } }), t("success"));
-  const dirty = host !== (config.listen.host || "127.0.0.1") || port !== config.listen.port || logDir !== config.logging.dir || language !== config.ui.language;
-  return <section><SectionHeader title={t("settings")} />
-    <div className="settings-group"><h3>{t("interfaceSettings")}</h3><div className="settings-list"><div className="setting-row"><div><Languages size={17} /><span><strong>{t("language")}</strong><small>UI / config.yaml</small></span></div><select value={language} onChange={(e) => setLanguage(e.target.value as Language)}><option value="zh-CN">简体中文</option><option value="en-US">English</option></select></div><div className="setting-row"><div><Sun size={17} /><span><strong>{t("theme")}</strong><small>{t("localPreference")}</small></span></div><div className="segmented">{(["light", "dark", "system"] as Theme[]).map((value) => <button className={theme === value ? "selected" : ""} key={value} onClick={() => setTheme(value)}>{value === "dark" && <Moon size={14} />}{value === "light" && <Sun size={14} />}{value === "system" && <TerminalSquare size={14} />}{t(value)}</button>)}</div></div></div></div>
-    <div className="settings-group"><h3>{t("gatewaySettings")}</h3><div className="settings-list"><div className="setting-row"><div><Power size={17} /><span><strong>{t("autostart")}</strong><small>{t("currentUserSession")}</small></span></div><label className="switch"><input type="checkbox" aria-label={t("autostart")} checked={config.autostart.enabled} onChange={(e) => void run(() => api.setAutostart(e.target.checked), t("success"))} /><span /></label></div><div className="setting-row"><div><Network size={17} /><span><strong>{t("listenHost")}</strong><small>{t("listenHostDescription")}</small></span></div><select value={host} onChange={(e) => setHost(e.target.value)}><option value="127.0.0.1">127.0.0.1</option><option value="0.0.0.0">0.0.0.0</option></select></div><div className="setting-row"><div><Network size={17} /><span><strong>{t("port")}</strong><small>{t("listenPortDescription")}</small></span></div><input className="short-input mono" type="number" min="1024" max="65535" value={port} onChange={(e) => setPort(Number(e.target.value))} /></div></div></div>
-    <div className="settings-group"><h3>{t("logSettings")}</h3><div className="settings-list"><div className="setting-row"><div><FileClock size={17} /><span><strong>{t("logging")}</strong><small>{t("loggingDescription")}</small></span></div><label className="switch"><input type="checkbox" aria-label={t("logging")} checked={config.logging.enabled} onChange={(e) => void run(() => api.setLogging(e.target.checked), t("success"))} /><span /></label></div><div className="setting-row"><div><FileClock size={17} /><span><strong>{t("bodyLogging")}</strong><small>{t("bodyLoggingDescription")}</small></span></div><label className="switch"><input type="checkbox" aria-label={t("bodyLogging")} checked={config.logging.enabled && config.logging.body !== false} disabled={!config.logging.enabled} onChange={(e) => void run(() => api.setLoggingBody(e.target.checked), t("success"))} /><span /></label></div><div className="setting-row"><div><FileClock size={17} /><span><strong>{t("logDir")}</strong><small>{t("relativeDataRoot")}</small></span></div><input value={logDir} onChange={(e) => setLogDir(e.target.value)} /></div></div></div>
-    {dirty && <div className="settings-footer"><span className="muted">{t("unsavedChanges")}</span><button className="primary" onClick={() => void save()} disabled={port < 1024 || port > 65535 || !logDir.trim()}><Save size={16} />{t("saveSettings")}</button></div>}
-  </section>;
-}
 
 function Empty({ text }: { text: string }) { return <div className="empty-state"><Boxes size={20} /><span>{text}</span></div>; }
 

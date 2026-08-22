@@ -5,7 +5,6 @@ package route
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
 	"ai-gateway/internal/config"
@@ -180,15 +179,7 @@ func unmatchedModelError(requested string) error {
 // their default model or as an enabled model-catalog entry. Sorting makes an
 // ambiguity error stable even though providers are stored in a map.
 func modelOwners(cfg *config.Config, requested string) []string {
-	var owners []string
-	for id, provider := range cfg.Providers {
-		if !provider.EnabledValue() || !modelDeclared(provider, requested) {
-			continue
-		}
-		owners = append(owners, id)
-	}
-	sort.Strings(owners)
-	return owners
+	return cfg.ModelOwnersView(requested)
 }
 
 func modelListed(provider config.Provider, requested string) bool {

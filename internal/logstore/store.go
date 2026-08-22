@@ -36,6 +36,8 @@ type Session struct {
 	mu        sync.Mutex
 	path      string
 	requestID string
+	file      *os.File
+	owner     *Writer
 }
 
 // RequestID returns the validated request identifier for response metadata.
@@ -71,10 +73,11 @@ func (w *Writer) Open(logDir, requestID string, at time.Time) (*Session, error) 
 		_ = f.Close()
 		return nil, fmt.Errorf("restrict request log permissions: %w", err)
 	}
-	if err := f.Close(); err != nil {
-		return nil, fmt.Errorf("close request log: %w", err)
-	}
-	return &Session{path: path, requestID: requestID}, nil
+	session := &Session{path: path, requestID: requestID, file: f, owner: w}
+	w.mu.Lock()
+	w.sessions[session] = struct{}{}
+	w.mu.Unlock()
+	return session, nil
 }
 
 // Append adds one independently parseable JSON object to the session.
@@ -99,18 +102,35 @@ func (s *Session) Append(eventType string, fields map[string]any) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	f, err := os.OpenFile(s.path, os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return fmt.Errorf("open request log for append: %w", err)
+	if s.file == nil {
+		return errors.New("request log session is closed")
 	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
+	if _, err := s.file.Write(data); err != nil {
 		return fmt.Errorf("append %s log event: %w", eventType, err)
 	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("close request log: %w", err)
-	}
 	return nil
+}
+
+// Close releases the request file after the terminal result event is written.
+// It is idempotent so error paths and deferred cleanup can share the same call.
+func (s *Session) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.file == nil {
+		return nil
+	}
+	f := s.file
+	s.file = nil
+	err := f.Close()
+	if s.owner != nil {
+		s.owner.mu.Lock()
+		delete(s.owner.sessions, s)
+		s.owner.mu.Unlock()
+	}
+	return err
 }
 
 // Summary is the non-body view returned by GET /api/v1/logs.
@@ -127,6 +147,39 @@ type Summary struct {
 	StatusCode  int         `json:"status_code,omitempty"`
 	DurationMS  int64       `json:"duration_ms,omitempty"`
 	Usage       *TokenUsage `json:"usage,omitempty"`
+}
+
+type summaryCacheEntry struct {
+	modTime time.Time
+	size    int64
+	summary Summary
+}
+
+func (w *Writer) cachedSummary(path string) (Summary, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		w.cacheMu.Lock()
+		delete(w.summaryCache, path)
+		w.cacheMu.Unlock()
+		return Summary{}, err
+	}
+	w.cacheMu.RLock()
+	entry, ok := w.summaryCache[path]
+	w.cacheMu.RUnlock()
+	if ok && entry.size == info.Size() && entry.modTime.Equal(info.ModTime()) {
+		return entry.summary, nil
+	}
+	summary, _, err := readSummary(path, false)
+	if err != nil {
+		w.cacheMu.Lock()
+		delete(w.summaryCache, path)
+		w.cacheMu.Unlock()
+		return Summary{}, err
+	}
+	w.cacheMu.Lock()
+	w.summaryCache[path] = summaryCacheEntry{modTime: info.ModTime(), size: info.Size(), summary: summary}
+	w.cacheMu.Unlock()
+	return summary, nil
 }
 
 // Query is the supported request-summary filter set.
@@ -152,7 +205,7 @@ func (w *Writer) List(logDir string, q Query) (Page, error) {
 	}
 	items := make([]Summary, 0, len(files))
 	for _, path := range files {
-		s, _, err := readSummary(path, false)
+		s, err := w.cachedSummary(path)
 		if err != nil {
 			continue
 		}
@@ -254,7 +307,7 @@ func (w *Writer) Usage(logDir string, q Query) (UsageReport, error) {
 		return report, err
 	}
 	for _, path := range files {
-		s, _, err := readSummary(path, false)
+		s, err := w.cachedSummary(path)
 		if err != nil || q.From != nil && s.StartedAt.Before(*q.From) || q.To != nil && s.StartedAt.After(*q.To) {
 			continue
 		}
@@ -353,7 +406,7 @@ func (w *Writer) Inspect(logDir string, enabled bool) Inspection {
 		if info.ModTime().After(latestTime) {
 			latest, latestTime = path, info.ModTime()
 		}
-		s, _, err := readSummary(path, false)
+		s, err := w.cachedSummary(path)
 		if err == nil && s.CompletedAt == nil {
 			result.InterruptedFiles++
 		}
@@ -366,6 +419,75 @@ func (w *Writer) Inspect(logDir string, enabled bool) Inspection {
 		result.LastParseable = &ok
 	}
 	return result
+}
+
+// Retain removes only completed request files outside the retention window or
+// above the quota. Interrupted files and active sessions are never removed.
+// Zero values disable the corresponding policy.
+func (w *Writer) Retain(logDir string, retentionDays int, quotaBytes int64, now time.Time) (int, error) {
+	files, err := w.files(logDir)
+	if err != nil {
+		return 0, err
+	}
+	type candidate struct {
+		path    string
+		started time.Time
+		size    int64
+	}
+	var candidates []candidate
+	var total int64
+	for _, path := range files {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			continue
+		}
+		summary, err := w.cachedSummary(path)
+		if err != nil || summary.CompletedAt == nil {
+			continue
+		}
+		if w.isActivePath(path) {
+			continue
+		}
+		started := summary.StartedAt
+		if day, parseErr := time.ParseInLocation("2006-01-02", filepath.Base(filepath.Dir(path)), now.Location()); parseErr == nil {
+			started = day
+		}
+		candidates = append(candidates, candidate{path: path, started: started, size: info.Size()})
+		total += info.Size()
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].started.Before(candidates[j].started) })
+	cutoff := time.Time{}
+	if retentionDays > 0 {
+		cutoff = now.AddDate(0, 0, -retentionDays)
+	}
+	removed := 0
+	for _, item := range candidates {
+		old := !cutoff.IsZero() && item.started.Before(cutoff)
+		overQuota := quotaBytes > 0 && total > quotaBytes
+		if !old && !overQuota {
+			continue
+		}
+		if err := os.Remove(item.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return removed, err
+		}
+		total -= item.size
+		removed++
+		w.cacheMu.Lock()
+		delete(w.summaryCache, item.path)
+		w.cacheMu.Unlock()
+	}
+	return removed, nil
+}
+
+func (w *Writer) isActivePath(path string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for session := range w.sessions {
+		if session.path == path {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *Writer) logRoot(logDir string) (string, error) {

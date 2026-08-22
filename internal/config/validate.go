@@ -221,6 +221,27 @@ func (c *Config) Validate() error {
 			Reason: fmt.Sprintf("must be between 1024 and 65535, got %d", p),
 		})
 	}
+	for field, value := range map[string]int{
+		"limits.global":       c.Limits.Global,
+		"limits.per_client":   c.Limits.PerClient,
+		"limits.per_provider": c.Limits.PerProvider,
+	} {
+		if value < 0 || value > MaxConcurrencyLimit {
+			errs = append(errs, FieldError{Field: field, Reason: fmt.Sprintf("must be zero or between 1 and %d, got %d", MaxConcurrencyLimit, value)})
+		}
+	}
+	if c.Limits.StreamIdleSeconds < 1 || c.Limits.StreamIdleSeconds > MaxStreamIdleSeconds {
+		errs = append(errs, FieldError{Field: "limits.stream_idle_seconds", Reason: fmt.Sprintf("must be between 1 and %d seconds, got %d", MaxStreamIdleSeconds, c.Limits.StreamIdleSeconds)})
+	}
+	if c.Limits.RequestBodyBytes < 0 || c.Limits.RequestBodyBytes > DefaultRequestBodyBytes {
+		errs = append(errs, FieldError{Field: "limits.request_body_bytes", Reason: fmt.Sprintf("must be zero or between 1 and %d bytes, got %d", DefaultRequestBodyBytes, c.Limits.RequestBodyBytes)})
+	}
+	if c.Limits.RequestHeaderBytes < 0 || c.Limits.RequestHeaderBytes > MaxRequestHeaderBytes {
+		errs = append(errs, FieldError{Field: "limits.request_header_bytes", Reason: fmt.Sprintf("must be zero or between 1 and %d bytes, got %d", MaxRequestHeaderBytes, c.Limits.RequestHeaderBytes)})
+	}
+	if c.Limits.ClientRatePerMinute < 0 || c.Limits.ClientRatePerMinute > MaxClientRatePerMinute {
+		errs = append(errs, FieldError{Field: "limits.client_rate_per_minute", Reason: fmt.Sprintf("must be zero or between 1 and %d, got %d", MaxClientRatePerMinute, c.Limits.ClientRatePerMinute)})
+	}
 	if host := c.Listen.HostValue(); host != "127.0.0.1" && host != "0.0.0.0" {
 		errs = append(errs, FieldError{Field: "listen.host", Reason: "must be 127.0.0.1 or 0.0.0.0"})
 	}
@@ -229,6 +250,12 @@ func (c *Config) Validate() error {
 		errs = append(errs, FieldError{
 			Field: "logging.dir", Reason: "must be a relative path inside the data root",
 		})
+	}
+	if c.Logging.RetentionDays < 0 || c.Logging.RetentionDays > 3650 {
+		errs = append(errs, FieldError{Field: "logging.retention_days", Reason: fmt.Sprintf("must be zero or between 1 and 3650 days, got %d", c.Logging.RetentionDays)})
+	}
+	if c.Logging.QuotaBytes < 0 || c.Logging.QuotaBytes > 1<<40 {
+		errs = append(errs, FieldError{Field: "logging.quota_bytes", Reason: fmt.Sprintf("must be zero or between 1 and %d bytes, got %d", 1<<40, c.Logging.QuotaBytes)})
 	}
 
 	for id, p := range c.Providers {

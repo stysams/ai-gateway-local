@@ -35,7 +35,7 @@ func (e *ParseError) Unwrap() error { return e.Err }
 // key that somehow landed in Extra and collides with a declared field is
 // dropped (it can never arrive there through decoding).
 var knownTopLevel = map[string]bool{
-	"version": true, "listen": true, "logging": true, "ui": true,
+	"version": true, "listen": true, "logging": true, "limits": true, "ui": true,
 	"autostart": true, "providers": true, "routes": true,
 }
 
@@ -147,6 +147,7 @@ func (m *Manager) Write(cfg *Config) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	cfg.rebuildModelIndex()
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
