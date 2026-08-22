@@ -56,8 +56,8 @@ func (c CodexClient) RemoteCompactionValue() bool {
 	return c.RemoteCompaction != nil && *c.RemoteCompaction
 }
 
-// Listen configures the loopback listener. The hostname is fixed to
-// 127.0.0.1 and never stored in config.
+// Listen configures the shared HTTP listener. The management API remains
+// loopback-only when Host is set to 0.0.0.0 for LAN data-plane access.
 type Listen struct {
 	// Host defaults to loopback. Set to 0.0.0.0 when other clients on the
 	// local network must reach the gateway.

@@ -1,6 +1,7 @@
 // Package server hosts the headless gateway's HTTP surface: health checks,
-// the management API prefix and the /v1 data plane. It supports loopback and
-// an explicit all-local-interfaces bind without silently changing ports.
+// the loopback-only management API prefix and the /v1 data plane. It supports
+// loopback and an explicit all-local-interfaces bind without exposing the
+// management plane to non-loopback clients or silently changing ports.
 package server
 
 import (

@@ -38,9 +38,12 @@ calls the shutdown API.
 ```
 
 The gateway defaults to `127.0.0.1`. To let other clients on the local network
-reach it, open Settings and select listen address `0.0.0.0`, then restart the
-gateway. The default management address is `http://127.0.0.1:12600`;
-`GET /readyz` must return HTTP 200 before pointing a client.
+reach the data plane, open Settings and select listen address `0.0.0.0`, then
+restart the gateway. The management API remains restricted to real TCP
+loopback sources, does not trust `X-Forwarded-For`, and cannot be used remotely
+to read configuration, logs, provider information, or shut down the gateway.
+The default management address is `http://127.0.0.1:12600`; `GET /readyz` must
+return HTTP 200 before pointing a client.
 
 ## Configure provider models
 
