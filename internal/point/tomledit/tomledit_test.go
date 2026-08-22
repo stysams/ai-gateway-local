@@ -173,6 +173,17 @@ func TestUnsupportedShapesAreRejected(t *testing.T) {
 	}
 }
 
+func TestImplicitDottedTableIsRejected(t *testing.T) {
+	doc, err := Parse([]byte("model_providers.ai-gateway.name = 'old'\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = doc.SetString([]string{"model_providers", "ai-gateway", "base_url"}, "http://127.0.0.1:12600")
+	if !errors.Is(err, ErrUnsupportedShape) {
+		t.Fatalf("error = %v, want ErrUnsupportedShape", err)
+	}
+}
+
 // A key that already exists inside a plain table is replaced in place even when
 // its current value is not a string: the caller owns that key.
 func TestExistingNonStringValueIsReplaced(t *testing.T) {

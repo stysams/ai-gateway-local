@@ -1,6 +1,7 @@
 package grok
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -41,6 +42,8 @@ const catalogPrefix = "ai-gateway:"
 func Transform(original []byte, baseURL string, settings clientcatalog.Settings) ([]byte, error) {
 	if out, err := transformInPlace(original, baseURL, settings); err == nil {
 		return out, nil
+	} else if !errors.Is(err, tomledit.ErrUnsupportedShape) {
+		return nil, err
 	}
 	return transformWhole(original, baseURL, settings)
 }
@@ -86,17 +89,25 @@ func transformWhole(original []byte, baseURL string, settings clientcatalog.Sett
 	if err != nil {
 		return nil, err
 	}
+	want := entries(settings)
 	for key := range modelSet {
-		if ownedKey(key) {
+		if ownedKey(key) && !containsKey(want, key) {
 			delete(modelSet, key)
 		}
 	}
-	for _, item := range entries(settings) {
-		table := map[string]any{}
+	for _, item := range want {
+		value, exists := modelSet[item.key]
+		if !exists {
+			value = map[string]any{}
+			modelSet[item.key] = value
+		}
+		table, ok := value.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("Grok config field %q must be a table", "model."+item.key)
+		}
 		for _, kv := range entryKeys(baseURL, item) {
 			table[kv.Key] = kv.Value
 		}
-		modelSet[item.key] = table
 	}
 	models[defaultKey] = preferredKey
 	out, err := toml.Marshal(doc)

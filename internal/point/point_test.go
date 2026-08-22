@@ -246,8 +246,8 @@ func TestPointRewritesOnlyModelAndRoutingLines(t *testing.T) {
 // its position; dropped is every original line the alignment could not match,
 // which is precisely the set a point was allowed to rewrite.
 func diffLines(original, modified string) (kept, dropped []string) {
-	src := strings.Split(original, "\n")
-	dst := strings.Split(modified, "\n")
+	src := splitLinesForComparison(original)
+	dst := splitLinesForComparison(modified)
 	// lengths[i][j] is the LCS length of src[i:] and dst[j:].
 	lengths := make([][]int, len(src)+1)
 	for i := range lengths {
@@ -277,6 +277,18 @@ func diffLines(original, modified string) (kept, dropped []string) {
 		}
 	}
 	return kept, dropped
+}
+
+// splitLinesForComparison removes only the line-ending marker. The point
+// contract intentionally preserves LF versus CRLF, while this test compares
+// which logical lines were rewritten and must therefore run identically on
+// either checkout style.
+func splitLinesForComparison(data string) []string {
+	lines := strings.Split(data, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimSuffix(lines[i], "\r")
+	}
+	return lines
 }
 
 func equalStrings(a, b []string) bool {

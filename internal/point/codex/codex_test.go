@@ -95,3 +95,49 @@ func TestTransformFallsBackForInlineProviderTable(t *testing.T) {
 		t.Errorf("unrelated field lost in the fallback path:\n%s", out)
 	}
 }
+
+func TestTransformFallsBackForDottedProviderKeys(t *testing.T) {
+	base := "http://127.0.0.1:12600"
+	original := "approval_policy = 'never'\nmodel_providers.ai-gateway.name = 'old'\n"
+	settings := clientcatalog.Settings{PreferredModel: clientcatalog.ReservedModel}
+	out, err := Transform([]byte(original), base, settings, `C:\Users\test\.codex\ai-gateway-catalog.json`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := parse(out)
+	if err != nil {
+		t.Fatalf("dotted-key fallback produced invalid TOML: %v\n%s", err, out)
+	}
+	provider, ok := providerBlock(doc)
+	if !ok || provider["base_url"] != base+"/c/codex/v1" {
+		t.Fatalf("dotted-key fallback did not write the gateway provider:\n%s", out)
+	}
+	if !strings.Contains(string(out), "approval_policy = 'never'") {
+		t.Fatalf("unrelated field lost in dotted-key fallback:\n%s", out)
+	}
+}
+
+func TestTransformFallbackPreservesUnknownGatewayProviderFields(t *testing.T) {
+	base := "http://127.0.0.1:12600"
+	original := "model_providers = { \"ai-gateway\" = { name = \"old\", custom_option = \"keep-me\" } }\n"
+	settings := clientcatalog.Settings{PreferredModel: clientcatalog.ReservedModel}
+	out, err := Transform([]byte(original), base, settings, `C:\Users\test\.codex\ai-gateway-catalog.json`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := parse(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, ok := providerBlock(doc)
+	if !ok || p["custom_option"] != "keep-me" {
+		t.Fatalf("fallback dropped unknown provider field: %v\n%s", p, out)
+	}
+}
+
+func TestTransformDoesNotHideParseErrors(t *testing.T) {
+	_, err := Transform([]byte("model_providers = ["), "http://127.0.0.1:12600", clientcatalog.Settings{}, `C:\Users\test\.codex\catalog.json`)
+	if err == nil {
+		t.Fatal("invalid TOML was accepted")
+	}
+}

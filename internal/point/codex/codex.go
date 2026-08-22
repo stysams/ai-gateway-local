@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"errors"
 	"fmt"
 
 	"ai-gateway/internal/point/clientcatalog"
@@ -46,6 +47,8 @@ func Transform(original []byte, baseURL string, settings clientcatalog.Settings,
 	}
 	if out, err := transformInPlace(original, baseURL, settings, catalogPath); err == nil {
 		return out, nil
+	} else if !errors.Is(err, tomledit.ErrUnsupportedShape) {
+		return nil, err
 	}
 	return transformWhole(original, baseURL, settings, catalogPath)
 }
@@ -81,11 +84,18 @@ func transformWhole(original []byte, baseURL string, settings clientcatalog.Sett
 	for _, kv := range rootKeys(settings, catalogPath) {
 		doc[kv.Key] = kv.Value
 	}
-	provider := map[string]any{}
-	for _, kv := range providerKeys(baseURL, settings) {
-		provider[kv.Key] = kv.Value
+	provider, ok := providers[providerID]
+	if !ok {
+		provider = map[string]any{}
+		providers[providerID] = provider
 	}
-	providers[providerID] = provider
+	providerMap, ok := provider.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("Codex config field %q must be a table", "model_providers."+providerID)
+	}
+	for _, kv := range providerKeys(baseURL, settings) {
+		providerMap[kv.Key] = kv.Value
+	}
 	out, err := toml.Marshal(doc)
 	if err != nil {
 		return nil, fmt.Errorf("encode Codex config: %w", err)

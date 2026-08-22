@@ -359,8 +359,28 @@ func (d *Document) insertPoint(parent []string) (int, int, error) {
 	if i := d.findTable(parent); i >= 0 {
 		return d.entries[i].blockEnd, priorityDefault, nil
 	}
+	if d.hasImplicitTable(parent) {
+		return 0, 0, fmt.Errorf("%w: %s is an implicit table", ErrUnsupportedShape, strings.Join(parent, "."))
+	}
 	at, err := d.createTable(parent)
 	return at, priorityDefault, err
+}
+
+// hasImplicitTable reports a parent path created by a dotted key such as
+// `model_providers.ai-gateway.name = ...`. Adding an explicit table header for
+// that path would make the TOML invalid, so callers must use the semantic
+// fallback instead of splicing a duplicate header.
+func (d *Document) hasImplicitTable(path []string) bool {
+	for i := range d.entries {
+		e := &d.entries[i]
+		if e.dropped || e.kind != kindKeyValue {
+			continue
+		}
+		if len(e.path) > len(path) && isPrefix(path, e.path) {
+			return true
+		}
+	}
+	return false
 }
 
 // rootInsertPoint is the end of the root table's own key-value block. A root

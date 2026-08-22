@@ -103,6 +103,50 @@ func TestTransformFallsBackForInlineModelTable(t *testing.T) {
 	}
 }
 
+func TestTransformFallsBackForDottedModelKeys(t *testing.T) {
+	original := "theme = 'dark'\nmodel.ai-gateway.model = 'old'\n"
+	settings := clientcatalog.Settings{PreferredModel: clientcatalog.ReservedModel}
+	out, err := Transform([]byte(original), baseURL, settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, err := Check(out, baseURL, settings)
+	if err != nil || !ok {
+		t.Fatalf("dotted-key fallback is not pointed: ok=%v err=%v\n%s", ok, err, out)
+	}
+	if !strings.Contains(string(out), "theme = 'dark'") {
+		t.Fatalf("unrelated field lost in dotted-key fallback:\n%s", out)
+	}
+}
+
+func TestTransformFallbackPreservesUnknownGatewayModelFields(t *testing.T) {
+	original := "model = { \"ai-gateway\" = { model = \"old\", custom_option = \"keep-me\" } }\n"
+	settings := clientcatalog.Settings{PreferredModel: clientcatalog.ReservedModel}
+	out, err := Transform([]byte(original), baseURL, settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := parse(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelSet, ok := doc[modelTable].(map[string]any)
+	if !ok {
+		t.Fatalf("model table missing: %v", doc)
+	}
+	entry, ok := modelSet[preferredKey].(map[string]any)
+	if !ok || entry["custom_option"] != "keep-me" {
+		t.Fatalf("fallback dropped unknown model field: %v\n%s", entry, out)
+	}
+}
+
+func TestTransformDoesNotHideParseErrors(t *testing.T) {
+	_, err := Transform([]byte("model = ["), baseURL, clientcatalog.Settings{})
+	if err == nil {
+		t.Fatal("invalid TOML was accepted")
+	}
+}
+
 // Pointing an already pointed configuration must not change a single byte, so a
 // repeated sync cannot churn the file.
 func TestTransformIsIdempotent(t *testing.T) {
