@@ -90,7 +90,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 // whose providers are all keyless does not depend on the key store.
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	var errs []string
-	cfg := s.cfg.Snapshot()
+	cfg := s.cfg.View()
 	if cfg == nil {
 		errs = append(errs, "config: not loaded")
 	} else if err := cfg.Validate(); err != nil {
@@ -115,7 +115,7 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 // handleStatus reports version, pid, listener, config-derived flags and the
 // fixed four client routes and live point state.
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
-	cfg := s.cfg.Snapshot()
+	cfg := s.cfg.View()
 	if cfg == nil {
 		writeAPIError(w, http.StatusInternalServerError, "config_not_loaded", "config not loaded", nil)
 		return

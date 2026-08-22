@@ -206,7 +206,7 @@ func (s *Server) serveDataPlaneWith(w http.ResponseWriter, r *http.Request, clie
 		return
 	}
 
-	cfg := s.cfg.Snapshot()
+	cfg := s.cfg.View()
 	if cfg == nil {
 		writeInboundError(w, http.StatusInternalServerError, inProto, "config not loaded", "")
 		return
@@ -405,11 +405,6 @@ func (s *Server) serveCrossProtocol(w http.ResponseWriter, r *http.Request, inPr
 
 	dropped, reason := normalizeReasoning(req, outProto, provider.reasoning)
 	if dropped {
-		cfg := s.cfg.Snapshot()
-		if cfg == nil {
-			writeInboundError(w, http.StatusInternalServerError, inProto, "config not loaded", "")
-			return
-		}
 		if err := s.writeReasoningDropped(trace, inProto, outProto, provider.id, reason); err != nil {
 			writeInboundError(w, http.StatusInternalServerError, inProto, err.Error(), "warning_log_failed")
 			return
@@ -1030,7 +1025,7 @@ func (s *Server) handleModelsClient(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveModels(w http.ResponseWriter, _ *http.Request, client route.ClientID) {
-	cfg := s.cfg.Snapshot()
+	cfg := s.cfg.View()
 	if cfg == nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "config not loaded", "")
 		return

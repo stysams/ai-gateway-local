@@ -277,9 +277,9 @@ OpenAI 系用 Bearer。Anthropic 用 `x-api-key` + 固定 `anthropic-version: 20
 |---|---|
 | `config.go` | 结构体、`Defaults`、`EnabledValue` / `HostValue` / `PortValue`、指针可选字段、`Extra` 保未知顶层键 |
 | `validate.go` | 完整校验；provider id、adapter、模型 adapter、URL、路由引用、模型目录与默认模型一致 |
-| `manager.go` | `Load` / `LoadOrCreate` / `Snapshot` / `Write`；同目录临时文件原子替换；写之前完整校验 |
+| `manager.go` | `Load` / `LoadOrCreate` / `View` / `Snapshot` / `Write`；`View` 原子读取不可变配置，`Snapshot` 为写事务返回深复制；同目录临时文件原子替换；写之前完整校验 |
 
-数据面永远读 `Manager.Snapshot()`，不要自己读磁盘。
+数据面和只读管理路径读 `Manager.View()`，不要自己读磁盘，也不得修改返回的不可变配置。写事务使用 `Manager.Snapshot()` 获取深复制后再调用 `Write()`。
 
 `listen.host` 现在可以是 `127.0.0.1` 或 `0.0.0.0`。`ClientBaseURL`（`handlers.go`）写进客户端配置时永远是 `http://127.0.0.1:<port>`，即使监听 `0.0.0.0`。
 

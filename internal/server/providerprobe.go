@@ -218,7 +218,7 @@ func (s *Server) handleDiscoverProviderModels(w http.ResponseWriter, r *http.Req
 	}
 	id := strings.TrimSpace(request.ProviderID)
 	p := config.Provider{Name: "model discovery", Adapter: strings.TrimSpace(request.Adapter), BaseURL: strings.TrimSpace(request.BaseURL), ModelsURL: strings.TrimSpace(request.ModelsURL), ExtraHeaders: cloneStringMap(request.ExtraHeaders), DefaultModel: "discovery-placeholder"}
-	if existing := s.cfg.Snapshot(); existing != nil {
+	if existing := s.cfg.View(); existing != nil {
 		if saved, ok := existing.Providers[id]; ok {
 			p.SecretRef = saved.SecretRef
 		}
@@ -247,7 +247,7 @@ func (s *Server) handleDiscoverProviderModels(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) lookupProvider(w http.ResponseWriter, id string) (string, config.Provider, bool) {
-	cfg := s.cfg.Snapshot()
+	cfg := s.cfg.View()
 	if cfg == nil {
 		writeAPIError(w, http.StatusInternalServerError, "config_not_loaded", "config not loaded", nil)
 		return "", config.Provider{}, false

@@ -54,7 +54,7 @@ func (s *Server) handlePutRoute(w http.ResponseWriter, r *http.Request) {
 		cfg.Routes.Generic = next
 	}
 	baseURL := s.ClientBaseURL(cfg)
-	current := s.cfg.Snapshot()
+	current := s.cfg.View()
 	changes := s.clientSettingsChanges(current, cfg)
 	applied, err := s.applyClientSettingsChanges(baseURL, changes)
 	if err != nil {

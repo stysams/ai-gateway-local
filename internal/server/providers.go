@@ -253,7 +253,7 @@ func (s *Server) upsertProvider(ctx context.Context, id string, p config.Provide
 		}
 	}
 
-	current := s.cfg.Snapshot()
+	current := s.cfg.View()
 	if current == nil {
 		// The config was never loaded; the key store must not end up ahead
 		// of the config. Restore, then fail loudly.
@@ -351,7 +351,7 @@ func validationField(err error) string {
 }
 
 func (s *Server) handleListProviders(w http.ResponseWriter, r *http.Request) {
-	cfg := s.cfg.Snapshot()
+	cfg := s.cfg.View()
 	if cfg == nil {
 		writeAPIError(w, http.StatusInternalServerError, "config_not_loaded", "config not loaded", nil)
 		return
@@ -370,7 +370,7 @@ func (s *Server) handleListProviders(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetProvider(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	cfg := s.cfg.Snapshot()
+	cfg := s.cfg.View()
 	if cfg == nil {
 		writeAPIError(w, http.StatusInternalServerError, "config_not_loaded", "config not loaded", nil)
 		return
@@ -476,7 +476,7 @@ func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 // restore the provider but is returned as a warning for doctor to surface as
 // an orphan secret. Callers must hold s.txMu.
 func (s *Server) deleteProvider(ctx context.Context, id string) (warning string, err error) {
-	cfg := s.cfg.Snapshot()
+	cfg := s.cfg.View()
 	if cfg == nil {
 		return "", errors.New("config not loaded")
 	}
@@ -542,7 +542,7 @@ func (s *Server) handleUpdateProviderAvailability(w http.ResponseWriter, r *http
 	}
 	s.txMu.Lock()
 	defer s.txMu.Unlock()
-	current := s.cfg.Snapshot()
+	current := s.cfg.View()
 	cfg := s.cfg.Snapshot()
 	if cfg == nil {
 		writeAPIError(w, http.StatusInternalServerError, "config_not_loaded", "config not loaded", nil)

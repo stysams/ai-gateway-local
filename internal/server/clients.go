@@ -16,7 +16,7 @@ func (s *Server) pointContext(w http.ResponseWriter, r *http.Request) (point.Cli
 		writeAPIError(w, http.StatusNotFound, "client_not_found", err.Error(), nil)
 		return "", "", point.Settings{}, false
 	}
-	cfg := s.cfg.Snapshot()
+	cfg := s.cfg.View()
 	if cfg == nil {
 		writeAPIError(w, http.StatusInternalServerError, "config_not_loaded", "config not loaded", nil)
 		return "", "", point.Settings{}, false
@@ -168,7 +168,7 @@ func (s *Server) handlePutClientRemoteCompaction(w http.ResponseWriter, r *http.
 	}
 	s.txMu.Lock()
 	defer s.txMu.Unlock()
-	current := s.cfg.Snapshot()
+	current := s.cfg.View()
 	if current == nil {
 		writeAPIError(w, http.StatusInternalServerError, "config_not_loaded", "config not loaded", nil)
 		return
@@ -188,7 +188,7 @@ func (s *Server) handlePutClientRemoteCompaction(w http.ResponseWriter, r *http.
 
 func (s *Server) withClientOptions(status point.Status) point.Status {
 	if status.Client == point.ClientCodex {
-		if cfg := s.cfg.Snapshot(); cfg != nil {
+		if cfg := s.cfg.View(); cfg != nil {
 			enabled := cfg.Clients.Codex.RemoteCompactionValue()
 			status.RemoteCompaction = &enabled
 		}

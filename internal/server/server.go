@@ -104,7 +104,7 @@ func (s *Server) Listen(addr string) error {
 		return fmt.Errorf("listen on %s: %w", addr, err)
 	}
 	allowAllInterfaces := false
-	if cfg := s.cfg.Snapshot(); cfg != nil {
+	if cfg := s.cfg.View(); cfg != nil {
 		allowAllInterfaces = cfg.Listen.HostValue() == allInterfacesHost
 	}
 	if host != loopbackHost && !(host == allInterfacesHost && allowAllInterfaces) {

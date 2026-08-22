@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -560,6 +561,31 @@ func TestSnapshotIsolation(t *testing.T) {
 	}
 }
 
+func TestViewPublishesStableReadOnlyPointer(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(filepath.Join(dir, "config.yaml"))
+	if err := m.Write(Defaults()); err != nil {
+		t.Fatal(err)
+	}
+	first := m.View()
+	second := m.View()
+	if first == nil || first != second {
+		t.Fatal("View did not return the published pointer")
+	}
+
+	next := Defaults()
+	next.Listen.Port = IntPtr(13001)
+	if err := m.Write(next); err != nil {
+		t.Fatal(err)
+	}
+	if got := first.Listen.PortValue(); got != DefaultPort {
+		t.Fatalf("old published view changed after write: port=%d", got)
+	}
+	if got := m.View().Listen.PortValue(); got != 13001 {
+		t.Fatalf("new published view port=%d, want 13001", got)
+	}
+}
+
 func TestConcurrentWrite(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -591,6 +617,84 @@ func TestConcurrentWrite(t *testing.T) {
 	if snap.Listen.PortValue() != disk.Listen.PortValue() {
 		t.Errorf("snapshot port %d != disk port %d",
 			snap.Listen.PortValue(), disk.Listen.PortValue())
+	}
+}
+
+func TestConcurrentViewAndWrite(t *testing.T) {
+	m := NewManager(filepath.Join(t.TempDir(), "config.yaml"))
+	if err := m.Write(Defaults()); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(done)
+		for i := 0; i < 24; i++ {
+			cfg := Defaults()
+			cfg.Listen.Port = IntPtr(12000 + i)
+			if err := m.Write(cfg); err != nil {
+				errCh <- err
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-done:
+			select {
+			case err := <-errCh:
+				t.Fatal(err)
+			default:
+			}
+			if got := m.View().Listen.PortValue(); got != 12023 {
+				t.Fatalf("final view port=%d, want 12023", got)
+			}
+			return
+		default:
+			view := m.View()
+			if view == nil || view.Version != 1 || len(view.Providers) == 0 {
+				t.Fatalf("invalid published view: %+v", view)
+			}
+		}
+	}
+}
+
+var benchmarkConfigSink *Config
+
+func benchmarkManager(b *testing.B) *Manager {
+	b.Helper()
+	cfg := Defaults()
+	provider := cfg.Providers["openrouter"]
+	provider.Models = []ProviderModel{{ID: provider.DefaultModel}}
+	for i := 0; i < 128; i++ {
+		provider.Models = append(provider.Models, ProviderModel{ID: fmt.Sprintf("model-%03d", i)})
+	}
+	provider.ExtraHeaders = map[string]string{"User-Agent": "benchmark", "X-Benchmark": "config-view"}
+	cfg.Providers["openrouter"] = provider
+	m := NewManager(filepath.Join(b.TempDir(), "config.yaml"))
+	if err := m.Write(cfg); err != nil {
+		b.Fatal(err)
+	}
+	return m
+}
+
+func BenchmarkView(b *testing.B) {
+	m := benchmarkManager(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchmarkConfigSink = m.View()
+	}
+}
+
+func BenchmarkSnapshot(b *testing.B) {
+	m := benchmarkManager(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchmarkConfigSink = m.Snapshot()
 	}
 }
 

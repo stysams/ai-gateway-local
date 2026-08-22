@@ -32,7 +32,7 @@ type LocalAccessResponse struct {
 }
 
 func (s *Server) handleLocalAccess(w http.ResponseWriter, _ *http.Request) {
-	cfg := s.cfg.Snapshot()
+	cfg := s.cfg.View()
 	if cfg == nil {
 		writeAPIError(w, http.StatusInternalServerError, "config_not_loaded", "config not loaded", nil)
 		return

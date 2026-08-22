@@ -66,7 +66,7 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 func (s *Server) doctorReport(ctx context.Context) DoctorReport {
 	var report DoctorReport
 
-	cfg := s.cfg.Snapshot()
+	cfg := s.cfg.View()
 	configOK := false
 	if cfg == nil {
 		report.Config = ConfigCheck{OK: false, Error: "config not loaded"}

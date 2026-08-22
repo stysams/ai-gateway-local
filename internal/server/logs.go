@@ -12,7 +12,7 @@ import (
 )
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
-	cfg := s.cfg.Snapshot()
+	cfg := s.cfg.View()
 	if cfg == nil {
 		writeAPIError(w, http.StatusInternalServerError, "config_unavailable", "config not loaded", nil)
 		return
@@ -34,7 +34,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogDetail(w http.ResponseWriter, r *http.Request) {
-	cfg := s.cfg.Snapshot()
+	cfg := s.cfg.View()
 	if cfg == nil {
 		writeAPIError(w, http.StatusInternalServerError, "config_unavailable", "config not loaded", nil)
 		return
@@ -53,7 +53,7 @@ func (s *Server) handleLogDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
-	cfg := s.cfg.Snapshot()
+	cfg := s.cfg.View()
 	if cfg == nil {
 		writeAPIError(w, http.StatusInternalServerError, "config_unavailable", "config not loaded", nil)
 		return

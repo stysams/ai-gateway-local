@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"gopkg.in/yaml.v3"
 )
@@ -41,9 +42,9 @@ var knownTopLevel = map[string]bool{
 // Manager serializes reads and writes of one config file and keeps the
 // in-process snapshot that the data plane reads from.
 type Manager struct {
-	mu       sync.Mutex
-	path     string
-	snapshot *Config
+	mu      sync.Mutex
+	path    string
+	current atomic.Pointer[Config]
 }
 
 // NewManager returns a Manager for the config file at path.
@@ -59,6 +60,9 @@ func ConfigPath(dataDir string) string { return filepath.Join(dataDir, ConfigFil
 // yields ErrNotExist; a file that cannot be parsed or fails validation yields
 // an error carrying the file path and locatable fields. Load never writes.
 func (m *Manager) Load() (*Config, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	data, err := os.ReadFile(m.path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -76,9 +80,7 @@ func (m *Manager) Load() (*Config, error) {
 		}
 		return nil, err
 	}
-	m.mu.Lock()
-	m.snapshot = cfg.clone()
-	m.mu.Unlock()
+	m.current.Store(cfg.clone())
 	return cfg, nil
 }
 
@@ -96,15 +98,23 @@ func (m *Manager) LoadOrCreate() (*Config, error) {
 	return cfg, err
 }
 
+// View returns the last successfully loaded or written config without copying
+// it. The returned config is an immutable point-in-time view that remains valid
+// across later writes. Callers must not mutate it; use Snapshot when a mutable
+// copy is required.
+func (m *Manager) View() *Config {
+	return m.current.Load()
+}
+
 // Snapshot returns a deep copy of the last successfully loaded or written
-// config, or nil if none has been set.
+// config, or nil if none has been set. It is the mutation-safe API for config
+// write transactions.
 func (m *Manager) Snapshot() *Config {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.snapshot == nil {
+	view := m.View()
+	if view == nil {
 		return nil
 	}
-	return m.snapshot.clone()
+	return view.clone()
 }
 
 // Parse decodes, normalizes and validates config bytes without touching the
@@ -180,7 +190,7 @@ func (m *Manager) Write(cfg *Config) error {
 
 	syncDir(dir)
 
-	m.snapshot = cfg.clone()
+	m.current.Store(cfg.clone())
 	return nil
 }
 
