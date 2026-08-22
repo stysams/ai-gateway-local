@@ -2,8 +2,7 @@
 
 > 状态：第一期已验收（带遗留问题），第二期已启动
 > 文档日期：2026-08-22
-> 当前源码提交：`7964138996999b2a431973ceb19a92f589137d9c`（最终发布记录文档提交）
-> 包内二进制提交：`42cd24c2ae06d76f150a57ec73a94653200f47e6`（第二期全部实现及发布记录提交）
+> 包构建提交：`c7a822a6a619ad6cebcd083e304b233d5742d5cb`（第二期实现及前端资源更新；后续仅发布记录文档变更不影响包内容）
 > 当前发布：`0.1.0-rc1`（`dist/ai-gateway-0.1.0-rc1-windows-amd64.zip`，SHA-256 `5492CEF9CBDB8EC512D8B22E5081AC92EEA7F32DB853BC501F3B2D1011829F8A`）
 > 第一验收平台：Windows 11
 
@@ -342,8 +341,8 @@ npm --prefix desktop run test:e2e -- --project=desktop-light
 5. 打完用包内 `ai-gateway.exe version` 核对版本、提交、Go、平台；核对压缩包含两个二进制、`LICENSE`、`README.md`、`docs/install.md`。告知用户必须替换并重启已在运行的网关，新包才会生效。
 
 当前包：`dist/ai-gateway-0.1.0-rc1-windows-amd64.zip`  
-提交：`492aa2d872d0ebaebf97b3802b86748a13499826`
-SHA-256：`12C4FF465383F2F94AB0C0A3FC72EC5D4C1AD1EDC167C7D1174DAAA23175E3A9`
+提交：`c7a822a6a619ad6cebcd083e304b233d5742d5cb`
+SHA-256：`B8AD411FE601E4E17225FC5E7BA24D08AE95FB253B444391F9CF1B285365F812`
 
 ---
 
