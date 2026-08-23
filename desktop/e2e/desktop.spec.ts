@@ -79,6 +79,26 @@ test("client routes list every enabled model as provider/model id", async ({ pag
   await expect(modelSelect.locator("option", { hasText: "openrouter/gpt-5" })).toHaveCount(1);
   await expect(modelSelect.locator("option", { hasText: "openrouter/anthropic/claude-sonnet-4" })).toHaveCount(1);
   await expect(modelSelect.locator("option", { hasText: "deepseek/deepseek-chat" })).toHaveCount(1);
+  const routeControlMetrics = await page.locator(".route-client-grid .route-row").first().evaluate((row) => {
+    const select = row.querySelector("select");
+    const button = row.querySelector("button");
+    if (!select || !button) return null;
+    const selectRect = select.getBoundingClientRect();
+    const buttonRect = button.getBoundingClientRect();
+    return {
+      selectTop: Math.round(selectRect.top),
+      selectBottom: Math.round(selectRect.bottom),
+      buttonTop: Math.round(buttonRect.top),
+      buttonBottom: Math.round(buttonRect.bottom),
+      selectFontSize: getComputedStyle(select).fontSize,
+    };
+  });
+  expect(routeControlMetrics).not.toBeNull();
+  if (testInfo.project.name === "desktop-light") {
+    expect(routeControlMetrics?.buttonTop).toBe(routeControlMetrics?.selectTop);
+    expect(routeControlMetrics?.buttonBottom).toBe(routeControlMetrics?.selectBottom);
+  }
+  expect(routeControlMetrics?.selectFontSize).toBe("11px");
   if (testInfo.project.name === "mobile-dark") {
     await expect(page.getByText("Full value: openrouter/gpt-5", { exact: true }).first()).toBeVisible();
     await expect(page.getByText("Full value: openrouter/anthropic/claude-sonnet-4", { exact: true })).toBeVisible();
@@ -91,6 +111,10 @@ test("client routes list every enabled model as provider/model id", async ({ pag
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   expect(overflow).toBe(false);
   await page.screenshot({ path: testInfo.outputPath("client-routes.png"), fullPage: true });
+  await page.getByRole("button", { name: "Overview" }).click();
+  const overviewModel = page.locator(".overview-routes .data-row > span.mono").first();
+  await expect(overviewModel).toHaveCSS("font-size", "11px");
+  await page.screenshot({ path: testInfo.outputPath("overview-routes.png"), fullPage: true });
 });
 
 test("disabling a provider clears the required client route", async ({ page }, testInfo) => {
