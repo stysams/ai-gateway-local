@@ -164,6 +164,7 @@ func ParseRequest(body []byte) (*ir.Request, error) {
 		Tools      []json.RawMessage `json:"tools"`
 		ToolChoice json.RawMessage   `json:"tool_choice"`
 		Thinking   json.RawMessage   `json:"thinking"`
+		Output     json.RawMessage   `json:"output_config"`
 		MaxTokens  int64             `json:"max_tokens"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
@@ -173,6 +174,23 @@ func ParseRequest(body []byte) (*ir.Request, error) {
 		Model:      raw.Model,
 		Stream:     raw.Stream != nil && *raw.Stream,
 		ToolChoice: normalizeToolChoice(raw.ToolChoice),
+	}
+	if len(raw.Output) > 0 && string(raw.Output) != "null" {
+		var output struct {
+			Format struct {
+				Type   string          `json:"type"`
+				Schema json.RawMessage `json:"schema"`
+			} `json:"format"`
+		}
+		if err := json.Unmarshal(raw.Output, &output); err != nil {
+			return nil, fmt.Errorf("invalid field output_config: %w", err)
+		}
+		if output.Format.Type != "" {
+			if output.Format.Type != "json_schema" || !ir.ValidJSONObject(output.Format.Schema) {
+				return nil, fmt.Errorf("%w: output_config.format must be a json_schema object", ir.ErrUnsupportedContent)
+			}
+			req.Output = &ir.OutputFormat{Schema: output.Format.Schema, Strict: true}
+		}
 	}
 	if len(raw.Thinking) > 0 && string(raw.Thinking) != "null" {
 		var thinking struct {
@@ -435,6 +453,7 @@ func parseTools(rawTools []json.RawMessage) ([]ir.Tool, error) {
 			Name        string          `json:"name"`
 			Description string          `json:"description"`
 			InputSchema json.RawMessage `json:"input_schema"`
+			Strict      bool            `json:"strict"`
 		}
 		if err := json.Unmarshal(raw, &t); err != nil {
 			return nil, fmt.Errorf("invalid tool definition: %w", err)
@@ -442,7 +461,7 @@ func parseTools(rawTools []json.RawMessage) ([]ir.Tool, error) {
 		if t.Name == "" {
 			return nil, fmt.Errorf("invalid tool definition: missing name")
 		}
-		tools = append(tools, ir.Tool{Name: t.Name, Description: t.Description, Parameters: t.InputSchema})
+		tools = append(tools, ir.Tool{Name: t.Name, Description: t.Description, Parameters: t.InputSchema, Strict: t.Strict})
 	}
 	return tools, nil
 }
@@ -526,10 +545,19 @@ func EncodeNonStream(w io.Writer, model string, resp *ir.Response) error {
 		"content":       content,
 		"stop_reason":   stopReason(resp.StopReason),
 		"stop_sequence": nil,
-		"usage": map[string]any{
-			"input_tokens":  resp.Usage.InputTokens,
-			"output_tokens": resp.Usage.OutputTokens,
-		},
+		"usage": func() map[string]any {
+			usage := map[string]any{
+				"input_tokens":  resp.Usage.InputTokens,
+				"output_tokens": resp.Usage.OutputTokens,
+			}
+			if resp.Usage.CacheCreationInputTokens > 0 {
+				usage["cache_creation_input_tokens"] = resp.Usage.CacheCreationInputTokens
+			}
+			if resp.Usage.CacheReadInputTokens > 0 {
+				usage["cache_read_input_tokens"] = resp.Usage.CacheReadInputTokens
+			}
+			return usage
+		}(),
 	}
 	data, err := json.Marshal(out)
 	if err != nil {

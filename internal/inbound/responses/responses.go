@@ -142,6 +142,7 @@ func ParseRequest(body []byte) (*ir.Request, error) {
 		Tools        []json.RawMessage `json:"tools"`
 		ToolChoice   json.RawMessage   `json:"tool_choice"`
 		Reasoning    json.RawMessage   `json:"reasoning"`
+		Text         json.RawMessage   `json:"text"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("invalid JSON body: %w", err)
@@ -150,6 +151,26 @@ func ParseRequest(body []byte) (*ir.Request, error) {
 		Model:      raw.Model,
 		Stream:     raw.Stream != nil && *raw.Stream,
 		ToolChoice: normalizeToolChoice(raw.ToolChoice),
+	}
+	if len(raw.Text) > 0 && string(raw.Text) != "null" {
+		var textConfig struct {
+			Format struct {
+				Type        string          `json:"type"`
+				Name        string          `json:"name"`
+				Description string          `json:"description"`
+				Schema      json.RawMessage `json:"schema"`
+				Strict      bool            `json:"strict"`
+			} `json:"format"`
+		}
+		if err := json.Unmarshal(raw.Text, &textConfig); err != nil {
+			return nil, fmt.Errorf("invalid field text: %w", err)
+		}
+		if textConfig.Format.Type != "" {
+			if textConfig.Format.Type != "json_schema" || !ir.ValidJSONObject(textConfig.Format.Schema) {
+				return nil, fmt.Errorf("%w: text.format must be a json_schema object", ir.ErrUnsupportedContent)
+			}
+			req.Output = &ir.OutputFormat{Name: textConfig.Format.Name, Description: textConfig.Format.Description, Schema: textConfig.Format.Schema, Strict: textConfig.Format.Strict}
+		}
 	}
 	if len(raw.Reasoning) > 0 && string(raw.Reasoning) != "null" {
 		var reasoning struct {
@@ -366,6 +387,7 @@ func parseOneTool(raw json.RawMessage) ([]ir.Tool, []ir.DroppedTool, error) {
 		Name        string            `json:"name"`
 		Description string            `json:"description"`
 		Parameters  json.RawMessage   `json:"parameters"`
+		Strict      bool              `json:"strict"`
 		Format      json.RawMessage   `json:"format"`
 		Tools       []json.RawMessage `json:"tools"`
 	}
@@ -381,6 +403,7 @@ func parseOneTool(raw json.RawMessage) ([]ir.Tool, []ir.DroppedTool, error) {
 			Name:        t.Name,
 			Description: t.Description,
 			Parameters:  ir.SchemaOrEmpty(t.Parameters),
+			Strict:      t.Strict,
 		}}, nil, nil
 	case "custom":
 		if t.Name == "" {
@@ -399,6 +422,7 @@ func parseOneTool(raw json.RawMessage) ([]ir.Tool, []ir.DroppedTool, error) {
 			Description: t.Description,
 			Parameters:  ir.SchemaOrFreeform(t.Parameters),
 			Custom:      true,
+			Strict:      t.Strict,
 		}}, dropped, nil
 	case "namespace":
 		var tools []ir.Tool
@@ -546,11 +570,15 @@ func EncodeNonStream(w io.Writer, model string, resp *ir.Response) error {
 		"output":     output,
 	}
 	if resp.Usage.TotalTokens > 0 || resp.Usage.InputTokens > 0 {
-		out["usage"] = map[string]any{
+		usage := map[string]any{
 			"input_tokens":  resp.Usage.InputTokens,
 			"output_tokens": resp.Usage.OutputTokens,
 			"total_tokens":  resp.Usage.TotalTokens,
 		}
+		if resp.Usage.CacheReadInputTokens > 0 {
+			usage["input_tokens_details"] = map[string]any{"cached_tokens": resp.Usage.CacheReadInputTokens}
+		}
+		out["usage"] = usage
 	}
 	data, err := json.Marshal(out)
 	if err != nil {

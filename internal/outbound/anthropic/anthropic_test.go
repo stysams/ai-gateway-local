@@ -218,7 +218,7 @@ func TestParseResponse(t *testing.T) {
 			{"type":"tool_use","id":"toolu_1","name":"f","input":{"a":1}}
 		],
 		"stop_reason":"tool_use",
-		"usage":{"input_tokens":3,"output_tokens":4}
+		"usage":{"input_tokens":3,"output_tokens":4,"cache_creation_input_tokens":2,"cache_read_input_tokens":5}
 	}`)
 	events, err := ParseResponse(body)
 	if err != nil {
@@ -249,7 +249,7 @@ func TestParseResponse(t *testing.T) {
 	if toolArgs != `{"a":1}` {
 		t.Errorf("tool args = %q", toolArgs)
 	}
-	if usage.TotalTokens != 7 {
+	if usage.TotalTokens != 7 || usage.CacheCreationInputTokens != 2 || usage.CacheReadInputTokens != 5 || usage.CacheInputTokens != 10 {
 		t.Errorf("usage = %+v (total must be in+out)", usage)
 	}
 	if events[len(events)-1].Type != ir.EventCompleted || events[len(events)-1].StopReason != "tool_use" {

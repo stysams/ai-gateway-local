@@ -1,4 +1,4 @@
-import { Activity, Database, FileClock, Languages, Moon, Network, Power, Save, Sun, TerminalSquare } from "lucide-react";
+import { Activity, Database, FileClock, Languages, Moon, Network, Power, Save, ShieldCheck, Sun, TerminalSquare } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useState } from "react";
 import { api } from "../api";
@@ -101,6 +101,7 @@ export function SettingsPage({ config, language, theme, setLanguage, setTheme, t
       <div className="settings-list logging-list">
         <div className="setting-row"><div><FileClock size={17} /><span><strong>{t("logging")}</strong><small>{t("loggingDescription")}</small></span></div><label className="switch"><input type="checkbox" aria-label={t("logging")} checked={config.logging.enabled} onChange={(event) => void run(() => api.setLogging(event.target.checked), t("success"), ["config", "status", "logs"])} /><span /></label></div>
         <div className="setting-row"><div><FileClock size={17} /><span><strong>{t("bodyLogging")}</strong><small>{t("bodyLoggingDescription")}</small></span></div><label className="switch"><input type="checkbox" aria-label={t("bodyLogging")} checked={config.logging.enabled && config.logging.body !== false} disabled={!config.logging.enabled} onChange={(event) => void run(() => api.setLoggingBody(event.target.checked), t("success"), ["config", "status", "logs"])} /><span /></label></div>
+        <div className="setting-row"><div><ShieldCheck size={17} /><span><strong>{t("logRedaction")}</strong><small>{t("logRedactionDescription")}</small></span></div><label className="switch"><input type="checkbox" aria-label={t("logRedaction")} checked={config.logging.redact !== false} onChange={(event) => void run(() => api.setLoggingRedact(event.target.checked), t("success"), ["config", "logs"])} /><span /></label></div>
         <div className="setting-row log-directory-row"><div><FileClock size={17} /><span><strong>{t("logDir")}</strong><small>{t("relativeDataRoot")}</small></span></div><div className="setting-control"><input aria-label={t("logDir")} value={logDir} onChange={(event) => setLogDir(event.target.value)} aria-invalid={Boolean(logDirError)} aria-describedby={logDirError ? "log-directory-error" : undefined} />{logDirError && <small id="log-directory-error" className="field-error" role="alert">{logDirError}</small>}</div></div>
         <NumberSetting icon={FileClock} label={t("logRetention")} hint={t("logRetentionHint")} value={retentionDays} min={0} max={3650} error={retentionError} onChange={setRetentionDays} />
         <NumberSetting icon={Database} label={t("logQuota")} hint={t("logQuotaHint")} value={quotaBytes} min={0} max={1099511627776} error={quotaError} onChange={setQuotaBytes} />

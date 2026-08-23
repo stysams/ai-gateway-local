@@ -123,6 +123,9 @@ type Logging struct {
 	// Body uses a pointer to distinguish "absent" (default true) from an
 	// explicit false. It only takes effect when Enabled is true.
 	Body *bool `yaml:"body,omitempty"`
+	// Redact uses a pointer so legacy configs without the field receive the
+	// privacy-preserving default without forcing a config rewrite.
+	Redact *bool `yaml:"redact,omitempty"`
 	// Dir is relative to the data root; empty means DefaultLogDir.
 	Dir           string `yaml:"dir,omitempty"`
 	RetentionDays int    `yaml:"retention_days,omitempty"`
@@ -142,6 +145,15 @@ func (l Logging) EnabledValue() bool {
 func (l Logging) BodyValue() bool {
 	if l.Body != nil {
 		return *l.Body
+	}
+	return true
+}
+
+// RedactValue reports whether JSON bodies and stream events are recursively
+// redacted before they are persisted. The default is enabled.
+func (l Logging) RedactValue() bool {
+	if l.Redact != nil {
+		return *l.Redact
 	}
 	return true
 }
@@ -281,7 +293,7 @@ func Defaults() *Config {
 	c := &Config{
 		Version:   1,
 		Listen:    Listen{Port: IntPtr(DefaultPort)},
-		Logging:   Logging{Enabled: BoolPtr(true), Body: BoolPtr(true), Dir: DefaultLogDir},
+		Logging:   Logging{Enabled: BoolPtr(true), Body: BoolPtr(true), Redact: BoolPtr(true), Dir: DefaultLogDir},
 		Limits:    Limits{StreamIdleSeconds: DefaultStreamIdleSeconds},
 		UI:        UI{Language: DefaultLanguage},
 		Autostart: Autostart{Enabled: false},
@@ -430,6 +442,10 @@ func (c *Config) clone() *Config {
 	if c.Logging.Body != nil {
 		b := *c.Logging.Body
 		out.Logging.Body = &b
+	}
+	if c.Logging.Redact != nil {
+		b := *c.Logging.Redact
+		out.Logging.Redact = &b
 	}
 	if c.Providers != nil {
 		out.Providers = make(map[string]Provider, len(c.Providers))

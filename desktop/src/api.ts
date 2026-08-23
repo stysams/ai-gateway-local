@@ -22,6 +22,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+async function requestText(path: string, init?: RequestInit): Promise<string> {
+  const response = await fetch(apiBase() + path, init);
+  const body = await response.text();
+  if (!response.ok) {
+    const decoded = (() => { try { return JSON.parse(body); } catch { return {}; } })();
+    throw new APIError(response.status, decoded?.error?.code || "request_failed", decoded?.error?.message || response.statusText);
+  }
+  return body;
+}
+
 export const api = {
   status: () => request<Status>("/api/v1/status"),
   localAccess: () => request<LocalAccess>("/api/v1/local-access"),
@@ -46,8 +56,17 @@ export const api = {
     return request<{ items: LogSummary[]; next_cursor?: string }>(`/api/v1/logs?${query}`);
   },
   logDetail: (id: string) => request<{ request_id: string; events: unknown[] }>(`/api/v1/logs/${id}`),
-  usage: () => request<UsageReport>("/api/v1/usage"),
+  logExport: (id: string) => requestText(`/api/v1/logs/${id}/export`),
+  deleteLog: (id: string) => request<{ deleted: boolean; request_id: string }>(`/api/v1/logs/${id}`, { method: "DELETE" }),
+  clearLogs: () => request<{ removed: number }>("/api/v1/logs", { method: "DELETE" }),
+  usage: (filters?: { from?: string; to?: string; provider?: string; model?: string; client?: string; status?: string }) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters || {})) if (value) query.set(key, value);
+    const suffix = query.toString();
+    return request<UsageReport>(`/api/v1/usage${suffix ? `?${suffix}` : ""}`);
+  },
   setLogging: (enabled: boolean) => request<{ enabled: boolean; body: boolean }>("/api/v1/logging", { method: "PUT", body: JSON.stringify({ enabled }) }),
   setLoggingBody: (body: boolean) => request<{ enabled: boolean; body: boolean }>("/api/v1/logging", { method: "PUT", body: JSON.stringify({ body }) }),
+  setLoggingRedact: (redact: boolean) => request<{ enabled: boolean; body: boolean; redact: boolean }>("/api/v1/logging", { method: "PUT", body: JSON.stringify({ redact }) }),
   setAutostart: (enabled: boolean) => request<{ enabled: boolean; valid: boolean; executable?: string }>("/api/v1/autostart", { method: "PUT", body: JSON.stringify({ enabled }) }),
 };

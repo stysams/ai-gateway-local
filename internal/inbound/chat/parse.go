@@ -86,6 +86,7 @@ func ParseRequest(body []byte) (*ir.Request, error) {
 		Tools      []json.RawMessage `json:"tools"`
 		ToolChoice json.RawMessage   `json:"tool_choice"`
 		Reasoning  json.RawMessage   `json:"reasoning_effort"`
+		Output     json.RawMessage   `json:"response_format"`
 		Other      map[string]json.RawMessage
 	}
 	// 未知字段收集：先解到 map 再摘取已知字段。
@@ -96,7 +97,7 @@ func ParseRequest(body []byte) (*ir.Request, error) {
 	raw.Other = map[string]json.RawMessage{}
 	for k, v := range fields {
 		switch k {
-		case "model", "stream", "messages", "tools", "tool_choice", "reasoning_effort":
+		case "model", "stream", "messages", "tools", "tool_choice", "reasoning_effort", "response_format":
 		default:
 			raw.Other[k] = v
 		}
@@ -130,12 +131,33 @@ func ParseRequest(body []byte) (*ir.Request, error) {
 	if reasoning, ok := fields["reasoning_effort"]; ok {
 		raw.Reasoning = reasoning
 	}
+	if output, ok := fields["response_format"]; ok {
+		raw.Output = output
+	}
 
 	req := &ir.Request{
 		Model:      raw.Model,
 		Stream:     raw.Stream != nil && *raw.Stream,
 		ToolChoice: normalizeToolChoice(raw.ToolChoice),
 		Extensions: raw.Other,
+	}
+	if len(raw.Output) > 0 && string(raw.Output) != "null" {
+		var format struct {
+			Type       string `json:"type"`
+			JSONSchema struct {
+				Name        string          `json:"name"`
+				Description string          `json:"description"`
+				Schema      json.RawMessage `json:"schema"`
+				Strict      bool            `json:"strict"`
+			} `json:"json_schema"`
+		}
+		if err := json.Unmarshal(raw.Output, &format); err != nil {
+			return nil, fmt.Errorf("invalid field response_format: %w", err)
+		}
+		if format.Type != "json_schema" || !ir.ValidJSONObject(format.JSONSchema.Schema) {
+			return nil, fmt.Errorf("%w: response_format must be a json_schema object", ir.ErrUnsupportedContent)
+		}
+		req.Output = &ir.OutputFormat{Name: format.JSONSchema.Name, Description: format.JSONSchema.Description, Schema: format.JSONSchema.Schema, Strict: format.JSONSchema.Strict}
 	}
 	if len(raw.Reasoning) > 0 && string(raw.Reasoning) != "null" {
 		if err := json.Unmarshal(raw.Reasoning, &req.Reasoning.Effort); err != nil {
@@ -337,6 +359,7 @@ func parseTools(rawTools []json.RawMessage) ([]ir.Tool, error) {
 				Name        string          `json:"name"`
 				Description string          `json:"description"`
 				Parameters  json.RawMessage `json:"parameters"`
+				Strict      bool            `json:"strict"`
 			} `json:"function"`
 		}
 		if err := json.Unmarshal(raw, &t); err != nil {
@@ -349,6 +372,7 @@ func parseTools(rawTools []json.RawMessage) ([]ir.Tool, error) {
 			Name:        t.Function.Name,
 			Description: t.Function.Description,
 			Parameters:  t.Function.Parameters,
+			Strict:      t.Function.Strict,
 		})
 	}
 	return tools, nil

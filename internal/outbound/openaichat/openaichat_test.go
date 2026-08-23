@@ -235,6 +235,23 @@ func TestParseResponseReasoning(t *testing.T) {
 	}
 }
 
+func TestParseResponseUsageCache(t *testing.T) {
+	events, err := ParseResponse([]byte(`{"id":"c1","choices":[{"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18,"prompt_tokens_details":{"cached_tokens":5}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, ev := range events {
+		if ev.Type == ir.EventUsage && (ev.Usage.CacheReadInputTokens != 5 || ev.Usage.CacheInputTokens != 11) {
+			t.Fatalf("usage = %+v", ev.Usage)
+		}
+		found = found || ev.Type == ir.EventUsage
+	}
+	if !found {
+		t.Fatal("response omitted usage event")
+	}
+}
+
 func TestStreamReaderReasoning(t *testing.T) {
 	stream := "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"step \"}}]}\n\n" +
 		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"one\"}}]}\n\n" +

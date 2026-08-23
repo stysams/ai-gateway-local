@@ -130,6 +130,11 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 		"stream":     req.Stream,
 		"max_tokens": defaultMaxTokens,
 	}
+	if req.Output != nil {
+		body["output_config"] = map[string]any{"format": map[string]any{
+			"type": "json_schema", "schema": json.RawMessage(req.Output.Schema),
+		}}
+	}
 	var system strings.Builder
 	for _, b := range req.System {
 		switch b.Type {
@@ -222,11 +227,15 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 					schema = ir.SchemaOrEmpty(nil)
 				}
 			}
-			tools = append(tools, map[string]any{
+			tool := map[string]any{
 				"name":         t.Name,
 				"description":  t.Description,
 				"input_schema": json.RawMessage(schema),
-			})
+			}
+			if t.Strict {
+				tool["strict"] = true
+			}
+			tools = append(tools, tool)
 		}
 		body["tools"] = tools
 	}
@@ -317,8 +326,10 @@ func ParseResponse(body []byte) ([]ir.Event, error) {
 			Input     json.RawMessage `json:"input"`
 		} `json:"content"`
 		Usage *struct {
-			InputTokens  int64 `json:"input_tokens"`
-			OutputTokens int64 `json:"output_tokens"`
+			InputTokens              int64  `json:"input_tokens"`
+			OutputTokens             int64  `json:"output_tokens"`
+			CacheCreationInputTokens *int64 `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     *int64 `json:"cache_read_input_tokens"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -354,10 +365,22 @@ func ParseResponse(body []byte) ([]ir.Event, error) {
 		}
 	}
 	if resp.Usage != nil {
+		cacheCreation, cacheRead, cacheInput := int64(0), int64(0), int64(0)
+		if resp.Usage.CacheCreationInputTokens != nil {
+			cacheCreation = *resp.Usage.CacheCreationInputTokens
+		}
+		if resp.Usage.CacheReadInputTokens != nil {
+			cacheRead = *resp.Usage.CacheReadInputTokens
+		}
+		if resp.Usage.CacheCreationInputTokens != nil || resp.Usage.CacheReadInputTokens != nil {
+			cacheInput = resp.Usage.InputTokens + cacheCreation + cacheRead
+		}
 		events = append(events, ir.Event{Type: ir.EventUsage, Usage: ir.Usage{
-			InputTokens:  resp.Usage.InputTokens,
-			OutputTokens: resp.Usage.OutputTokens,
-			TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens,
+			CacheCreationInputTokens: cacheCreation,
+			CacheReadInputTokens:     cacheRead,
+			CacheInputTokens:         cacheInput,
+			TotalTokens:              resp.Usage.InputTokens + resp.Usage.OutputTokens,
 		}})
 	}
 	events = append(events, ir.Event{Type: ir.EventCompleted, StopReason: resp.StopReason})

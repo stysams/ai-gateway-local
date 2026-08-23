@@ -72,6 +72,7 @@ type Request struct {
 	Messages   []Message
 	Tools      []Tool
 	ToolChoice json.RawMessage
+	Output     *OutputFormat
 	Reasoning  ReasoningConfig
 	// DroppedTools are hosted or otherwise non-convertible tool
 	// definitions removed during inbound parse. The data plane logs them
@@ -185,6 +186,26 @@ type Tool struct {
 	// Custom is true for Responses custom/freeform tools. JSON-only
 	// protocols wrap the raw input in FreeformInputSchema.
 	Custom bool
+	Strict bool
+}
+
+// OutputFormat is the protocol-independent JSON Schema response contract.
+// Chat uses response_format.json_schema, Responses uses text.format, and
+// Messages uses output_config.format.
+type OutputFormat struct {
+	Name        string
+	Description string
+	Schema      json.RawMessage
+	Strict      bool
+}
+
+// SchemaName returns the OpenAI-required schema name, using a stable fallback
+// for Anthropic requests whose wire format does not include one.
+func (f *OutputFormat) SchemaName() string {
+	if f != nil && strings.TrimSpace(f.Name) != "" {
+		return f.Name
+	}
+	return "structured_output"
 }
 
 // DroppedTool records a tool definition that was removed or downgraded
@@ -213,10 +234,13 @@ type ToolResult struct {
 
 // Usage aggregates token accounting across protocols.
 type Usage struct {
-	InputTokens     int64
-	OutputTokens    int64
-	ReasoningTokens int64
-	TotalTokens     int64
+	InputTokens              int64
+	OutputTokens             int64
+	ReasoningTokens          int64
+	CacheCreationInputTokens int64
+	CacheReadInputTokens     int64
+	CacheInputTokens         int64
+	TotalTokens              int64
 }
 
 // EventType is one of the unified response events (docs/v1-scheme.md §8.2).

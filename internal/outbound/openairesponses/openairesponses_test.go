@@ -224,7 +224,7 @@ func TestParseResponse(t *testing.T) {
 			{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hello","annotations":[]}]},
 			{"id":"fc_1","type":"function_call","call_id":"call_1","name":"f","arguments":"{\"a\":1}","status":"completed"}
 		],
-		"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}
+		"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7,"input_tokens_details":{"cached_tokens":2}}
 	}`)
 	events, err := ParseResponse(body)
 	if err != nil {
@@ -257,6 +257,16 @@ func TestParseResponse(t *testing.T) {
 	}
 	if events[len(events)-1].Type != ir.EventCompleted {
 		t.Errorf("last event = %v", events[len(events)-1].Type)
+	}
+	foundUsage := false
+	for _, ev := range events {
+		if ev.Type == ir.EventUsage && (ev.Usage.CacheReadInputTokens != 2 || ev.Usage.CacheInputTokens != 3) {
+			t.Fatalf("usage = %+v", ev.Usage)
+		}
+		foundUsage = foundUsage || ev.Type == ir.EventUsage
+	}
+	if !foundUsage {
+		t.Fatal("response omitted usage event")
 	}
 }
 

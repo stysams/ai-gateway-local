@@ -44,6 +44,9 @@ func TestDefaults(t *testing.T) {
 	if c.Logging.BodyValue() != true {
 		t.Error("Logging.BodyValue() = false, want true")
 	}
+	if !c.Logging.RedactValue() {
+		t.Error("Logging.RedactValue() = false, want true")
+	}
 	if c.Logging.Dir != DefaultLogDir {
 		t.Errorf("Logging.Dir = %q, want %q", c.Logging.Dir, DefaultLogDir)
 	}

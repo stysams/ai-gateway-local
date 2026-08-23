@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -19,16 +20,25 @@ import (
 // ErrInvalidCursor identifies a malformed or stale pagination cursor.
 var ErrInvalidCursor = errors.New("invalid cursor")
 
+// ErrLogActive is returned when a manual privacy operation targets a request
+// whose log file is still being written.
+var ErrLogActive = errors.New("request log is active")
+
 // RiskNotice is printed once on every headless serve startup.
-const RiskNotice = "ai-gateway 的正文日志可能包含提示词、源代码、工具参数、工具结果和图片原文。日志不会自动轮转或脱敏，请仅在可信设备上启用并自行管理磁盘空间。"
+const RiskNotice = "ai-gateway 的正文日志可能包含提示词、源代码、工具参数、工具结果和图片原文。网关会递归脱敏常见凭据字段，但自由文本仍可能包含隐私内容，请仅在可信设备上启用。"
 
 // TokenUsage contains only accounting returned by an upstream. The gateway
 // never estimates missing values.
 type TokenUsage struct {
-	InputTokens     int64 `json:"input_tokens"`
-	OutputTokens    int64 `json:"output_tokens"`
-	ReasoningTokens int64 `json:"reasoning_tokens,omitempty"`
-	TotalTokens     int64 `json:"total_tokens"`
+	InputTokens              int64 `json:"input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	ReasoningTokens          int64 `json:"reasoning_tokens,omitempty"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens,omitempty"`
+	// CacheInputTokens is the effective cache-accounting denominator. It is
+	// derived only when the upstream reports explicit cache fields.
+	CacheInputTokens int64 `json:"cache_input_tokens,omitempty"`
+	TotalTokens      int64 `json:"total_tokens"`
 }
 
 // Session serializes appends to one request file.
@@ -38,6 +48,7 @@ type Session struct {
 	requestID string
 	file      *os.File
 	owner     *Writer
+	redact    bool
 }
 
 // RequestID returns the validated request identifier for response metadata.
@@ -50,6 +61,12 @@ func (s *Session) RequestID() string {
 
 // Open creates or opens the JSONL file for requestID on the local date of at.
 func (w *Writer) Open(logDir, requestID string, at time.Time) (*Session, error) {
+	return w.OpenWithRedaction(logDir, requestID, at, false)
+}
+
+// OpenWithRedaction opens a request log and optionally sanitizes every event
+// before it reaches disk.
+func (w *Writer) OpenWithRedaction(logDir, requestID string, at time.Time, redact bool) (*Session, error) {
 	if w == nil {
 		return nil, errors.New("log writer is nil")
 	}
@@ -73,7 +90,7 @@ func (w *Writer) Open(logDir, requestID string, at time.Time) (*Session, error) 
 		_ = f.Close()
 		return nil, fmt.Errorf("restrict request log permissions: %w", err)
 	}
-	session := &Session{path: path, requestID: requestID, file: f, owner: w}
+	session := &Session{path: path, requestID: requestID, file: f, owner: w, redact: redact}
 	w.mu.Lock()
 	w.sessions[session] = struct{}{}
 	w.mu.Unlock()
@@ -88,7 +105,15 @@ func (s *Session) Append(eventType string, fields map[string]any) error {
 	event := make(map[string]any, len(fields)+3)
 	for k, v := range fields {
 		if k != "timestamp" && k != "request_id" && k != "type" {
-			event[k] = v
+			if s.redact {
+				if SensitiveName(k) {
+					event[k] = RedactionMarker
+				} else {
+					event[k] = RedactValue(v)
+				}
+			} else {
+				event[k] = v
+			}
 		}
 	}
 	event["timestamp"] = time.Now()
@@ -184,11 +209,11 @@ func (w *Writer) cachedSummary(path string) (Summary, error) {
 
 // Query is the supported request-summary filter set.
 type Query struct {
-	From, To         *time.Time
-	Client, Provider string
-	Status           string
-	Limit            int
-	Cursor           string
+	From, To                *time.Time
+	Client, Provider, Model string
+	Status                  string
+	Limit                   int
+	Cursor                  string
 }
 
 // Page is a cursor-paginated summary response.
@@ -212,7 +237,7 @@ func (w *Writer) List(logDir string, q Query) (Page, error) {
 		if q.From != nil && s.StartedAt.Before(*q.From) || q.To != nil && s.StartedAt.After(*q.To) {
 			continue
 		}
-		if q.Client != "" && s.Client != q.Client || q.Provider != "" && s.Provider != q.Provider || q.Status != "" && s.Status != q.Status {
+		if q.Client != "" && s.Client != q.Client || q.Provider != "" && s.Provider != q.Provider || q.Model != "" && s.Model != q.Model || q.Status != "" && s.Status != q.Status {
 			continue
 		}
 		items = append(items, s)
@@ -278,14 +303,101 @@ func (w *Writer) Detail(logDir, requestID string) ([]json.RawMessage, error) {
 	return nil, os.ErrNotExist
 }
 
+// Export returns a JSONL copy. When redact is true it also sanitizes legacy
+// files that were created before write-time redaction was enabled.
+func (w *Writer) Export(logDir, requestID string, redact bool) ([]byte, error) {
+	path, err := w.find(logDir, requestID)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !redact {
+		return data, err
+	}
+	var out bytes.Buffer
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 64*1024), 128<<20)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		out.Write(RedactRawJSON(json.RawMessage(line)))
+		out.WriteByte('\n')
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+// Delete removes one inactive request log.
+func (w *Writer) Delete(logDir, requestID string) error {
+	path, err := w.find(logDir, requestID)
+	if err != nil {
+		return err
+	}
+	if w.isActivePath(path) {
+		return ErrLogActive
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	w.forget(path)
+	return nil
+}
+
+// Clear removes every inactive request log. Active sessions remain intact.
+func (w *Writer) Clear(logDir string) (int, error) {
+	files, err := w.files(logDir)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, path := range files {
+		if w.isActivePath(path) {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return removed, err
+		}
+		w.forget(path)
+		removed++
+	}
+	return removed, nil
+}
+
+func (w *Writer) find(logDir, requestID string) (string, error) {
+	if !safeRequestID(requestID) {
+		return "", os.ErrNotExist
+	}
+	files, err := w.files(logDir)
+	if err != nil {
+		return "", err
+	}
+	for _, path := range files {
+		if strings.TrimSuffix(filepath.Base(path), ".jsonl") == requestID {
+			return path, nil
+		}
+	}
+	return "", os.ErrNotExist
+}
+
+func (w *Writer) forget(path string) {
+	w.cacheMu.Lock()
+	delete(w.summaryCache, path)
+	w.cacheMu.Unlock()
+}
+
 // UsageGroup is one aggregate over actual result events.
 type UsageGroup struct {
-	Requests   int         `json:"requests"`
-	Success    int         `json:"success"`
-	Failed     int         `json:"failed"`
-	Cancelled  int         `json:"cancelled"`
-	Usage      *TokenUsage `json:"usage"`
-	Incomplete bool        `json:"incomplete"`
+	Requests      int         `json:"requests"`
+	Success       int         `json:"success"`
+	Failed        int         `json:"failed"`
+	Cancelled     int         `json:"cancelled"`
+	UsageRequests int         `json:"usage_requests"`
+	Usage         *TokenUsage `json:"usage"`
+	Incomplete    bool        `json:"incomplete"`
 }
 
 // UsageReport groups usage by every dimension required by the v1 contract.
@@ -295,6 +407,7 @@ type UsageReport struct {
 	ByModel    map[string]*UsageGroup `json:"by_model"`
 	ByClient   map[string]*UsageGroup `json:"by_client"`
 	ByDate     map[string]*UsageGroup `json:"by_date"`
+	ByHour     map[string]*UsageGroup `json:"by_hour"`
 }
 
 // Usage aggregates only usage values present in result events.
@@ -302,7 +415,7 @@ func (w *Writer) Usage(logDir string, q Query) (UsageReport, error) {
 	q.Limit = 500
 	q.Cursor = ""
 	files, err := w.files(logDir)
-	report := UsageReport{ByProvider: map[string]*UsageGroup{}, ByModel: map[string]*UsageGroup{}, ByClient: map[string]*UsageGroup{}, ByDate: map[string]*UsageGroup{}}
+	report := UsageReport{ByProvider: map[string]*UsageGroup{}, ByModel: map[string]*UsageGroup{}, ByClient: map[string]*UsageGroup{}, ByDate: map[string]*UsageGroup{}, ByHour: map[string]*UsageGroup{}}
 	if err != nil {
 		return report, err
 	}
@@ -311,7 +424,7 @@ func (w *Writer) Usage(logDir string, q Query) (UsageReport, error) {
 		if err != nil || q.From != nil && s.StartedAt.Before(*q.From) || q.To != nil && s.StartedAt.After(*q.To) {
 			continue
 		}
-		if q.Client != "" && s.Client != q.Client || q.Provider != "" && s.Provider != q.Provider || q.Status != "" && s.Status != q.Status {
+		if q.Client != "" && s.Client != q.Client || q.Provider != "" && s.Provider != q.Provider || q.Model != "" && s.Model != q.Model || q.Status != "" && s.Status != q.Status {
 			continue
 		}
 		addUsage(&report.Total, s)
@@ -319,6 +432,7 @@ func (w *Writer) Usage(logDir string, q Query) (UsageReport, error) {
 		addUsage(group(report.ByModel, s.Model), s)
 		addUsage(group(report.ByClient, s.Client), s)
 		addUsage(group(report.ByDate, s.StartedAt.Local().Format("2006-01-02")), s)
+		addUsage(group(report.ByHour, s.StartedAt.Local().Format("2006-01-02T15:00:00-07:00")), s)
 	}
 	if report.Total.Requests == 0 {
 		report.Total.Incomplete = true
@@ -350,12 +464,16 @@ func addUsage(g *UsageGroup, s Summary) {
 		g.Incomplete = true
 		return
 	}
+	g.UsageRequests++
 	if g.Usage == nil {
 		g.Usage = &TokenUsage{}
 	}
 	g.Usage.InputTokens += s.Usage.InputTokens
 	g.Usage.OutputTokens += s.Usage.OutputTokens
 	g.Usage.ReasoningTokens += s.Usage.ReasoningTokens
+	g.Usage.CacheCreationInputTokens += s.Usage.CacheCreationInputTokens
+	g.Usage.CacheReadInputTokens += s.Usage.CacheReadInputTokens
+	g.Usage.CacheInputTokens += s.Usage.CacheInputTokens
 	g.Usage.TotalTokens += s.Usage.TotalTokens
 }
 
@@ -472,9 +590,7 @@ func (w *Writer) Retain(logDir string, retentionDays int, quotaBytes int64, now 
 		}
 		total -= item.size
 		removed++
-		w.cacheMu.Lock()
-		delete(w.summaryCache, item.path)
-		w.cacheMu.Unlock()
+		w.forget(item.path)
 	}
 	return removed, nil
 }

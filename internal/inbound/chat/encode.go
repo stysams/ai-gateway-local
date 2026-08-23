@@ -62,11 +62,15 @@ func EncodeNonStream(w io.Writer, model string, resp *ir.Response) error {
 		}},
 	}
 	if resp.Usage.TotalTokens > 0 || resp.Usage.InputTokens > 0 {
-		out["usage"] = map[string]any{
+		usage := map[string]any{
 			"prompt_tokens":     resp.Usage.InputTokens,
 			"completion_tokens": resp.Usage.OutputTokens,
 			"total_tokens":      resp.Usage.TotalTokens,
 		}
+		if resp.Usage.CacheReadInputTokens > 0 {
+			usage["prompt_tokens_details"] = map[string]any{"cached_tokens": resp.Usage.CacheReadInputTokens}
+		}
+		out["usage"] = usage
 	}
 	data, err := json.Marshal(out)
 	if err != nil {

@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"ai-gateway/internal/config"
@@ -35,7 +34,7 @@ func (s *Server) startTrace(cfg *config.Config, client route.ClientID, proto ir.
 		return nil, fmt.Errorf("create request id: %w", err)
 	}
 	start := time.Now()
-	session, err := s.warnings.Open(cfg.Logging.Dir, requestID, start)
+	session, err := s.warnings.OpenWithRedaction(cfg.Logging.Dir, requestID, start, cfg.Logging.RedactValue())
 	if err != nil {
 		return nil, err
 	}
@@ -171,21 +170,7 @@ func safeLogQuery(source url.Values) (url.Values, int) {
 }
 
 func sensitiveLogName(name string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(name))
-	normalized = strings.ReplaceAll(normalized, "_", "-")
-	compact := strings.NewReplacer("-", "", ".", "", "[", "", "]", "").Replace(normalized)
-	switch normalized {
-	case "authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key", "api-key":
-		return true
-	}
-	switch compact {
-	case "apikey", "token", "accesstoken", "authtoken", "idtoken", "refreshtoken", "session", "sessionid", "sessiontoken", "password", "passwd":
-		return true
-	}
-	return strings.Contains(normalized, "access-token") ||
-		strings.Contains(normalized, "auth-token") ||
-		strings.Contains(normalized, "password") ||
-		strings.Contains(normalized, "secret")
+	return logstore.SensitiveName(name)
 }
 
 func upstreamLogHeaders(proto ir.Protocol, stream bool, extraHeaders map[string]string) http.Header {
@@ -223,7 +208,11 @@ func (t *requestTrace) setIRUsage(usage ir.Usage) {
 	if t == nil {
 		return
 	}
-	t.usage = &logstore.TokenUsage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, ReasoningTokens: usage.ReasoningTokens, TotalTokens: usage.TotalTokens}
+	t.usage = &logstore.TokenUsage{
+		InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, ReasoningTokens: usage.ReasoningTokens,
+		CacheCreationInputTokens: usage.CacheCreationInputTokens, CacheReadInputTokens: usage.CacheReadInputTokens,
+		CacheInputTokens: usage.CacheInputTokens, TotalTokens: usage.TotalTokens,
+	}
 }
 
 func (t *requestTrace) setUsage(usage logstore.TokenUsage) {
@@ -420,6 +409,15 @@ func (c *usageCollector) consume(data []byte) {
 	if usage.ReasoningTokens != 0 || c.usage.ReasoningTokens == 0 {
 		c.usage.ReasoningTokens = usage.ReasoningTokens
 	}
+	if usage.CacheCreationInputTokens != 0 || c.usage.CacheCreationInputTokens == 0 {
+		c.usage.CacheCreationInputTokens = usage.CacheCreationInputTokens
+	}
+	if usage.CacheReadInputTokens != 0 || c.usage.CacheReadInputTokens == 0 {
+		c.usage.CacheReadInputTokens = usage.CacheReadInputTokens
+	}
+	if usage.CacheInputTokens != 0 || c.usage.CacheInputTokens == 0 {
+		c.usage.CacheInputTokens = usage.CacheInputTokens
+	}
 	if usage.TotalTokens != 0 {
 		c.usage.TotalTokens = usage.TotalTokens
 	} else {
@@ -459,7 +457,28 @@ func explicitUsage(data []byte) (logstore.TokenUsage, bool) {
 	if !hasTotal && (hasInput || hasOutput) {
 		total = input + output
 	}
-	return logstore.TokenUsage{InputTokens: input, OutputTokens: output, ReasoningTokens: reasoning, TotalTokens: total}, true
+	cacheCreation, hasCacheCreation := firstInt(usage, "cache_creation_input_tokens")
+	cacheRead, hasCacheRead := firstInt(usage, "cache_read_input_tokens")
+	cacheInput := int64(0)
+	if hasCacheCreation || hasCacheRead {
+		// Anthropic reports uncached input separately from cache read/create.
+		cacheInput = input + cacheCreation + cacheRead
+	} else {
+		for _, detailsKey := range []string{"input_tokens_details", "prompt_tokens_details"} {
+			if details, exists := mapAt(usage, detailsKey); exists {
+				if cached, hasCached := firstInt(details, "cached_tokens"); hasCached {
+					cacheRead = cached
+					cacheInput = input
+					break
+				}
+			}
+		}
+	}
+	return logstore.TokenUsage{
+		InputTokens: input, OutputTokens: output, ReasoningTokens: reasoning,
+		CacheCreationInputTokens: cacheCreation, CacheReadInputTokens: cacheRead,
+		CacheInputTokens: cacheInput, TotalTokens: total,
+	}, true
 }
 
 func mapAt(m map[string]any, key string) (map[string]any, bool) {
@@ -476,7 +495,9 @@ func firstInt(m map[string]any, keys ...string) (int64, bool) {
 	return 0, false
 }
 
-func usageFromJSON(data []byte) (logstore.TokenUsage, bool) { return explicitUsage(data) }
+func usageFromJSON(data []byte) (logstore.TokenUsage, bool) {
+	return explicitUsage(data)
+}
 
 func rawJSONOrString(data []byte) any {
 	trimmed := bytes.TrimSpace(data)

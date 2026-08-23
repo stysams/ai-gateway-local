@@ -12,6 +12,8 @@
 
 ### 2026-08-23
 
+- 请求日志默认在写盘前递归脱敏常见凭据字段，桌面支持强制脱敏复制、JSONL 下载、单条删除和非活动日志批量清理。
+- Chat Completions、Responses 与 Messages 的跨协议转换新增 JSON Schema 结构化输出和严格工具定义保留。
 - 桌面管理界面提高宽屏空间利用率，同组设置、连接参数和客户端路由会在空间充足时横向排列；窄屏仍自动回落为适合阅读和操作的布局。
 - 设置项错误会直接显示在对应字段旁，监听地址改为 `0.0.0.0` 前会明确确认；路由模型和请求日志在窄屏下保留完整上下文，底部导航入口全部可达。
 
@@ -19,7 +21,7 @@
 
 ## 功能概览
 
-- 支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages。
+- 支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages，包括三协议间的 JSON Schema 结构化输出和严格函数工具转换。
 - 为 Codex、Claude Code、Grok Build 和通用应用分别配置默认路由。
 - 一个提供商可以维护多个模型，每个模型可以单独选择 Chat、Responses 或 Messages 接口，并可从上游模型接口发现模型元数据。
 - 支持图片输入、推理或思考内容，以及不支持能力时的明确降级提示。
@@ -231,8 +233,11 @@ POST /c/{client}/v1/messages
 | `PUT` | `/api/v1/clients/{client}/remote-compaction` | 更新客户端远程压缩设置 |
 | `GET` | `/api/v1/logs` | 查询请求日志 |
 | `GET` | `/api/v1/logs/{request_id}` | 查看单个请求详情 |
+| `GET` | `/api/v1/logs/{request_id}/export` | 下载强制脱敏的 JSONL 日志 |
+| `DELETE` | `/api/v1/logs/{request_id}` | 删除单条非活动请求日志 |
+| `DELETE` | `/api/v1/logs` | 清理全部非活动请求日志 |
 | `GET` | `/api/v1/usage` | 查看用量汇总 |
-| `PUT` | `/api/v1/logging` | 开关请求日志和正文保存 |
+| `PUT` | `/api/v1/logging` | 开关请求日志、正文保存和写盘脱敏 |
 | `PUT` | `/api/v1/autostart` | 开关当前用户登录启动 |
 | `GET` | `/api/v1/local-access` | 获取当前连接参数和模型目录 |
 
@@ -255,7 +260,7 @@ $env:AI_GATEWAY_DATA_DIR = "D:\ai-gateway-data"
 
 - `config.yaml`：网关配置和路由，不包含明文 API 密钥。
 - `secrets/`：Windows DPAPI 等系统密钥存储产生的密文文件。
-- `logs/`：请求 JSONL 日志，是否保存正文由日志设置控制。
+- `logs/`：请求 JSONL 日志，是否保存正文和写盘脱敏由日志设置控制。
 - `gateway.lock`：单实例锁。
 - `gateway.pid.json`：运行实例的进程和监听地址元数据。
 
@@ -266,8 +271,9 @@ $env:AI_GATEWAY_DATA_DIR = "D:\ai-gateway-data"
 - 回环数据面当前不要求鉴权；应用填写的占位 API key 会被忽略。
 - 管理接口只允许回环来源；切换为 `0.0.0.0` 只扩大数据面暴露范围，不会把配置、日志、供应商信息或关闭接口开放给局域网。
 - 上游密钥只进入当前操作系统的密钥存储，不回退到明文文件。
-- 请求日志不会记录上游认证头；正文日志可能包含用户输入，首次启用时需要在桌面程序中确认风险。
-- 日志、配置、客户端文件和管理响应都不应包含真实 API key、Cookie 或个人隐私数据。
+- 请求日志默认递归脱敏 Authorization、Cookie、API key、token、password、secret 和 session 等常见凭据字段；桌面复制和下载会再次强制脱敏历史日志。
+- 自由文本仍可能包含提示词、源代码或个人信息，首次启用正文日志时需要在桌面程序中确认风险；敏感环境不应仅依赖字段名脱敏。
+- 活动请求日志不能手动删除；单条删除和批量清理只处理已经停止写入的文件。
 - 启用 `0.0.0.0` 前请先完成网络隔离和访问控制评估。
 
 ## 开发和验证

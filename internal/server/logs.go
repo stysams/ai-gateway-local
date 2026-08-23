@@ -52,6 +52,62 @@ func (s *Server) handleLogDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"request_id": requestID, "events": events})
 }
 
+func (s *Server) handleLogExport(w http.ResponseWriter, r *http.Request) {
+	cfg := s.cfg.View()
+	if cfg == nil {
+		writeAPIError(w, http.StatusInternalServerError, "config_unavailable", "config not loaded", nil)
+		return
+	}
+	requestID := r.PathValue("request_id")
+	data, err := s.warnings.Export(cfg.Logging.Dir, requestID, true)
+	if errors.Is(err, os.ErrNotExist) {
+		writeAPIError(w, http.StatusNotFound, "log_not_found", "request log not found", nil)
+		return
+	}
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "log_export_failed", err.Error(), nil)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+requestID+`.redacted.jsonl"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (s *Server) handleDeleteLog(w http.ResponseWriter, r *http.Request) {
+	cfg := s.cfg.View()
+	if cfg == nil {
+		writeAPIError(w, http.StatusInternalServerError, "config_unavailable", "config not loaded", nil)
+		return
+	}
+	requestID := r.PathValue("request_id")
+	err := s.warnings.Delete(cfg.Logging.Dir, requestID)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		writeAPIError(w, http.StatusNotFound, "log_not_found", "request log not found", nil)
+	case errors.Is(err, logstore.ErrLogActive):
+		writeAPIError(w, http.StatusConflict, "log_active", "active request log cannot be deleted", nil)
+	case err != nil:
+		writeAPIError(w, http.StatusInternalServerError, "log_delete_failed", err.Error(), nil)
+	default:
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "request_id": requestID})
+	}
+}
+
+func (s *Server) handleClearLogs(w http.ResponseWriter, _ *http.Request) {
+	cfg := s.cfg.View()
+	if cfg == nil {
+		writeAPIError(w, http.StatusInternalServerError, "config_unavailable", "config not loaded", nil)
+		return
+	}
+	removed, err := s.warnings.Clear(cfg.Logging.Dir)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "log_clear_failed", err.Error(), nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"removed": removed})
+}
+
 func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	cfg := s.cfg.View()
 	if cfg == nil {
@@ -73,6 +129,7 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 type loggingRequest struct {
 	Enabled *bool `json:"enabled"`
 	Body    *bool `json:"body"`
+	Redact  *bool `json:"redact"`
 }
 
 func (s *Server) handleLogging(w http.ResponseWriter, r *http.Request) {
@@ -80,8 +137,8 @@ func (s *Server) handleLogging(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.Enabled == nil && req.Body == nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid_request", "enabled or body is required", map[string]string{"enabled": "required"})
+	if req.Enabled == nil && req.Body == nil && req.Redact == nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "enabled, body, or redact is required", map[string]string{"enabled": "required"})
 		return
 	}
 	s.txMu.Lock()
@@ -97,16 +154,19 @@ func (s *Server) handleLogging(w http.ResponseWriter, r *http.Request) {
 	if req.Body != nil {
 		cfg.Logging.Body = config.BoolPtr(*req.Body)
 	}
+	if req.Redact != nil {
+		cfg.Logging.Redact = config.BoolPtr(*req.Redact)
+	}
 	if err := s.cfg.Write(cfg); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "config_write_failed", err.Error(), nil)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"enabled": cfg.Logging.EnabledValue(), "body": cfg.Logging.BodyValue()})
+	writeJSON(w, http.StatusOK, map[string]bool{"enabled": cfg.Logging.EnabledValue(), "body": cfg.Logging.BodyValue(), "redact": cfg.Logging.RedactValue()})
 }
 
 func parseLogQuery(w http.ResponseWriter, r *http.Request, withPage bool) (logstore.Query, bool) {
 	values := r.URL.Query()
-	q := logstore.Query{Client: values.Get("client"), Provider: values.Get("provider"), Status: values.Get("status"), Cursor: values.Get("cursor")}
+	q := logstore.Query{Client: values.Get("client"), Provider: values.Get("provider"), Model: values.Get("model"), Status: values.Get("status"), Cursor: values.Get("cursor")}
 	for raw, dst := range map[string]**time.Time{"from": &q.From, "to": &q.To} {
 		if value := values.Get(raw); value != "" {
 			parsed, err := time.Parse(time.RFC3339, value)
@@ -137,7 +197,7 @@ func parseLogQuery(w http.ResponseWriter, r *http.Request, withPage bool) (logst
 		return q, false
 	}
 	for key := range values {
-		if !strings.Contains(" from to client provider status limit cursor ", " "+key+" ") {
+		if !strings.Contains(" from to client provider model status limit cursor ", " "+key+" ") {
 			writeAPIError(w, http.StatusBadRequest, "invalid_query", "unknown query parameter: "+key, nil)
 			return q, false
 		}

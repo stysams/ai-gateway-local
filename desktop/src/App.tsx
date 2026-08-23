@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity, Boxes, Cable, Check, ChevronRight, CircleAlert, Copy, Database,
-  Plus, RefreshCw, RotateCcw, Save, Server, Settings,
-  Trash2, X,
+  Activity, Boxes, Cable, Check, ChevronRight, CircleAlert, Copy, Database, Download,
+  Filter, Gauge, Plus, RefreshCw, RotateCcw, Save, Server, Settings, Upload,
+  ShieldCheck, Trash2, X,
 } from "lucide-react";
+import {
+  Area, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  type TooltipContentProps,
+} from "recharts";
 import { ClientsIcon, GatewayMark, LogsIcon, OverviewIcon, ProvidersIcon, RoutesIcon, SettingsIcon, UsageIcon, type AppIcon } from "./icons";
 import { api } from "./api";
 import { catalogId, enabledCatalog, isCatalogRoute, reconcileClientRoutes } from "./catalog";
 import { inferWire, isModelAdapter, joinCompletionURL, modelAdapters, presetPath } from "./endpoint";
 import { CLAUDE_CODE_HEADERS, CODEX_HEADERS, mergeHeaderPreset } from "./headerPresets";
 import { translator, type Language, type MessageKey } from "./i18n";
-import type { ClientID, Config, LocalAccess, LogSummary, PointClient, PointStatus, Provider, ProviderModel, Route, Status, UsageGroup, UsageReport } from "./types";
+import type { ClientID, Config, LocalAccess, LogSummary, PointClient, PointStatus, Provider, ProviderModel, Route, Status, TokenUsage, UsageGroup, UsageReport } from "./types";
 import { validateProvider, type DisguiseClient, type ProviderFormValue } from "./validation";
 import { SettingsPage, type Theme } from "./pages/SettingsPage";
 
@@ -19,6 +23,7 @@ type ToastKind = "error" | "success";
 type Toast = { id: number; kind: ToastKind; message: string };
 type RefreshResource = "status" | "localAccess" | "config" | "providers" | "clients" | "logs" | "usage";
 type RunOperation = (operation: () => Promise<unknown>, message?: string, resources?: RefreshResource[]) => Promise<void>;
+type UsageQuery = { from?: string; to?: string; provider?: string; model?: string; client?: string; status?: string };
 const pointClients: PointClient[] = ["codex", "claude", "grok"];
 const allClients: ClientID[] = ["codex", "claude", "grok", "generic"];
 
@@ -132,6 +137,8 @@ export function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const nextToastId = useRef(0);
   const refreshSequence = useRef(0);
+  const usageSequence = useRef(0);
+  const usageQuery = useRef<UsageQuery>({});
   const activeNavRef = useRef<HTMLButtonElement | null>(null);
   const t = useMemo(() => translator(language), [language]);
 
@@ -167,7 +174,7 @@ export function App() {
     setBusy(true);
     try {
       const [nextStatus, nextLocalAccess, nextConfig, nextProviders, nextLogs, nextUsage, ...nextClients] = await Promise.all([
-        requested.has("status") ? api.status() : Promise.resolve(null), requested.has("localAccess") ? api.localAccess() : Promise.resolve(null), requested.has("config") ? api.config() : Promise.resolve(null), requested.has("providers") ? api.providers() : Promise.resolve(null), requested.has("logs") ? api.logs() : Promise.resolve(null), requested.has("usage") ? api.usage() : Promise.resolve(null), ...(requested.has("clients") ? pointClients.map(api.client) : pointClients.map(() => Promise.resolve(null))),
+        requested.has("status") ? api.status() : Promise.resolve(null), requested.has("localAccess") ? api.localAccess() : Promise.resolve(null), requested.has("config") ? api.config() : Promise.resolve(null), requested.has("providers") ? api.providers() : Promise.resolve(null), requested.has("logs") ? api.logs() : Promise.resolve(null), requested.has("usage") ? api.usage(usageQuery.current) : Promise.resolve(null), ...(requested.has("clients") ? pointClients.map(api.client) : pointClients.map(() => Promise.resolve(null))),
       ]);
       if (sequence !== refreshSequence.current) return;
       if (nextStatus) setStatus(nextStatus); if (nextLocalAccess) setLocalAccess(nextLocalAccess); if (nextConfig) { setConfig(nextConfig); if (nextConfig.ui.language === "zh-CN" || nextConfig.ui.language === "en-US") setLanguage(nextConfig.ui.language); } if (nextProviders) setProviders(nextProviders); if (nextLogs) { setLogs(nextLogs.items); setLogCursor(nextLogs.next_cursor); } if (nextUsage) setUsage(nextUsage);
@@ -185,6 +192,20 @@ export function App() {
     try { await operation(); if (message) pushToast("success", message); await refresh(resources); }
     catch (reason) { pushToast("error", reason instanceof Error ? reason.message : String(reason)); }
   };
+
+  const queryUsage = useCallback(async (query: UsageQuery) => {
+    const sequence = ++usageSequence.current;
+    usageQuery.current = query;
+    setBusy(true);
+    try {
+      const nextUsage = await api.usage(query);
+      if (sequence === usageSequence.current) setUsage(nextUsage);
+    } catch (reason) {
+      if (sequence === usageSequence.current) pushToast("error", reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      if (sequence === usageSequence.current) setBusy(false);
+    }
+  }, [pushToast]);
 
   const acceptRisk = async () => {
     if (!config) return;
@@ -223,8 +244,8 @@ export function App() {
             {page === "providers" && <Providers providers={providers} t={t} run={run} notify={pushToast} />}
             {page === "routes" && status && <Routes status={status} providers={providers} t={t} run={run} />}
             {page === "clients" && <Clients clients={clients} t={t} run={run} />}
-            {page === "logs" && config && <Logs items={logs} hasMore={Boolean(logCursor)} loadMore={loadMoreLogs} enabled={config.logging.enabled} body={config.logging.body !== false} t={t} run={run} notify={pushToast} />}
-            {page === "usage" && <Usage usage={usage} t={t} />}
+            {page === "logs" && config && <Logs items={logs} hasMore={Boolean(logCursor)} loadMore={loadMoreLogs} enabled={config.logging.enabled} body={config.logging.body !== false} redact={config.logging.redact !== false} t={t} run={run} notify={pushToast} />}
+            {page === "usage" && <Usage usage={usage} providers={providers} t={t} onQuery={queryUsage} />}
             {page === "settings" && config && <SettingsPage config={config} language={language} theme={theme} setLanguage={setLanguage} setTheme={setTheme} t={t} run={run} />}
           </div>
         )}
@@ -480,7 +501,7 @@ async function copyText(value: string) {
   if (!copied) throw new Error("Clipboard is unavailable");
 }
 
-function Logs({ items, hasMore, loadMore, enabled, body, t, run, notify }: { items: LogSummary[]; hasMore: boolean; loadMore: () => Promise<void>; enabled: boolean; body: boolean; t: (key: MessageKey) => string; run: RunOperation; notify: (kind: ToastKind, message: string) => void }) {
+function Logs({ items, hasMore, loadMore, enabled, body, redact, t, run, notify }: { items: LogSummary[]; hasMore: boolean; loadMore: () => Promise<void>; enabled: boolean; body: boolean; redact: boolean; t: (key: MessageKey) => string; run: RunOperation; notify: (kind: ToastKind, message: string) => void }) {
   const [detail, setDetail] = useState<{ id: string; events: unknown[] } | null>(null);
   const [detailCount, setDetailCount] = useState(100);
   const [copied, setCopied] = useState(false);
@@ -489,8 +510,8 @@ function Logs({ items, hasMore, loadMore, enabled, body, t, run, notify }: { ite
   const detailDialogRef = useDialogFocus<HTMLElement>(Boolean(detail), closeDetail);
   const copyLog = async (id: string, events?: unknown[]) => {
     try {
-      const value = events ? { request_id: id, events } : await api.logDetail(id);
-      await copyText(JSON.stringify(value, null, 2));
+      void events;
+      await copyText(await api.logExport(id));
       notify("success", t("copied"));
       return true;
     } catch { notify("error", t("copyFailed")); return false; }
@@ -503,19 +524,176 @@ function Logs({ items, hasMore, loadMore, enabled, body, t, run, notify }: { ite
     setLoadingMore(true);
     try { await loadMore(); } finally { setLoadingMore(false); }
   };
-  return <section><div className="log-toolbar"><SectionHeader title={t("requestLog")} hideTitle description={`${enabled ? (body ? t("loggingWithBody") : t("loggingMetadataOnly")) : t("disabled")} · ${items.length} ${t(items.length === 1 ? "requestEntry" : "requestEntries")}`} action={<div className="header-switches"><label className="switch"><input type="checkbox" checked={enabled} onChange={(e) => void run(() => api.setLogging(e.target.checked), undefined, ["config", "status", "logs"])} aria-label={t("logging")} /><span /><b>{t("logging")}</b></label><label className="switch"><input type="checkbox" checked={enabled && body} disabled={!enabled} onChange={(e) => void run(() => api.setLoggingBody(e.target.checked), undefined, ["config", "status", "logs"])} aria-label={t("bodyLogging")} /><span /><b>{t("bodyLogging")}</b></label></div>} /></div>
+  const downloadLog = async (id: string) => {
+    try {
+      const value = await api.logExport(id);
+      const url = URL.createObjectURL(new Blob([value], { type: "application/x-ndjson" }));
+      const link = document.createElement("a");
+      link.href = url; link.download = `${id}.redacted.jsonl`; link.click();
+      URL.revokeObjectURL(url);
+    } catch (reason) { notify("error", reason instanceof Error ? reason.message : String(reason)); }
+  };
+  const deleteLog = (id: string) => {
+    if (!window.confirm(t("confirmDeleteLog"))) return;
+    void run(() => api.deleteLog(id), t("logDeleted"), ["logs", "usage"]);
+  };
+  const clearLogs = () => {
+    if (!window.confirm(t("confirmClearLogs"))) return;
+    void run(() => api.clearLogs(), t("logsCleared"), ["logs", "usage"]);
+  };
+  return <section><div className="log-toolbar"><SectionHeader title={t("requestLog")} hideTitle description={`${enabled ? (body ? t("loggingWithBody") : t("loggingMetadataOnly")) : t("disabled")} · ${items.length} ${t(items.length === 1 ? "requestEntry" : "requestEntries")}`} action={<div className="header-switches"><label className="switch"><input type="checkbox" checked={enabled} onChange={(e) => void run(() => api.setLogging(e.target.checked), undefined, ["config", "status", "logs"])} aria-label={t("logging")} /><span /><b>{t("logging")}</b></label><label className="switch"><input type="checkbox" checked={enabled && body} disabled={!enabled} onChange={(e) => void run(() => api.setLoggingBody(e.target.checked), undefined, ["config", "status", "logs"])} aria-label={t("bodyLogging")} /><span /><b>{t("bodyLogging")}</b></label><label className="switch"><input type="checkbox" checked={redact} onChange={(e) => void run(() => api.setLoggingRedact(e.target.checked), undefined, ["config", "logs"])} aria-label={t("logRedaction")} /><span /><b>{t("logRedaction")}</b></label><button className="icon-button" disabled={!items.length} onClick={clearLogs} title={t("clearLogs")} aria-label={t("clearLogs")}><Trash2 size={16} /></button></div>} /></div>
     {!enabled && <div className="empty-state inline"><CircleAlert size={18} /><span>{t("disabled")}</span></div>}
-    {items.length === 0 ? <Empty text={t("noLogs")} /> : <><div className="table-wrap log-scroll"><table className="log-table"><thead><tr><th>{t("status")}</th><th>{t("route")}</th><th>{t("clients")}</th><th>{t("requests")}</th><th /></tr></thead><tbody>{items.map((item) => <tr key={item.request_id}><td className="log-status"><State value={item.status} /></td><td className="log-route"><strong>{item.provider || "—"}</strong><small className="mono">{item.model || "—"}</small></td><td className="log-client mono">{item.client || "generic"}</td><td className="log-request"><time className="mono" dateTime={item.started_at} title={item.started_at}>{new Date(item.started_at).toLocaleString(undefined, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time><small>{item.duration_ms || 0} ms · {item.status_code || "—"}</small></td><td className="actions log-actions"><button className="icon-button compact" onClick={() => void copyLog(item.request_id)} title={t("copyRequestLog")} aria-label={`${t("copyRequestLog")} ${item.request_id}`}><Copy size={15} /></button><button className="text-button" onClick={() => void run(async () => { const value = await api.logDetail(item.request_id); setDetailCount(100); setDetail({ id: value.request_id, events: value.events }); })}>{t("details")}</button></td></tr>)}</tbody></table></div>{hasMore && <div className="load-more"><button className="secondary" disabled={loadingMore} onClick={() => void onLoadMore()}>{loadingMore && <RefreshCw size={15} className="spin" />}{loadingMore ? t("loadingMore") : t("loadMore")}</button></div>}</>}
-    {detail && <div className="drawer-backdrop" onMouseDown={closeDetail}><aside ref={detailDialogRef} className="drawer" role="dialog" aria-modal="true" aria-labelledby="log-detail-title" onMouseDown={(e) => e.stopPropagation()}><div className="drawer-title"><div><p className="eyebrow">REQUEST</p><h2 id="log-detail-title" className="mono">{detail.id}</h2></div><div className="drawer-title-actions"><button className="secondary copy-button" onClick={() => void copyDetail()}><Copy size={15} />{copied ? t("copied") : t("copyRequestLog")}</button><button className="icon-button" onClick={closeDetail} aria-label={t("close")}><X size={17} /></button></div></div><pre>{JSON.stringify({ request_id: detail.id, events: detail.events.slice(0, detailCount) }, null, 2)}</pre>{detailCount < detail.events.length && <div className="load-more"><button className="secondary" onClick={() => setDetailCount((count) => Math.min(count + 100, detail.events.length))}>{t("loadMoreEvents")}</button></div>}</aside></div>}
+    {items.length === 0 ? <Empty text={t("noLogs")} /> : <><div className="table-wrap log-scroll"><table className="log-table"><thead><tr><th>{t("status")}</th><th>{t("route")}</th><th>{t("clients")}</th><th>{t("requests")}</th><th /></tr></thead><tbody>{items.map((item) => <tr key={item.request_id}><td className="log-status"><State value={item.status} /></td><td className="log-route"><strong>{item.provider || "—"}</strong><small className="mono">{item.model || "—"}</small></td><td className="log-client mono">{item.client || "generic"}</td><td className="log-request"><time className="mono" dateTime={item.started_at} title={item.started_at}>{new Date(item.started_at).toLocaleString(undefined, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time><small>{item.duration_ms || 0} ms · {item.status_code || "—"}</small></td><td className="actions log-actions"><button className="icon-button compact" onClick={() => void copyLog(item.request_id)} title={t("copyRequestLog")} aria-label={`${t("copyRequestLog")} ${item.request_id}`}><Copy size={15} /></button><button className="icon-button compact" onClick={() => void downloadLog(item.request_id)} title={t("exportRedactedLog")} aria-label={`${t("exportRedactedLog")} ${item.request_id}`}><Download size={15} /></button><button className="icon-button compact danger-icon" onClick={() => deleteLog(item.request_id)} title={t("deleteLog")} aria-label={`${t("deleteLog")} ${item.request_id}`}><Trash2 size={15} /></button><button className="text-button" onClick={() => void run(async () => { const value = await api.logDetail(item.request_id); setDetailCount(100); setDetail({ id: value.request_id, events: value.events }); })}>{t("details")}</button></td></tr>)}</tbody></table></div>{hasMore && <div className="load-more"><button className="secondary" disabled={loadingMore} onClick={() => void onLoadMore()}>{loadingMore && <RefreshCw size={15} className="spin" />}{loadingMore ? t("loadingMore") : t("loadMore")}</button></div>}</>}
+    {detail && <div className="drawer-backdrop" onMouseDown={closeDetail}><aside ref={detailDialogRef} className="drawer" role="dialog" aria-modal="true" aria-labelledby="log-detail-title" onMouseDown={(e) => e.stopPropagation()}><div className="drawer-title"><div><p className="eyebrow">REQUEST</p><h2 id="log-detail-title" className="mono">{detail.id}</h2></div><div className="drawer-title-actions"><span className="privacy-state"><ShieldCheck size={14} />{t("redactedExport")}</span><button className="secondary copy-button" onClick={() => void copyDetail()}><Copy size={15} />{copied ? t("copied") : t("copyRequestLog")}</button><button className="icon-button" onClick={closeDetail} aria-label={t("close")}><X size={17} /></button></div></div><pre>{JSON.stringify({ request_id: detail.id, events: detail.events.slice(0, detailCount) }, null, 2)}</pre>{detailCount < detail.events.length && <div className="load-more"><button className="secondary" onClick={() => setDetailCount((count) => Math.min(count + 100, detail.events.length))}>{t("loadMoreEvents")}</button></div>}</aside></div>}
   </section>;
 }
 
-function Usage({ usage, t }: { usage: UsageReport | null; t: (key: MessageKey) => string }) {
+function Usage({ usage, providers, t, onQuery }: { usage: UsageReport | null; providers: Provider[]; t: (key: MessageKey) => string; onQuery: (query: UsageQuery) => Promise<void> }) {
+  const [range, setRange] = useState<"7d" | "30d" | "all">("all");
+  const [provider, setProvider] = useState("");
+  const [model, setModel] = useState("");
+  const [client, setClient] = useState("");
+  const [status, setStatus] = useState("");
+  const models = useMemo(() => [...new Set(providers.flatMap((item) => item.models?.map((entry) => entry.id) || [item.default_model]).filter(Boolean))].sort(), [providers]);
+  const active = Boolean(provider || model || client || status || range !== "all");
+  const apply = (next: { range?: typeof range; provider?: string; model?: string; client?: string; status?: string }) => {
+    const nextRange = next.range ?? range;
+    const nextProvider = next.provider ?? provider;
+    const nextModel = next.model ?? model;
+    const nextClient = next.client ?? client;
+    const nextStatus = next.status ?? status;
+    setRange(nextRange); setProvider(nextProvider); setModel(nextModel); setClient(nextClient); setStatus(nextStatus);
+    const query: UsageQuery = { provider: nextProvider || undefined, model: nextModel || undefined, client: nextClient || undefined, status: nextStatus || undefined };
+    if (nextRange !== "all") {
+      const from = new Date();
+      from.setHours(0, 0, 0, 0);
+      from.setDate(from.getDate() - (nextRange === "7d" ? 6 : 29));
+      query.from = from.toISOString();
+    }
+    void onQuery(query);
+  };
+  const clear = () => apply({ range: "all", provider: "", model: "", client: "", status: "" });
   if (!usage) return null;
-  return <section><SectionHeader title={t("usage")} hideTitle description={usage.total.incomplete ? t("incomplete") : undefined} /><div className="metric-grid usage-metrics"><Metric label={t("requests")} value={String(usage.total.requests)} note={`${usage.total.success} ${t("success")}`} icon={Activity} /><Metric label={t("tokens")} value={(usage.total.usage?.total_tokens || 0).toLocaleString()} note={`${usage.total.usage?.input_tokens || 0} in / ${usage.total.usage?.output_tokens || 0} out`} icon={Database} /></div><UsageTable title={t("providers")} groups={usage.by_provider} t={t} /><UsageTable title={t("clients")} groups={usage.by_client} t={t} /></section>;
+  const total = usage.total.usage;
+  const hitRate = cacheHitRate(total);
+  return <section>
+    <SectionHeader title={t("usage")} hideTitle description={usage.total.incomplete ? t("incomplete") : undefined} action={active ? <button className="icon-button" onClick={clear} title={t("clearFilters")} aria-label={t("clearFilters")}><RotateCcw size={16} /></button> : undefined} />
+    <div className="usage-toolbar" aria-label={t("usageFilters")}>
+      <div className="usage-toolbar-title"><Filter size={15} /><span>{t("filters")}</span></div>
+      <label className="usage-filter"><span>{t("timeRange")}</span><select value={range} onChange={(event) => apply({ range: event.target.value as typeof range })}><option value="7d">{t("last7Days")}</option><option value="30d">{t("last30Days")}</option><option value="all">{t("allTime")}</option></select></label>
+      <label className="usage-filter"><span>{t("provider")}</span><select value={provider} onChange={(event) => apply({ provider: event.target.value })}><option value="">{t("allProviders")}</option>{providers.map((item) => <option key={item.id} value={item.id}>{item.name || item.id}</option>)}</select></label>
+      <label className="usage-filter"><span>{t("model")}</span><select value={model} onChange={(event) => apply({ model: event.target.value })}><option value="">{t("allModels")}</option>{models.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+      <label className="usage-filter"><span>{t("clients")}</span><select value={client} onChange={(event) => apply({ client: event.target.value })}><option value="">{t("allClients")}</option>{allClients.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+      <label className="usage-filter"><span>{t("status")}</span><select value={status} onChange={(event) => apply({ status: event.target.value })}><option value="">{t("allStatuses")}</option>{["success", "failed", "cancelled", "interrupted"].map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+    </div>
+    <div className="metric-grid usage-metrics">
+      <Metric label={t("inputMetric")} value={(total?.input_tokens || 0).toLocaleString()} note={t("inputTokens")} icon={Download} />
+      <Metric label={t("outputMetric")} value={(total?.output_tokens || 0).toLocaleString()} note={t("outputTokens")} icon={Upload} />
+      <Metric label={t("cacheCreation")} value={(total?.cache_creation_input_tokens || 0).toLocaleString()} note={t("tokens")} icon={Database} />
+      <Metric label={t("cacheRead")} value={(total?.cache_read_input_tokens || 0).toLocaleString()} note={t("tokens")} icon={RefreshCw} />
+      <Metric label={t("cacheHitRate")} value={formatPercent(hitRate)} note={total?.cache_input_tokens ? `${(total.cache_read_input_tokens || 0).toLocaleString()} / ${total.cache_input_tokens.toLocaleString()} ${t("tokens")}` : t("unavailable")} icon={Gauge} />
+    </div>
+    <UsageTrend byHour={usage.by_hour} byDate={usage.by_date} t={t} />
+    <UsageTable title={t("providers")} groups={usage.by_provider} t={t} />
+    <UsageTable title={t("model")} groups={usage.by_model} t={t} />
+    <UsageTable title={t("clients")} groups={usage.by_client} t={t} />
+  </section>;
 }
 
-function UsageTable({ title, groups, t }: { title: string; groups: Record<string, UsageGroup>; t: (key: MessageKey) => string }) { return <div className="usage-block"><h3>{title}</h3><div className="table-wrap"><table><thead><tr><th>{title}</th><th className="number">{t("requests")}</th><th className="number">{t("tokens")}</th><th>{t("status")}</th></tr></thead><tbody>{Object.entries(groups).map(([key, group]) => <tr key={key}><td className="mono">{key}</td><td className="number mono">{group.requests}</td><td className="number mono">{group.usage?.total_tokens?.toLocaleString() || "—"}</td><td>{group.incomplete ? <State value="incomplete" /> : <State value="ok" />}</td></tr>)}</tbody></table></div></div>; }
+function cacheHitRate(usage: TokenUsage | null | undefined) {
+  const denominator = usage?.cache_input_tokens || 0;
+  return denominator > 0 ? ((usage?.cache_read_input_tokens || 0) / denominator) * 100 : null;
+}
+
+function formatPercent(value: number | null) {
+  return value === null ? "—" : `${value.toFixed(1)}%`;
+}
+
+type UsageTrendPoint = {
+  time: string;
+  input: number | null;
+  output: number | null;
+  cacheCreation: number | null;
+  cacheRead: number | null;
+  cacheHitRate: number | null;
+};
+
+function formatUsageTime(value: string, hourly: boolean) {
+  if (!hourly) return value;
+  const match = value.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
+  return match ? `${match[1]} ${match[2]}` : value;
+}
+
+function formatTokenTick(value: number) {
+  const absolute = Math.abs(value);
+  if (absolute >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
+  if (absolute >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return String(value);
+}
+
+function UsageChartTooltip({ active, label, payload }: TooltipContentProps) {
+  if (!active || !payload?.length) return null;
+  return <div className="usage-chart-tooltip">
+    <time>{label}</time>
+    <div>{payload.filter((item) => item.value !== null && item.value !== undefined).map((item) => {
+      const rate = item.dataKey === "cacheHitRate";
+      return <div className="usage-chart-tooltip-row" key={String(item.dataKey)}>
+        <span><i style={{ background: item.color }} />{item.name}</span>
+        <strong>{rate ? formatPercent(Number(item.value)) : Number(item.value).toLocaleString()}</strong>
+      </div>;
+    })}</div>
+  </div>;
+}
+
+function UsageTrend({ byHour, byDate, t }: { byHour?: Record<string, UsageGroup>; byDate: Record<string, UsageGroup>; t: (key: MessageKey) => string }) {
+  const hourly = Boolean(byHour && Object.keys(byHour).length);
+  const groups = hourly ? byHour! : byDate;
+  const entries = Object.entries(groups).sort(([left], [right]) => left.localeCompare(right));
+  if (!entries.length) return <div className="empty-state usage-empty"><Activity size={20} /><span>{t("noUsageData")}</span></div>;
+  const data: UsageTrendPoint[] = entries.map(([time, group]) => ({
+    time: formatUsageTime(time, hourly),
+    input: group.usage?.input_tokens ?? null,
+    output: group.usage?.output_tokens ?? null,
+    cacheCreation: group.usage?.cache_creation_input_tokens ?? null,
+    cacheRead: group.usage?.cache_read_input_tokens ?? null,
+    cacheHitRate: cacheHitRate(group.usage),
+  }));
+  const series = [
+    { key: "input", label: t("inputMetric"), color: "var(--chart-input)" },
+    { key: "output", label: t("outputMetric"), color: "var(--chart-output)" },
+    { key: "cache-creation", label: t("cacheCreation"), color: "var(--chart-creation)" },
+    { key: "cache-read", label: t("cacheRead"), color: "var(--chart-read)" },
+    { key: "cache-hit-rate", label: t("cacheHitRate"), color: "var(--chart-rate)" },
+  ];
+  return <div className="usage-block usage-chart-panel" role="img" aria-label={t("cacheTrend")}>
+    <div className="usage-block-heading usage-chart-heading">
+      <h3>{t("trend")}</h3>
+      <div className="usage-chart-legend" aria-label={t("cacheTrend")}>{series.map((item) => <span className={`usage-chart-legend-item ${item.key}`} key={item.key} style={{ color: item.color }}><i />{item.label}</span>)}</div>
+    </div>
+    <div className="usage-chart-canvas">
+      <ResponsiveContainer width="100%" height="100%">
+        <ComposedChart data={data} margin={{ top: 14, right: 8, bottom: 54, left: 0 }}>
+          <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="0" vertical />
+          <XAxis dataKey="time" angle={-35} textAnchor="end" height={70} interval="preserveStartEnd" tick={{ fill: "var(--chart-text)", fontSize: 11 }} axisLine={{ stroke: "var(--chart-axis)" }} tickLine={{ stroke: "var(--chart-axis)" }} />
+          <YAxis yAxisId="tokens" width={62} tickFormatter={formatTokenTick} tick={{ fill: "var(--chart-text)", fontSize: 11 }} axisLine={{ stroke: "var(--chart-axis)" }} tickLine={{ stroke: "var(--chart-axis)" }} />
+          <YAxis yAxisId="rate" orientation="right" domain={[0, 100]} ticks={[0, 20, 40, 60, 80, 100]} width={46} tickFormatter={(value) => `${value}%`} tick={{ fill: "var(--chart-rate)", fontSize: 11 }} axisLine={{ stroke: "var(--chart-axis)" }} tickLine={{ stroke: "var(--chart-axis)" }} />
+          <Tooltip content={UsageChartTooltip} cursor={{ stroke: "var(--chart-axis)", strokeDasharray: "3 3" }} />
+          <Area yAxisId="tokens" type="monotone" dataKey="input" name={t("inputMetric")} stroke="var(--chart-input)" fill="var(--chart-input)" fillOpacity={0.11} strokeWidth={2.5} dot={{ r: 3, fill: "var(--surface)", strokeWidth: 2 }} activeDot={{ r: 5 }} connectNulls />
+          <Area yAxisId="tokens" type="monotone" dataKey="output" name={t("outputMetric")} stroke="var(--chart-output)" fill="var(--chart-output)" fillOpacity={0.07} strokeWidth={2.5} dot={{ r: 3, fill: "var(--surface)", strokeWidth: 2 }} activeDot={{ r: 5 }} connectNulls />
+          <Area yAxisId="tokens" type="monotone" dataKey="cacheCreation" name={t("cacheCreation")} stroke="var(--chart-creation)" fill="var(--chart-creation)" fillOpacity={0.07} strokeWidth={2.5} dot={{ r: 3, fill: "var(--surface)", strokeWidth: 2 }} activeDot={{ r: 5 }} connectNulls />
+          <Area yAxisId="tokens" type="monotone" dataKey="cacheRead" name={t("cacheRead")} stroke="var(--chart-read)" fill="var(--chart-read)" fillOpacity={0.1} strokeWidth={2.5} dot={{ r: 3, fill: "var(--surface)", strokeWidth: 2 }} activeDot={{ r: 5 }} connectNulls />
+          <Line yAxisId="rate" type="monotone" dataKey="cacheHitRate" name={t("cacheHitRate")} stroke="var(--chart-rate)" strokeWidth={2.5} strokeDasharray="7 6" dot={{ r: 3.5, fill: "var(--surface)", stroke: "var(--chart-rate)", strokeWidth: 2 }} activeDot={{ r: 5 }} connectNulls />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
+  </div>;
+}
+
+function UsageTable({ title, groups, t }: { title: string; groups: Record<string, UsageGroup>; t: (key: MessageKey) => string }) {
+  const entries = Object.entries(groups).sort(([, left], [, right]) => (right.usage?.total_tokens || 0) - (left.usage?.total_tokens || 0));
+  if (!entries.length) return null;
+  return <div className="usage-block"><h3>{title}</h3><div className="table-wrap"><table><thead><tr><th>{title}</th><th className="number">{t("requests")}</th><th className="number">{t("inputMetric")}</th><th className="number">{t("outputMetric")}</th><th className="number">{t("cacheCreation")}</th><th className="number">{t("cacheRead")}</th><th className="number">{t("cacheHitRate")}</th><th>{t("status")}</th></tr></thead><tbody>{entries.map(([key, group]) => { const tracked = Boolean(group.usage?.cache_input_tokens); return <tr key={key}><td className="mono">{key}</td><td className="number mono">{group.requests}</td><td className="number mono">{group.usage ? group.usage.input_tokens.toLocaleString() : "—"}</td><td className="number mono">{group.usage ? group.usage.output_tokens.toLocaleString() : "—"}</td><td className="number mono">{tracked ? (group.usage?.cache_creation_input_tokens || 0).toLocaleString() : "—"}</td><td className="number mono">{tracked ? (group.usage?.cache_read_input_tokens || 0).toLocaleString() : "—"}</td><td className="number mono">{formatPercent(cacheHitRate(group.usage))}</td><td>{group.incomplete ? <State value="incomplete" /> : <State value="ok" />}</td></tr>; })}</tbody></table></div></div>;
+}
 
 function Empty({ text }: { text: string }) { return <div className="empty-state"><Boxes size={20} /><span>{text}</span></div>; }
 

@@ -20,7 +20,7 @@ import (
 func TestRequestLogsQueriesUsageAndSecretSafety(t *testing.T) {
 	up := newFakeUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"id":"chatcmpl-log","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"logged answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18,"completion_tokens_details":{"reasoning_tokens":3}}}`)
+		fmt.Fprint(w, `{"id":"chatcmpl-log","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"logged answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18,"prompt_tokens_details":{"cached_tokens":5},"completion_tokens_details":{"reasoning_tokens":3}}}`)
 	})
 	store := secret.NewMemStore()
 	const upstreamSecret = "sk-real-upstream-secret"
@@ -77,11 +77,25 @@ func TestRequestLogsQueriesUsageAndSecretSafety(t *testing.T) {
 	if err := json.Unmarshal(usageBody, &usage); err != nil {
 		t.Fatal(err)
 	}
-	if usage.Total.Requests != 1 || usage.Total.Usage == nil || usage.Total.Usage.InputTokens != 11 || usage.Total.Usage.OutputTokens != 7 || usage.Total.Usage.ReasoningTokens != 3 || usage.Total.Usage.TotalTokens != 18 {
+	if usage.Total.Requests != 1 || usage.Total.Usage == nil || usage.Total.Usage.InputTokens != 11 || usage.Total.Usage.OutputTokens != 7 || usage.Total.Usage.ReasoningTokens != 3 || usage.Total.Usage.CacheReadInputTokens != 5 || usage.Total.Usage.CacheInputTokens != 11 || usage.Total.Usage.TotalTokens != 18 {
 		t.Fatalf("usage = %+v", usage.Total)
+	}
+	if usage.Total.UsageRequests != 1 {
+		t.Fatalf("usage request coverage = %+v", usage.Total)
 	}
 	if usage.Total.Incomplete {
 		t.Fatal("usage unexpectedly marked incomplete")
+	}
+	filteredResp, filteredBody := httpJSON(t, addr, http.MethodGet, "/api/v1/usage?model=missing-model", nil)
+	if filteredResp.StatusCode != http.StatusOK {
+		t.Fatalf("model-filtered usage: %d %s", filteredResp.StatusCode, filteredBody)
+	}
+	var filtered logstore.UsageReport
+	if err := json.Unmarshal(filteredBody, &filtered); err != nil {
+		t.Fatal(err)
+	}
+	if filtered.Total.Requests != 0 || len(filtered.ByModel) != 0 {
+		t.Fatalf("model filter was ignored: %+v", filtered.Total)
 	}
 
 	logs, err := filepath.Glob(filepath.Join(filepath.Dir(s.cfg.Path()), cfg.Logging.Dir, "*", "*.jsonl"))
@@ -134,6 +148,72 @@ func TestLoggingSwitchStopsNewFilesAndMissingUsageIsNotEstimated(t *testing.T) {
 	}
 	if s.cfg.Snapshot().Logging.EnabledValue() {
 		t.Fatal("logging switch was not persisted in the active config")
+	}
+}
+
+func TestLogPrivacyManagementEndpoints(t *testing.T) {
+	up := newFakeUpstream(t, nil)
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	s, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	createLog := func(secretValue string) string {
+		t.Helper()
+		resp, body := chatPost(t, addr, "/v1/chat/completions", []byte(fmt.Sprintf(`{"model":"gateway-default","messages":[{"role":"user","content":"hello"}],"metadata":{"api_key":%q}}`, secretValue)), nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("create log: status = %d, body = %s", resp.StatusCode, body)
+		}
+		return resp.Header.Get("X-Request-Id")
+	}
+
+	requestID := createLog("sk-export-secret")
+	exportResp, exportBody := httpJSON(t, addr, http.MethodGet, "/api/v1/logs/"+requestID+"/export", nil)
+	if exportResp.StatusCode != http.StatusOK {
+		t.Fatalf("export: %d %s", exportResp.StatusCode, exportBody)
+	}
+	if got := exportResp.Header.Get("Content-Type"); got != "application/x-ndjson" {
+		t.Fatalf("export content type = %q", got)
+	}
+	if got := exportResp.Header.Get("Content-Disposition"); !strings.Contains(got, requestID+".redacted.jsonl") {
+		t.Fatalf("export disposition = %q", got)
+	}
+	if strings.Contains(string(exportBody), "sk-export-secret") || !strings.Contains(string(exportBody), logstore.RedactionMarker) {
+		t.Fatalf("export was not redacted: %s", exportBody)
+	}
+
+	deleteResp, deleteBody := httpJSON(t, addr, http.MethodDelete, "/api/v1/logs/"+requestID, nil)
+	if deleteResp.StatusCode != http.StatusOK || !strings.Contains(string(deleteBody), `"deleted":true`) {
+		t.Fatalf("delete: %d %s", deleteResp.StatusCode, deleteBody)
+	}
+	missingResp, _ := httpJSON(t, addr, http.MethodGet, "/api/v1/logs/"+requestID, nil)
+	if missingResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("deleted detail status = %d", missingResp.StatusCode)
+	}
+
+	clearID := createLog("sk-clear-secret")
+	active, err := s.warnings.OpenWithRedaction(cfg.Logging.Dir, "req_active_privacy", time.Now(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = active.Close() })
+	if err := active.Append("request", map[string]any{"client": "generic", "api_key": "sk-active-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	activeDeleteResp, activeDeleteBody := httpJSON(t, addr, http.MethodDelete, "/api/v1/logs/req_active_privacy", nil)
+	if activeDeleteResp.StatusCode != http.StatusConflict || !strings.Contains(string(activeDeleteBody), `"code":"log_active"`) {
+		t.Fatalf("active delete: %d %s", activeDeleteResp.StatusCode, activeDeleteBody)
+	}
+
+	clearResp, clearBody := httpJSON(t, addr, http.MethodDelete, "/api/v1/logs", nil)
+	if clearResp.StatusCode != http.StatusOK || !strings.Contains(string(clearBody), `"removed":1`) {
+		t.Fatalf("clear: %d %s", clearResp.StatusCode, clearBody)
+	}
+	clearedResp, _ := httpJSON(t, addr, http.MethodGet, "/api/v1/logs/"+clearID, nil)
+	if clearedResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("cleared detail status = %d", clearedResp.StatusCode)
+	}
+	activeResp, activeBody := httpJSON(t, addr, http.MethodGet, "/api/v1/logs/req_active_privacy", nil)
+	if activeResp.StatusCode != http.StatusOK || strings.Contains(string(activeBody), "sk-active-secret") {
+		t.Fatalf("active log handling: %d %s", activeResp.StatusCode, activeBody)
 	}
 }
 

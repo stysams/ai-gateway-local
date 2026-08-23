@@ -26,6 +26,7 @@ type ConfigListenPayload struct {
 type ConfigLoggingPayload struct {
 	Enabled       bool   `json:"enabled"`
 	Body          *bool  `json:"body,omitempty"`
+	Redact        *bool  `json:"redact,omitempty"`
 	Dir           string `json:"dir"`
 	RetentionDays int    `json:"retention_days"`
 	QuotaBytes    int    `json:"quota_bytes"`
@@ -70,7 +71,7 @@ func configPayload(cfg *config.Config) ConfigPayload {
 	out := ConfigPayload{
 		Version:   cfg.Version,
 		Listen:    ConfigListenPayload{Port: cfg.Listen.PortValue()},
-		Logging:   ConfigLoggingPayload{Enabled: cfg.Logging.EnabledValue(), Body: config.BoolPtr(cfg.Logging.BodyValue()), Dir: cfg.Logging.Dir, RetentionDays: cfg.Logging.RetentionDays, QuotaBytes: cfg.Logging.QuotaBytes},
+		Logging:   ConfigLoggingPayload{Enabled: cfg.Logging.EnabledValue(), Body: config.BoolPtr(cfg.Logging.BodyValue()), Redact: config.BoolPtr(cfg.Logging.RedactValue()), Dir: cfg.Logging.Dir, RetentionDays: cfg.Logging.RetentionDays, QuotaBytes: cfg.Logging.QuotaBytes},
 		Limits:    &ConfigLimitsPayload{Global: cfg.Limits.Global, PerClient: cfg.Limits.PerClient, PerProvider: cfg.Limits.PerProvider, StreamIdleSeconds: cfg.Limits.StreamIdleSeconds, RequestBodyBytes: cfg.Limits.RequestBodyBytes, RequestHeaderBytes: cfg.Limits.RequestHeaderBytes, ClientRatePerMinute: cfg.Limits.ClientRatePerMinute},
 		UI:        ConfigUIPayload{Language: cfg.UI.Language, LoggingNoticeAccepted: cfg.UI.LoggingNoticeAccepted},
 		Autostart: ConfigAutostartPayload{Enabled: cfg.Autostart.Enabled},
@@ -121,7 +122,7 @@ func (p ConfigPayload) toConfig() *config.Config {
 	return &config.Config{
 		Version:   p.Version,
 		Listen:    config.Listen{Host: p.Listen.Host, Port: config.IntPtr(p.Listen.Port)},
-		Logging:   config.Logging{Enabled: config.BoolPtr(p.Logging.Enabled), Body: p.Logging.Body, Dir: p.Logging.Dir, RetentionDays: p.Logging.RetentionDays, QuotaBytes: p.Logging.QuotaBytes},
+		Logging:   config.Logging{Enabled: config.BoolPtr(p.Logging.Enabled), Body: p.Logging.Body, Redact: p.Logging.Redact, Dir: p.Logging.Dir, RetentionDays: p.Logging.RetentionDays, QuotaBytes: p.Logging.QuotaBytes},
 		Limits:    limits,
 		UI:        config.UI{Language: p.UI.Language, LoggingNoticeAccepted: p.UI.LoggingNoticeAccepted},
 		Autostart: config.Autostart{Enabled: p.Autostart.Enabled},
@@ -168,6 +169,10 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	if payload.Logging.Body == nil && current.Logging.Body != nil {
 		body := *current.Logging.Body
 		next.Logging.Body = &body
+	}
+	if payload.Logging.Redact == nil && current.Logging.Redact != nil {
+		redact := *current.Logging.Redact
+		next.Logging.Redact = &redact
 	}
 	next.Extra = current.Extra
 	// Client preferences have dedicated endpoints so a settings save cannot

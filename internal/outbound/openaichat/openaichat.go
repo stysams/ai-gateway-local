@@ -171,6 +171,15 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 	if req.ToolChoice != nil {
 		body["tool_choice"] = json.RawMessage(req.ToolChoice)
 	}
+	if req.Output != nil {
+		jsonSchema := map[string]any{
+			"name": req.Output.SchemaName(), "schema": json.RawMessage(req.Output.Schema), "strict": req.Output.Strict,
+		}
+		if req.Output.Description != "" {
+			jsonSchema["description"] = req.Output.Description
+		}
+		body["response_format"] = map[string]any{"type": "json_schema", "json_schema": jsonSchema}
+	}
 	if !req.Reasoning.Empty() {
 		if req.Reasoning.Effort == "" || (req.Reasoning.Source != ir.ProtocolChat && req.Reasoning.Source != ir.ProtocolResponses) {
 			return nil, fmt.Errorf("%w: reasoning configuration cannot be converted to chat/completions", ir.ErrUnsupportedContent)
@@ -239,13 +248,15 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 	if len(req.Tools) > 0 {
 		tools := make([]map[string]any, 0, len(req.Tools))
 		for _, t := range req.Tools {
+			function := map[string]any{
+				"name": t.Name, "description": t.Description, "parameters": json.RawMessage(t.Parameters),
+			}
+			if t.Strict {
+				function["strict"] = true
+			}
 			tools = append(tools, map[string]any{
-				"type": "function",
-				"function": map[string]any{
-					"name":        t.Name,
-					"description": t.Description,
-					"parameters":  json.RawMessage(t.Parameters),
-				},
+				"type":     "function",
+				"function": function,
 			})
 		}
 		body["tools"] = tools
@@ -367,9 +378,12 @@ func ParseResponse(body []byte) ([]ir.Event, error) {
 			FinishReason *string `json:"finish_reason"`
 		} `json:"choices"`
 		Usage *struct {
-			PromptTokens            int64 `json:"prompt_tokens"`
-			CompletionTokens        int64 `json:"completion_tokens"`
-			TotalTokens             int64 `json:"total_tokens"`
+			PromptTokens        int64 `json:"prompt_tokens"`
+			CompletionTokens    int64 `json:"completion_tokens"`
+			TotalTokens         int64 `json:"total_tokens"`
+			PromptTokensDetails *struct {
+				CachedTokens *int64 `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
 			CompletionTokensDetails struct {
 				ReasoningTokens int64 `json:"reasoning_tokens"`
 			} `json:"completion_tokens_details"`
@@ -403,11 +417,18 @@ func ParseResponse(body []byte) ([]ir.Event, error) {
 		}
 	}
 	if resp.Usage != nil {
+		cacheRead, cacheInput := int64(0), int64(0)
+		if resp.Usage.PromptTokensDetails != nil && resp.Usage.PromptTokensDetails.CachedTokens != nil {
+			cacheRead = *resp.Usage.PromptTokensDetails.CachedTokens
+			cacheInput = resp.Usage.PromptTokens
+		}
 		events = append(events, ir.Event{Type: ir.EventUsage, Usage: ir.Usage{
-			InputTokens:     resp.Usage.PromptTokens,
-			OutputTokens:    resp.Usage.CompletionTokens,
-			ReasoningTokens: resp.Usage.CompletionTokensDetails.ReasoningTokens,
-			TotalTokens:     resp.Usage.TotalTokens,
+			InputTokens:          resp.Usage.PromptTokens,
+			OutputTokens:         resp.Usage.CompletionTokens,
+			ReasoningTokens:      resp.Usage.CompletionTokensDetails.ReasoningTokens,
+			CacheReadInputTokens: cacheRead,
+			CacheInputTokens:     cacheInput,
+			TotalTokens:          resp.Usage.TotalTokens,
 		}})
 	}
 	stop := ""

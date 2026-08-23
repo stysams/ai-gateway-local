@@ -67,7 +67,7 @@ export interface DiscoveredProviderModel {
 export interface Config {
   version: number;
   listen: { host?: string; port: number };
-  logging: { enabled: boolean; body: boolean; dir: string; retention_days: number; quota_bytes: number };
+  logging: { enabled: boolean; body: boolean; redact?: boolean; dir: string; retention_days: number; quota_bytes: number };
   limits?: {
     global: number;
     per_client: number;
@@ -105,12 +105,21 @@ export interface LogSummary {
   duration_ms?: number;
   usage?: TokenUsage;
 }
-export interface TokenUsage { input_tokens: number; output_tokens: number; reasoning_tokens?: number; total_tokens: number }
-export interface UsageGroup { requests: number; success: number; failed: number; cancelled: number; usage: TokenUsage | null; incomplete: boolean }
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  reasoning_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_input_tokens?: number;
+  total_tokens: number;
+}
+export interface UsageGroup { requests: number; success: number; failed: number; cancelled: number; usage_requests?: number; usage: TokenUsage | null; incomplete: boolean }
 export interface UsageReport {
   total: UsageGroup;
   by_provider: Record<string, UsageGroup>;
   by_model: Record<string, UsageGroup>;
   by_client: Record<string, UsageGroup>;
   by_date: Record<string, UsageGroup>;
+  by_hour?: Record<string, UsageGroup>;
 }

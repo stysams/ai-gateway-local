@@ -148,6 +148,16 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 	if req.ToolChoice != nil {
 		body["tool_choice"] = json.RawMessage(req.ToolChoice)
 	}
+	if req.Output != nil {
+		format := map[string]any{
+			"type": "json_schema", "name": req.Output.SchemaName(),
+			"schema": json.RawMessage(req.Output.Schema), "strict": req.Output.Strict,
+		}
+		if req.Output.Description != "" {
+			format["description"] = req.Output.Description
+		}
+		body["text"] = map[string]any{"format": format}
+	}
 	if !req.Reasoning.Empty() {
 		if req.Reasoning.Source != ir.ProtocolChat && req.Reasoning.Source != ir.ProtocolResponses {
 			return nil, fmt.Errorf("%w: thinking configuration cannot be converted to responses reasoning", ir.ErrUnsupportedContent)
@@ -265,12 +275,16 @@ func GenerateRequest(req *ir.Request) ([]byte, error) {
 				})
 				continue
 			}
-			tools = append(tools, map[string]any{
+			tool := map[string]any{
 				"type":        "function",
 				"name":        t.Name,
 				"description": t.Description,
 				"parameters":  json.RawMessage(t.Parameters),
-			})
+			}
+			if t.Strict {
+				tool["strict"] = true
+			}
+			tools = append(tools, tool)
 		}
 		body["tools"] = tools
 	}
@@ -312,9 +326,12 @@ func ParseResponse(body []byte) ([]ir.Event, error) {
 			} `json:"summary"`
 		} `json:"output"`
 		Usage *struct {
-			InputTokens         int64 `json:"input_tokens"`
-			OutputTokens        int64 `json:"output_tokens"`
-			TotalTokens         int64 `json:"total_tokens"`
+			InputTokens        int64 `json:"input_tokens"`
+			OutputTokens       int64 `json:"output_tokens"`
+			TotalTokens        int64 `json:"total_tokens"`
+			InputTokensDetails *struct {
+				CachedTokens *int64 `json:"cached_tokens"`
+			} `json:"input_tokens_details"`
 			OutputTokensDetails struct {
 				ReasoningTokens int64 `json:"reasoning_tokens"`
 			} `json:"output_tokens_details"`
@@ -369,11 +386,18 @@ func ParseResponse(body []byte) ([]ir.Event, error) {
 		}
 	}
 	if resp.Usage != nil {
+		cacheRead, cacheInput := int64(0), int64(0)
+		if resp.Usage.InputTokensDetails != nil && resp.Usage.InputTokensDetails.CachedTokens != nil {
+			cacheRead = *resp.Usage.InputTokensDetails.CachedTokens
+			cacheInput = resp.Usage.InputTokens
+		}
 		events = append(events, ir.Event{Type: ir.EventUsage, Usage: ir.Usage{
-			InputTokens:     resp.Usage.InputTokens,
-			OutputTokens:    resp.Usage.OutputTokens,
-			ReasoningTokens: resp.Usage.OutputTokensDetails.ReasoningTokens,
-			TotalTokens:     resp.Usage.TotalTokens,
+			InputTokens:          resp.Usage.InputTokens,
+			OutputTokens:         resp.Usage.OutputTokens,
+			ReasoningTokens:      resp.Usage.OutputTokensDetails.ReasoningTokens,
+			CacheReadInputTokens: cacheRead,
+			CacheInputTokens:     cacheInput,
+			TotalTokens:          resp.Usage.TotalTokens,
 		}})
 	}
 	switch resp.Status {

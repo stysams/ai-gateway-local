@@ -5,7 +5,7 @@ import { App } from "./App";
 
 const status = { version: "test", pid: 42, listen: "127.0.0.1:12600", logging_enabled: false, logging_body_enabled: false, autostart_enabled: false, clients: { codex: { point_state: "not_pointed" }, claude: { point_state: "client_not_installed" }, grok: { point_state: "drifted" }, generic: { point_state: "unknown" } }, routes: { codex: { provider: "ollama", model: "qwen3" }, claude: { provider: "ollama", model: "qwen3" }, grok: { provider: "ollama", model: "qwen3" }, generic: { provider: "ollama", model: "qwen3" } } };
 const localAccess = { base_url: "http://127.0.0.1:12600/v1", api_key: "ai-gateway", auth_required: false, default_model: "gateway-default", default_route: status.routes.generic, endpoints: { models: "http://127.0.0.1:12600/v1/models", chat_completions: "http://127.0.0.1:12600/v1/chat/completions", responses: "http://127.0.0.1:12600/v1/responses", messages: "http://127.0.0.1:12600/v1/messages" }, models: [{ id: "gateway-default", object: "model", created: 0, owned_by: "ai-gateway", display_name: "gateway-default" }, { id: "ollama/qwen3", object: "model", created: 0, owned_by: "ollama", display_name: "ollama/qwen3" }] };
-const config = { version: 1, listen: { port: 12600 }, logging: { enabled: false, body: false, dir: "logs" }, ui: { language: "en-US", logging_notice_accepted: true }, autostart: { enabled: false }, providers: { ollama: { name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", models: [{ id: "qwen3", name: "Qwen 3" }], capabilities: { image_input: false, reasoning: false } }, openrouter: { name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", models: [{ id: "gpt-5", name: "GPT-5" }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4" }], capabilities: { image_input: true, reasoning: true } } }, routes: status.routes };
+const config = { version: 1, listen: { port: 12600 }, logging: { enabled: false, body: false, redact: true, dir: "logs" }, ui: { language: "en-US", logging_notice_accepted: true }, autostart: { enabled: false }, providers: { ollama: { name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", models: [{ id: "qwen3", name: "Qwen 3" }], capabilities: { image_input: false, reasoning: false } }, openrouter: { name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", models: [{ id: "gpt-5", name: "GPT-5" }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4" }], capabilities: { image_input: true, reasoning: true } } }, routes: status.routes };
 const providers = [
   { id: "ollama", name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", enabled: true, models: [{ id: "qwen3", name: "Qwen 3" }], has_secret: false, capabilities: { image_input: false, reasoning: false } },
   { id: "openrouter", name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", enabled: true, models: [{ id: "gpt-5", name: "GPT-5" }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4" }], has_secret: true, capabilities: { image_input: true, reasoning: true } },
@@ -41,8 +41,9 @@ beforeEach(() => {
     if (url.endsWith("/api/v1/providers") && init?.method === "POST") return Response.json(providers[0]);
     if (url.includes("/api/v1/logs?") && url.includes("cursor=next-page")) return Response.json({ items: [{ request_id: "req-next", started_at: "2026-08-15T07:59:00Z", client: "claude", provider: "openrouter", model: "gpt-5", status: "success", status_code: 200, duration_ms: 84 }] });
     if (url.includes("/api/v1/logs?")) return Response.json({ items: [{ request_id: "req-copy", started_at: "2026-08-15T08:00:00Z", client: "codex", provider: "ollama", model: "qwen3", status: "success", status_code: 200, duration_ms: 42 }], next_cursor: "next-page" });
+    if (url.endsWith("/api/v1/logs/req-copy/export")) return new Response('{"request_id":"req-copy","type":"request","headers":{"Authorization":["[REDACTED]"]},"body":{"model":"qwen3"}}\n', { headers: { "Content-Type": "application/x-ndjson" } });
     if (url.endsWith("/api/v1/logs/req-copy")) return Response.json({ request_id: "req-copy", events: [{ type: "request", headers: { "X-Debug-Trace": ["trace-value"] }, body: { model: "qwen3" } }] });
-    if (url.endsWith("/api/v1/usage")) return Response.json({ total: { requests: 0, success: 0, failed: 0, cancelled: 0, usage: null, incomplete: true }, by_provider: {}, by_model: {}, by_client: {}, by_date: {} });
+    if (url.includes("/api/v1/usage")) return Response.json({ total: { requests: 12, success: 10, failed: 1, cancelled: 1, usage_requests: 11, usage: { input_tokens: 1200, output_tokens: 480, reasoning_tokens: 80, cache_creation_input_tokens: 60, cache_read_input_tokens: 540, cache_input_tokens: 1800, total_tokens: 1680 }, incomplete: true }, by_provider: { openrouter: { requests: 12, success: 10, failed: 1, cancelled: 1, usage_requests: 11, usage: { input_tokens: 1200, output_tokens: 480, reasoning_tokens: 80, cache_creation_input_tokens: 60, cache_read_input_tokens: 540, cache_input_tokens: 1800, total_tokens: 1680 }, incomplete: true } }, by_model: { "gpt-5": { requests: 12, success: 10, failed: 1, cancelled: 1, usage_requests: 11, usage: { input_tokens: 1200, output_tokens: 480, reasoning_tokens: 80, cache_creation_input_tokens: 60, cache_read_input_tokens: 540, cache_input_tokens: 1800, total_tokens: 1680 }, incomplete: true } }, by_client: { codex: { requests: 12, success: 10, failed: 1, cancelled: 1, usage_requests: 11, usage: { input_tokens: 1200, output_tokens: 480, reasoning_tokens: 80, cache_creation_input_tokens: 60, cache_read_input_tokens: 540, cache_input_tokens: 1800, total_tokens: 1680 }, incomplete: true } }, by_date: { "2026-08-23": { requests: 12, success: 10, failed: 1, cancelled: 1, usage_requests: 11, usage: { input_tokens: 1200, output_tokens: 480, reasoning_tokens: 80, cache_creation_input_tokens: 60, cache_read_input_tokens: 540, cache_input_tokens: 1800, total_tokens: 1680 }, incomplete: true } } });
     for (const client of ["codex", "claude", "grok"]) if (url.endsWith(`/api/v1/clients/${client}`)) return Response.json(pointStatus(client));
     if (url.includes("/api/v1/routes/codex") && init?.method === "PUT") return Response.json({ client: "codex", provider: "openrouter", model: "anthropic/claude-sonnet-4" });
     if (url.endsWith("/api/v1/logging") && init?.method === "PUT") return Response.json({ enabled: true, body: true });
@@ -212,14 +213,32 @@ describe("desktop workflow", () => {
     expect(screen.getByRole("checkbox", { name: "Body" })).toBeDisabled();
   });
 
+  it("filters token usage by time range, provider, and model", async () => {
+    const user = userEvent.setup(); render(<App />); await ready(); await user.click(screen.getByRole("button", { name: "Usage" }));
+    expect(screen.getByText("Token usage trend")).toBeVisible();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Time range" }), "7d");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Provider" }), "openrouter");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Model" }), "gpt-5");
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/usage\?.*provider=openrouter.*model=gpt-5/), expect.anything()));
+    expect(screen.getAllByText("Cache Hit Rate").length).toBeGreaterThan(0);
+    const chart = screen.getByRole("img", { name: "Token and cache trend" });
+    expect(within(chart).getByText("Input")).toBeVisible();
+    expect(within(chart).getByText("Output")).toBeVisible();
+    expect(within(chart).getByText("Cache Creation")).toBeVisible();
+    expect(within(chart).getByText("Cache Read")).toBeVisible();
+    expect(within(chart).getByText("Cache Hit Rate")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Clear filters" })).toBeVisible();
+  });
+
   it("copies the complete request log from the detail drawer", async () => {
     const user = userEvent.setup();
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
     render(<App />); await ready(); await user.click(screen.getByRole("button", { name: "Logs" }));
     await user.click(screen.getByRole("button", { name: "Details" }));
-    await user.click(await screen.findByRole("button", { name: "Copy request log" }));
+    await user.click(await screen.findByRole("button", { name: "Copy redacted log" }));
     expect(writeText).toHaveBeenCalledOnce();
-    expect(JSON.parse(writeText.mock.calls[0][0])).toEqual({ request_id: "req-copy", events: [{ type: "request", headers: { "X-Debug-Trace": ["trace-value"] }, body: { model: "qwen3" } }] });
+    expect(writeText.mock.calls[0][0]).toContain('"Authorization":["[REDACTED]"]');
+    expect(writeText.mock.calls[0][0]).not.toContain("trace-value");
     expect(screen.getByRole("button", { name: "Copied" })).toBeVisible();
   });
 
@@ -227,9 +246,10 @@ describe("desktop workflow", () => {
     const user = userEvent.setup();
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
     render(<App />); await ready(); await user.click(screen.getByRole("button", { name: "Logs" }));
-    await user.click(screen.getByRole("button", { name: "Copy request log req-copy" }));
+    await user.click(screen.getByRole("button", { name: "Copy redacted log req-copy" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
-    expect(JSON.parse(writeText.mock.calls[0][0])).toEqual({ request_id: "req-copy", events: [{ type: "request", headers: { "X-Debug-Trace": ["trace-value"] }, body: { model: "qwen3" } }] });
+    expect(writeText.mock.calls[0][0]).toContain('"Authorization":["[REDACTED]"]');
+    expect(writeText.mock.calls[0][0]).not.toContain("trace-value");
   });
 
   it("loads the next request-log page with the server cursor", async () => {

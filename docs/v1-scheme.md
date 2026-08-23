@@ -50,7 +50,7 @@ ai-gateway 是一个当前用户会话内运行的本机单用户代理网关。
 - 文生图、视觉 sidecar、语音、文件托管。
 - 自动端口漂移。
 - 自动更新和遥测。
-- 日志轮转、日志脱敏、日志大小上限。
+- 日志级别和外部日志采集后端。
 - 把 `/v1/*` 服务嵌入 Wails 窗口进程。
 - 在 macOS 或 Linux 上承诺与 Windows 相同的第一阶段验收等级。
 
@@ -226,6 +226,7 @@ listen:
 logging:
   enabled: true
   body: true
+  redact: true
   dir: logs
 
 ui:
@@ -290,10 +291,11 @@ routes:
 
 - `enabled`：默认 `true`。关闭后，新请求不得创建日志文件。
 - `body`：默认 `true`。仅在 `enabled` 为 `true` 时生效；关闭后仍记录请求元数据、路由和用量，但不保存提示词等正文。
+- `redact`：默认 `true`。开启后在写盘前递归脱敏常见凭据字段；关闭只影响后续写盘，管理接口导出仍强制脱敏历史内容。
 - `dir`：默认 `logs`；相对路径相对数据根目录解析。
 - `retention_days`：默认 `0`，表示不按时间自动删除；设置为 `1..3650` 后，网关启动时只删除已经写入 `result` 事件且早于保留窗口的日志。
 - `quota_bytes`：默认 `0`，表示不按磁盘配额自动删除；设置为正数后，网关启动时从最早的已完成日志开始清理，直到日志总大小不超过配额。活动请求和中断日志永不因这两项策略删除。
-- 第一阶段不接受日志级别、轮转或脱敏字段。
+- 当前不接受日志级别或外部日志采集字段。
 
 #### `limits`
 
@@ -550,6 +552,7 @@ type Request struct {
     Messages        []Message
     Tools           []Tool
     ToolChoice      json.RawMessage
+    Output          *OutputFormat
     Reasoning       ReasoningConfig
     Extensions      map[string]json.RawMessage
 }
@@ -566,6 +569,21 @@ type Block struct {
     Reasoning  *Reasoning
     ToolCall   *ToolCall
     ToolResult *ToolResult
+}
+
+type Tool struct {
+    Name        string
+    Description string
+    Parameters  json.RawMessage
+    Custom      bool
+    Strict      bool
+}
+
+type OutputFormat struct {
+    Name        string
+    Description string
+    Schema      json.RawMessage
+    Strict      bool
 }
 ```
 
@@ -590,6 +608,10 @@ type Block struct {
   禁止把对象直接嵌入（官方外形；证据见 §20）。
 - Responses `type: namespace` 展开为其中的函数 / 自定义工具。
 - Responses `role: developer` 与 `role: system` 并入 IR 系统块。
+- Chat `response_format.json_schema`、Responses `text.format` 和 Messages
+  `output_config.format` 归一化为 `OutputFormat`；Anthropic 格式没有名称时，
+  输出到 OpenAI 协议使用稳定名称 `structured_output`。
+- 三种协议函数工具的严格模式归一化为 `Tool.Strict`，跨协议时不得静默丢失。
 
 IR 不是公开 API，不要求长期向后兼容；但同一切片内所有 adapter 必须只通过 IR 做跨协议转换。
 
@@ -647,6 +669,10 @@ error
   `computer_use_preview`、`image_generation`、`mcp`）在跨协议时可以丢弃，
   但必须在该请求日志中写入 `tool_dropped`，禁止静默删除。
 - 无法归入以上两类的工具类型或无法转换的工具结果必须返回 422。
+- JSON Schema 结构化输出在 Chat、Responses 和 Messages 间转换；只在源协议
+  提供的名称、描述和严格模式范围内保留语义，不凭模型名称猜测能力。
+- 文件输入不属于三协议共同能力：Responses 的 `input_file` 不得在跨协议时
+  伪装成普通文本或图片。未建立无损合同之前不承诺跨协议文件输入。
 - 未识别的供应商扩展字段在跨协议时可以丢弃，但必须记录字段名，不得记录钥匙。
 
 ---
@@ -951,14 +977,17 @@ PUT  /api/v1/clients/codex/remote-compaction
 ```text
 GET /api/v1/logs
 GET /api/v1/logs/{request_id}
+GET /api/v1/logs/{request_id}/export
+DELETE /api/v1/logs/{request_id}
+DELETE /api/v1/logs
 GET /api/v1/usage
 PUT /api/v1/logging
 ```
 
-请求可只传 `enabled`、只传 `body`，或两者都传。`enabled` 控制是否记录请求；`body` 控制是否保存提示词等正文。
+请求可只传 `enabled`、`body` 或 `redact`，也可组合传入。`enabled` 控制是否记录请求；`body` 控制是否保存提示词等正文；`redact` 控制后续日志写盘前是否递归脱敏。
 
 ```json
-{"enabled": true, "body": false}
+{"enabled": true, "body": false, "redact": true}
 ```
 
 最低查询参数：
@@ -966,11 +995,12 @@ PUT /api/v1/logging
 - `from`、`to`：RFC 3339 时间。
 - `client`
 - `provider`
+- `model`
 - `status`
 - `limit`：默认 100，最大 500。
 - `cursor`
 
-`GET /logs` 返回摘要，不默认返回完整正文。`GET /logs/{request_id}` 返回完整 JSONL 解析结果。
+`GET /logs` 返回摘要，不默认返回完整正文。`GET /logs/{request_id}` 返回完整 JSONL 解析结果。`GET /logs/{request_id}/export` 始终返回脱敏 JSONL，并再次处理启用写盘脱敏之前产生的历史日志。单条删除遇到活动请求返回 409；批量清理只删除非活动日志。
 
 ### 11.7 登录启动
 
@@ -1222,13 +1252,14 @@ Model: gateway-default，或 provider-id/model-name
 - `false` 时，新请求不得创建日志文件。
 - `logging.body` 默认 `true`。
 - `body` 为 `false` 时，仍创建请求日志并记录元数据、路由、警告和用量，但不得保存入站正文、上游正文、流式事件或客户端正文。
-- 关闭日志或正文不删除历史文件。
+- `logging.redact` 默认 `true`，在事件写盘前递归处理 Authorization、Cookie、API key、token、password、secret、session 和文件原始数据等常见敏感字段。
+- 关闭日志、正文或脱敏不删除历史文件。关闭脱敏只影响新日志；桌面复制和导出仍使用强制脱敏接口。
 - 首次打开桌面必须确认风险说明后才进入主界面。
 - 无头 `serve` 每次启动在 stderr 输出一次风险说明。
 
 固定风险文案：
 
-> ai-gateway 的正文日志可能包含提示词、源代码、工具参数、工具结果和图片原文。日志不会自动轮转或脱敏，请仅在可信设备上启用并自行管理磁盘空间。
+> ai-gateway 的正文日志可能包含提示词、源代码、工具参数、工具结果和图片原文。网关会递归脱敏常见凭据字段，但自由文本仍可能包含隐私内容，请仅在可信设备上启用。
 
 ### 13.2 JSONL 格式
 
@@ -1264,8 +1295,9 @@ result
 - 流式时逐条追加 `upstream_event` 与 `client_event`。
 - `warning` 记录 reasoning、托管工具、自定义工具 format 或扩展字段降级，以及 `claude_disguise_applied` 这类已核验的伪装正文补齐。
 - `result` 记录状态、耗时、用量、错误和完成时间。
-- 不记录 Authorization、x-api-key、Cookie、密码、令牌、会话标识或系统 secret；事件使用 `omitted_sensitive_header_count` 和 `omitted_sensitive_query_count` 表示被省略的敏感字段数量。
+- 不记录 Authorization、x-api-key、Cookie、密码、令牌、会话标识或系统 secret；事件使用 `omitted_sensitive_header_count` 和 `omitted_sensitive_query_count` 表示被省略的敏感字段数量。启用 `logging.redact` 后，对 JSON 对象、数组、HTTP 头、JSON 字符串和 SSE `data:` 帧递归脱敏，包含顶层敏感字段。
 - 文件写入必须串行且可在异常结束时保留已有事件。
+- 桌面复制和下载使用强制脱敏导出；用户可删除单条非活动日志或一次清理全部非活动日志，活动日志不得被删除。
 
 ### 13.3 用量
 
@@ -1274,9 +1306,14 @@ result
 - 输入 token。
 - 输出 token。
 - reasoning token，若上游提供。
+- cache creation token 与 cache read token，若上游提供明确字段。
+- cache hit rate。分母 `cache_input_tokens` 按上游协议语义归一：Anthropic 为输入、缓存创建与缓存读取之和；OpenAI 为包含缓存读取的 input 或 prompt token。未返回明确缓存字段的请求不进入分母。
 - 总请求数。
 - 成功、失败和取消数。
-- 按 provider、model、client、日期分组。
+- 返回具有上游真实用量的请求数 `usage_requests`，用于计算覆盖率。
+- 按 provider、model、client、日期和小时分组。
+
+`GET /api/v1/usage` 支持 `from`、`to`、`client`、`provider`、`model` 和 `status` 过滤；`from` 与 `to` 使用 RFC 3339 时间。查询结果中的 `by_date` 使用网关本地日期，`by_hour` 使用带时区偏移的 RFC 3339 整点。
 
 没有日志或上游没有 usage 时，返回 `null` 或“不完整”标志，禁止估算 token。
 
@@ -1379,9 +1416,9 @@ ai-gateway version
 3. Providers：列表、新增、编辑、删除、探测、模型列表、自定义请求头和 Claude Code/Codex 请求头预设。
 4. Routes：Codex、Claude Code、Grok Build、Generic 的当前 provider 和 model。
 5. Clients：检查、point、restore、漂移状态和影响说明。
-6. Logs：摘要列表、正文详情、筛选。
+6. Logs：摘要列表、正文详情、筛选、脱敏复制与导出、单条删除和非活动日志清理。
 7. Usage：按日期、客户端、provider 和 model 的粗汇总。
-8. Settings：端口、日志开关、登录启动和语言。
+8. Settings：端口、日志开关、日志脱敏、登录启动和语言。
 
 ### 15.3 托盘
 
@@ -2599,6 +2636,30 @@ Anthropic 必须写成 `{"type":"auto"}`、`{"type":"none"}`、
 同日更早、User-Agent 仍是默认 `ai-gateway` 时，同一上游返回 401
 `unauthorized client detected`。这是供应商客户端识别，不是协议转换错误；
 用已核验的 `extra_headers` 覆盖 `User-Agent` 后才能进入 `tool_choice` 校验。
+
+---
+
+### 2026-08-23 复核：三协议结构化输出与严格工具定义
+
+核验来源为 [OpenAI Structured Outputs](https://platform.openai.com/docs/guides/structured-outputs)、
+[OpenAI 文件输入](https://platform.openai.com/docs/guides/pdf-files) 和
+[Anthropic Structured Outputs](https://docs.anthropic.com/en/docs/build-with-claude/structured-outputs)
+官方协议文档：
+
+- OpenAI Chat Completions 使用
+  `response_format: {type:"json_schema", json_schema:{name, description, strict, schema}}`。
+- OpenAI Responses 使用
+  `text.format: {type:"json_schema", name, description, strict, schema}`。
+- Anthropic Messages 使用
+  `output_config.format: {type:"json_schema", schema}`；该外形没有 OpenAI
+  必需的名称，因此跨到 OpenAI 协议时使用稳定名称 `structured_output`。
+- 三种协议的函数工具都能表达严格模式，IR 使用 `Tool.Strict` 保留该语义。
+- OpenAI Responses 支持 `input_file` 的文件 ID、外部 URL 或 base64 输入；
+  Chat Completions 和 Messages 没有已经核验的等价共同外形。因此本次不把文件
+  输入加入跨协议 IR，禁止把文件静默降级为文本或图片。
+
+由此新增 `OutputFormat` 和工具严格模式合同，并用 Chat→Messages、
+Messages→Responses、Responses→Chat 三个方向的转换测试固定字段外形。
 
 ---
 
