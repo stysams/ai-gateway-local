@@ -2,8 +2,8 @@
 
 > 状态：第一期已验收（带遗留问题），第二期已完成并发布
 > 文档日期：2026-08-23
-> 包构建提交：`8ac54c3a148fb9e4caa36c4f9be89c85d4b71273`（桌面端空间布局优化及前端资源更新；后续仅发布记录文档变更不影响包内容）
-> 当前发布：`0.1.0-rc1`（`dist/ai-gateway-0.1.0-rc1-windows-amd64.zip`，SHA-256 `693428495254D8C964CB7E3CCAE9C119D008CD30E1A16E6D45CE2B0B2F2ED5F2`）
+> 包构建提交：`ec0dc264a03af6409ff8aa16e1a675f9c7546834`（日志隐私治理、Token 用量与三协议能力扩展；后续仅发布记录文档变更不影响包内容）
+> 当前发布：`0.1.0-rc1`（`dist/ai-gateway-0.1.0-rc1-windows-amd64.zip`，SHA-256 `C1DC64A4FDE60BA4F9850CF7B7AE2B6F69D1CEE667B0CC512B11D1750ECAAAF8`）
 > 第一验收平台：Windows 11
 
 本文给后续 Agent（含 Grok）接续工作。本文记录进度、权威边界、已落地增量和下一步，**不是新的工程合同**。
@@ -348,8 +348,8 @@ npm --prefix desktop run test:e2e -- --project=desktop-light
 5. 打完用包内 `ai-gateway.exe version` 核对版本、提交、Go、平台；核对压缩包含两个二进制、`LICENSE`、`README.md`、`docs/install.md`。告知用户必须替换并重启已在运行的网关，新包才会生效。
 
 当前包：`dist/ai-gateway-0.1.0-rc1-windows-amd64.zip`  
-提交：`8ac54c3a148fb9e4caa36c4f9be89c85d4b71273`
-SHA-256：`693428495254D8C964CB7E3CCAE9C119D008CD30E1A16E6D45CE2B0B2F2ED5F2`
+提交：`ec0dc264a03af6409ff8aa16e1a675f9c7546834`
+SHA-256：`C1DC64A4FDE60BA4F9850CF7B7AE2B6F69D1CEE667B0CC512B11D1750ECAAAF8`
 
 ---
 
