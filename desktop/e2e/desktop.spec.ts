@@ -157,6 +157,54 @@ test("request logs retain route context at every breakpoint", async ({ page }, t
   await page.screenshot({ path: testInfo.outputPath("request-logs.png"), fullPage: true });
 });
 
+test("log actions stay aligned and scrollbars remain compact", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-light", "Layout metrics use the desktop project as their baseline.");
+  await page.goto("/");
+  await page.getByRole("button", { name: "Logs" }).click();
+
+  const desktop = await page.evaluate(() => {
+    const root = getComputedStyle(document.documentElement);
+    const scroll = document.querySelector<HTMLElement>(".log-scroll");
+    const cluster = document.querySelector<HTMLElement>(".log-actions .action-cluster");
+    const buttons = [...document.querySelectorAll<HTMLElement>(".log-actions .icon-button")].map((button) => {
+      const rect = button.getBoundingClientRect();
+      return { top: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) };
+    });
+    return {
+      scrollbarSize: root.getPropertyValue("--scrollbar-size").trim(),
+      scrollbarWidth: scroll ? getComputedStyle(scroll).scrollbarWidth : "",
+      scrollbarGutter: scroll ? getComputedStyle(scroll).scrollbarGutter : "",
+      clusterDisplay: cluster ? getComputedStyle(cluster).display : "",
+      buttons,
+    };
+  });
+  expect(desktop.scrollbarSize).toBe("8px");
+  expect(desktop.scrollbarWidth).toBe("thin");
+  expect(desktop.scrollbarGutter).toContain("stable");
+  expect(desktop.clusterDisplay).toBe("inline-flex");
+  expect(new Set(desktop.buttons.map((button) => button.top)).size).toBe(1);
+  expect(desktop.buttons.every((button) => button.width === 30 && button.height === 30)).toBe(true);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobile = await page.evaluate(() => {
+    const cluster = document.querySelector<HTMLElement>(".log-actions .action-cluster");
+    const button = document.querySelector<HTMLElement>(".log-actions .icon-button");
+    return {
+      scrollbarSize: getComputedStyle(document.documentElement).getPropertyValue("--scrollbar-size").trim(),
+      clusterDisplay: cluster ? getComputedStyle(cluster).display : "",
+      columns: cluster ? getComputedStyle(cluster).gridTemplateColumns : "",
+      buttonSize: button ? Math.round(button.getBoundingClientRect().width) : 0,
+      overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    };
+  });
+  expect(mobile.scrollbarSize).toBe("6px");
+  expect(mobile.clusterDisplay).toBe("grid");
+  expect(mobile.columns.split(" ")).toHaveLength(2);
+  expect(mobile.buttonSize).toBe(36);
+  expect(mobile.overflow).toBe(false);
+  await page.screenshot({ path: testInfo.outputPath("log-actions-mobile.png"), fullPage: true });
+});
+
 test("all primary views fit and remain keyboard reachable", async ({ page }, testInfo) => {
   await page.goto("/");
   await expect(page.locator("h1", { hasText: "Overview" })).toBeVisible();
