@@ -74,10 +74,15 @@ test("client routes list every enabled model as provider/model id", async ({ pag
   await expect(modelSelect).toBeVisible();
   await expect(modelSelect).toHaveJSProperty("required", true);
   await expect(modelSelect).toHaveValue("openrouter/gpt-5");
+  await expect(modelSelect).toHaveAttribute("title", "openrouter/gpt-5");
   await expect(modelSelect.locator("option", { hasText: "Select a default model" })).toHaveCount(1);
   await expect(modelSelect.locator("option", { hasText: "openrouter/gpt-5" })).toHaveCount(1);
   await expect(modelSelect.locator("option", { hasText: "openrouter/anthropic/claude-sonnet-4" })).toHaveCount(1);
   await expect(modelSelect.locator("option", { hasText: "deepseek/deepseek-chat" })).toHaveCount(1);
+  if (testInfo.project.name === "mobile-dark") {
+    await expect(page.getByText("Full value: openrouter/gpt-5", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("Full value: openrouter/anthropic/claude-sonnet-4", { exact: true })).toBeVisible();
+  }
   const clientRoutesTop = await page.getByText("Client routes", { exact: true }).evaluate((element) => element.getBoundingClientRect().top);
   const catalogTop = await page.getByText("Provider and model catalog", { exact: true }).evaluate((element) => element.getBoundingClientRect().top);
   expect(clientRoutesTop).toBeLessThan(catalogTop);
@@ -145,6 +150,8 @@ test("request logs retain route context at every breakpoint", async ({ page }, t
   await expect(firstRequest).toContainText("openrouter");
   await expect(firstRequest).toContainText("gpt-5");
   await expect(firstRequest).toContainText("codex");
+  await expect(firstRequest.locator("time")).toContainText("2026");
+  await expect(firstRequest.locator("time")).toHaveAttribute("datetime", "2026-08-15T05:00:00Z");
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   expect(overflow).toBe(false);
   await page.screenshot({ path: testInfo.outputPath("request-logs.png"), fullPage: true });
@@ -184,13 +191,106 @@ test("desktop groups related controls into shared rows", async ({ page }, testIn
   expect(overflow).toBe(false);
 });
 
+test("settings remain compact and accessible across desktop breakpoints", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-light", "Intermediate-width assertions require the desktop project.");
+  await page.goto("/");
+  await page.getByRole("button", { name: "Settings" }).click();
+
+  await expect(page.getByRole("combobox", { name: "Language" })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Listen address" })).toBeVisible();
+  await expect(page.getByRole("spinbutton", { name: "Listen port" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Log directory" })).toBeVisible();
+
+  const breakpoints = [
+    { width: 800, columns: 2 },
+    { width: 1100, columns: 2 },
+    { width: 1101, columns: 2 },
+    { width: 1180, columns: 2 },
+    { width: 1181, columns: 3 },
+    { width: 1399, columns: 3 },
+    { width: 1400, columns: 4 },
+  ];
+
+  for (const { width, columns } of breakpoints) {
+    await page.setViewportSize({ width, height: 900 });
+    const metrics = await page.evaluate(() => {
+      const grid = document.querySelector<HTMLElement>(".limits-list");
+      const hiddenSwitch = document.querySelector<HTMLInputElement>('.settings-list input[type="checkbox"]');
+      const numberInput = document.querySelector<HTMLInputElement>('.limits-list input[type="number"]');
+      return {
+        columns: grid ? getComputedStyle(grid).gridTemplateColumns.split(" ").length : 0,
+        hiddenSwitchWidth: hiddenSwitch?.getBoundingClientRect().width ?? 0,
+        numberInputWidth: numberInput?.getBoundingClientRect().width ?? 0,
+        overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      };
+    });
+    expect(metrics.columns).toBe(columns);
+    expect(metrics.hiddenSwitchWidth).toBeLessThanOrEqual(1);
+    expect(metrics.numberInputWidth).toBeGreaterThanOrEqual(100);
+    expect(metrics.overflow).toBe(false);
+  }
+
+  await page.setViewportSize({ width: 1101, height: 900 });
+  await page.screenshot({ path: testInfo.outputPath("settings-intermediate.png"), fullPage: true });
+});
+
+test("settings explain invalid values and confirm network exposure", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Settings" }).click();
+
+  const port = page.getByRole("spinbutton", { name: "Listen port" });
+  await port.fill("1");
+  await expect(port).toHaveAttribute("aria-invalid", "true");
+  await expect(page.getByText("Port must be between 1024 and 65535.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save settings" })).toBeDisabled();
+
+  await port.fill("12601");
+  const listenHost = page.getByRole("combobox", { name: "Listen address" });
+  await listenHost.selectOption("0.0.0.0");
+  await expect(page.getByText("0.0.0.0 allows clients on the local network to reach the data plane.", { exact: false })).toBeVisible();
+
+  const save = page.getByRole("button", { name: "Save settings" });
+  await expect(save).toBeEnabled();
+  const dialogPromise = page.waitForEvent("dialog");
+  const clickPromise = save.click();
+  const dialog = await dialogPromise;
+  expect(dialog.message()).toContain("local-network clients");
+  await dialog.dismiss();
+  await clickPromise;
+  await expect(save).toBeVisible();
+});
+
+test("mobile navigation keeps every primary destination in view", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile-dark", "Mobile navigation assertions require the mobile viewport.");
+  await page.goto("/");
+  const navigation = page.locator(".sidebar nav");
+  const metrics = await navigation.evaluate((element) => ({
+    scrollWidth: element.scrollWidth,
+    clientWidth: element.clientWidth,
+  }));
+  expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth);
+  for (const name of ["Overview", "Local API", "Providers", "Routes", "Clients", "Logs", "Usage", "Settings"]) {
+    await expect(page.getByRole("button", { name })).toBeInViewport();
+  }
+});
+
 test("probe response is displayed as formatted JSON", async ({ page }, testInfo) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Providers" }).click();
-  await page.getByRole("row", { name: /OpenRouter/ }).getByRole("button", { name: "Probe" }).click();
+  const probeButton = page.getByRole("row", { name: /OpenRouter/ }).getByRole("button", { name: "Probe" });
+  await probeButton.click();
+  const dialog = page.getByRole("dialog", { name: "OpenRouter" });
+  await expect(dialog).toBeVisible();
+  const closeButton = dialog.getByRole("button", { name: "Close" });
+  await expect(closeButton).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(closeButton).toBeFocused();
   const response = page.locator(".probe-modal pre");
   await expect(response).toContainText('"output": [');
   await expect(response).toContainText("I am the configured upstream model.");
   expect((await response.textContent())?.split("\n").length).toBeGreaterThan(5);
   await page.screenshot({ path: testInfo.outputPath("probe-response.png"), fullPage: true });
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(probeButton).toBeFocused();
 });

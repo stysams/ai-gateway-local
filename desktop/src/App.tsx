@@ -29,6 +29,52 @@ const navigation: { id: Page; icon: AppIcon }[] = [
 
 const emptyProvider: ProviderFormValue = { id: "", name: "", adapter: "openai-chat", base_url: "", models_url: "", extra_headers: [], disguise_client: "", default_model: "", models: [], api_key: "" };
 
+function useDialogFocus<T extends HTMLElement>(open: boolean, onClose?: () => void) {
+  const dialogRef = useRef<T | null>(null);
+  const previousFocus = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    previousFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const focusableSelector = "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex=\"-1\"])";
+    const getFocusable = () => Array.from(dialog.querySelectorAll<HTMLElement>(focusableSelector));
+    const focusable = getFocusable();
+    (focusable[0] || dialog).focus();
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && onClose) {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const current = getFocusable();
+      if (!current.length) {
+        event.preventDefault();
+        return;
+      }
+      const first = current[0];
+      const last = current[current.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      previousFocus.current?.focus();
+    };
+  }, [onClose, open]);
+
+  return dialogRef;
+}
+
 function emptyModel(adapter: string): ProviderModel {
   return { id: "", name: "", adapter };
 }
@@ -91,11 +137,18 @@ export function App() {
 
   useEffect(() => {
     const root = document.documentElement;
-    const dark = theme === "dark" || (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
-    root.dataset.theme = dark ? "dark" : "light";
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const applyTheme = () => {
+      const dark = theme === "dark" || (theme === "system" && media.matches);
+      root.dataset.theme = dark ? "dark" : "light";
+    };
+    applyTheme();
     root.lang = language;
     localStorage.setItem("theme", theme);
     localStorage.setItem("language", language);
+    if (theme !== "system") return;
+    media.addEventListener("change", applyTheme);
+    return () => media.removeEventListener("change", applyTheme);
   }, [theme, language]);
 
   useEffect(() => {
@@ -152,14 +205,14 @@ export function App() {
       <aside className="sidebar" aria-label="Primary navigation">
         <div className="brand"><span className="brand-mark"><GatewayMark size={18} /></span><span>ai-gateway</span></div>
         <nav>
-          {navigation.map(({ id, icon: Icon }) => <button key={id} ref={page === id ? activeNavRef : undefined} className={page === id ? "nav-item active" : "nav-item"} onClick={() => setPage(id)} aria-current={page === id ? "page" : undefined}><Icon size={17} /><span>{t(id)}</span></button>)}
+          {navigation.map(({ id, icon: Icon }) => <button key={id} ref={page === id ? activeNavRef : undefined} className={page === id ? "nav-item active" : "nav-item"} onClick={() => setPage(id)} aria-label={t(id)} title={t(id)} aria-current={page === id ? "page" : undefined}><Icon size={17} /><span>{t(id)}</span></button>)}
         </nav>
         <div className="sidebar-status"><span className={status ? "status-dot ok" : "status-dot"} />{status ? t("connected") : t("loading")}</div>
       </aside>
       <main className="main">
         <header className="topbar">
           <div className="topbar-inner">
-            <div><p className="eyebrow">AI GATEWAY / {page.toUpperCase()}</p><h1>{t(page)}</h1></div>
+            <div><p className="eyebrow">AI GATEWAY / {t(page).toUpperCase()}</p><h1>{t(page)}</h1></div>
             <button className="icon-button" onClick={() => void refresh()} title={t("refresh")} aria-label={t("refresh")} disabled={busy}><RefreshCw size={17} className={busy ? "spin" : ""} /></button>
           </div>
         </header>
@@ -192,8 +245,9 @@ function ToastViewport({ toasts, onDismiss, t }: { toasts: Toast[]; onDismiss: (
   </div>;
 }
 
-function SectionHeader({ title, description, action }: { title: string; description?: string; action?: React.ReactNode }) {
-  return <div className="section-header"><div><h2>{title}</h2>{description && <p>{description}</p>}</div>{action}</div>;
+function SectionHeader({ title, description, action, hideTitle = false }: { title: string; description?: string; action?: React.ReactNode; hideTitle?: boolean }) {
+  if (hideTitle && !description && !action) return null;
+  return <div className={hideTitle ? "section-header title-hidden" : "section-header"}><div>{!hideTitle && <h2>{title}</h2>}{description && <p>{description}</p>}</div>{action}</div>;
 }
 
 function State({ value }: { value: string }) {
@@ -269,6 +323,8 @@ function Metric({ label, value, note, icon: Icon }: { label: string; value: stri
 function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (key: MessageKey) => string; run: RunOperation; notify: (kind: ToastKind, message: string) => void }) {
   const [open, setOpen] = useState(false); const [editing, setEditing] = useState<string>(); const [form, setForm] = useState(emptyProvider); const [errors, setErrors] = useState<Record<string, string>>({}); const [fetching, setFetching] = useState(false);
   const [probe, setProbe] = useState<{ provider: string; result: { ok: boolean; status: number; latency_ms: number; models?: number; error?: string; response?: string } } | null>(null);
+  const closeProbe = useCallback(() => setProbe(null), []);
+  const probeDialogRef = useDialogFocus<HTMLDivElement>(Boolean(probe), closeProbe);
   const edit = (p: Provider) => {
     const models = (p.models?.length ? p.models : [{ id: p.default_model, name: "" }]).map((model) => ({ id: model.id, name: model.name, adapter: modelAdapter(model, p.adapter), endpoint: model.endpoint, enabled: model.enabled }));
     const extra_headers = Object.entries(p.extra_headers || {}).sort(([left], [right]) => left.localeCompare(right)).map(([name, value]) => ({ name, value }));
@@ -355,9 +411,9 @@ function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (k
     </form>
   </section>;
 
-  return <section><SectionHeader title={t("providers")} description={`${providers.length}${t("configured")}`} action={<button className="primary" onClick={() => { setOpen(true); setEditing(undefined); setForm(emptyProvider); setErrors({}); }}><Plus size={16} />{t("addProvider")}</button>} />
-    {providers.length === 0 ? <Empty text={t("noProviders")} /> : <div className="table-wrap providers-table-wrap"><table className="providers-table"><thead><tr><th>{t("provider")}</th><th>{t("adapter")}</th><th>{t("model")}</th><th>{t("modelCount")}</th><th>{t("status")}</th><th className="actions">{t("actions")}</th></tr></thead><tbody>{providers.map((p) => <tr key={p.id}><td><strong>{p.name}</strong><small>{p.id} · {p.base_url}</small></td><td className="mono" data-label={t("adapter")}>{providerAdapters(p)}</td><td className="mono" data-label={t("model")}>{p.default_model}</td><td className="mono" data-label={t("modelCount")}>{p.models?.length || 0}</td><td><State value={p.enabled === false ? "disabled" : p.has_secret ? "key ready" : "keyless"} /></td><td className="actions"><button className="text-button" onClick={() => void probeProvider(p)}>{t("probe")}</button><button className="icon-button compact" onClick={() => edit(p)} title={t("edit")}><Settings size={15} /></button><button className="icon-button compact danger" onClick={() => { if (confirm(t("confirmDelete"))) void run(() => api.deleteProvider(p.id), undefined, ["providers", "status", "config"]); }} title={t("remove")}><Trash2 size={15} /></button></td></tr>)}</tbody></table></div>}
-    {probe && <div className="modal-backdrop" onMouseDown={() => setProbe(null)}><div className="modal probe-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><div className="drawer-title"><div><p className="eyebrow">{t("probeResponse")}</p><h2>{probe.provider}</h2></div><button className="icon-button" onClick={() => setProbe(null)} aria-label={t("close")}><X size={17} /></button></div><div className="probe-meta"><State value={probe.result.ok ? "ok" : "failed"} /><span>{probe.result.status || "-"} · {probe.result.latency_ms} ms · {probe.result.models || 0} {t("models")}</span></div>{probe.result.error && <p className="field-error">{probe.result.error}</p>}<pre>{formatProbeResponse(probe.result.response) || t("noProbeResponse")}</pre></div></div>}
+  return <section><SectionHeader title={t("providers")} hideTitle description={`${providers.length}${t("configured")}`} action={<button className="primary" onClick={() => { setOpen(true); setEditing(undefined); setForm(emptyProvider); setErrors({}); }}><Plus size={16} />{t("addProvider")}</button>} />
+    {providers.length === 0 ? <Empty text={t("noProviders")} /> : <div className="table-wrap providers-table-wrap"><table className="providers-table"><thead><tr><th>{t("provider")}</th><th>{t("adapter")}</th><th>{t("model")}</th><th>{t("modelCount")}</th><th>{t("status")}</th><th className="actions">{t("actions")}</th></tr></thead><tbody>{providers.map((p) => <tr key={p.id}><td><strong>{p.name}</strong><small>{p.id} · {p.base_url}</small></td><td className="mono" data-label={t("adapter")}>{providerAdapters(p)}</td><td className="mono" data-label={t("model")}>{p.default_model}</td><td className="mono" data-label={t("modelCount")}>{p.models?.length || 0}</td><td><State value={p.enabled === false ? "disabled" : p.has_secret ? "key ready" : "keyless"} /></td><td className="actions"><button className="text-button" onClick={() => void probeProvider(p)}>{t("probe")}</button><button className="icon-button compact" onClick={() => edit(p)} title={t("edit")} aria-label={`${t("edit")} ${p.name}`}><Settings size={15} /></button><button className="icon-button compact danger" onClick={() => { if (confirm(t("confirmDelete"))) void run(() => api.deleteProvider(p.id), undefined, ["providers", "status", "config"]); }} title={t("remove")} aria-label={`${t("remove")} ${p.name}`}><Trash2 size={15} /></button></td></tr>)}</tbody></table></div>}
+    {probe && <div className="modal-backdrop" onMouseDown={closeProbe}><div ref={probeDialogRef} className="modal probe-modal" role="dialog" aria-modal="true" aria-labelledby="probe-title" onMouseDown={(event) => event.stopPropagation()}><div className="drawer-title"><div><p className="eyebrow">{t("probeResponse")}</p><h2 id="probe-title">{probe.provider}</h2></div><button className="icon-button" onClick={closeProbe} aria-label={t("close")}><X size={17} /></button></div><div className="probe-meta"><State value={probe.result.ok ? "ok" : "failed"} /><span>{probe.result.status || "-"} · {probe.result.latency_ms} ms · {probe.result.models || 0} {t("models")}</span></div>{probe.result.error && <p className="field-error">{probe.result.error}</p>}<pre>{formatProbeResponse(probe.result.response) || t("noProbeResponse")}</pre></div></div>}
   </section>;
 }
 
@@ -394,13 +450,13 @@ function Routes({ status, providers, t, run }: { status: Status; providers: Prov
     if (!isCatalogRoute(next, catalog)) return;
     void run(() => api.updateRoute(client, next), t("success"), ["status", "config"]);
   };
-  return <section><SectionHeader title={t("routes")} description={t("routesDescription")} />
+  return <section><SectionHeader title={t("routes")} hideTitle />
       <div className="route-clients primary-route-block"><h3>{t("clientRoutes")}</h3><p className="muted">{t("clientRoutesDescription")}</p><div className="route-list route-client-grid">{allClients.map((client) => {
       const currentKnown = isCatalogRoute(draft[client], catalog);
       const currentId = currentKnown ? catalogId(draft[client]) : "";
       const savedId = catalogId(status.routes[client]);
       const canApply = currentKnown && currentId !== savedId;
-      return <div className="route-row" key={client}><div><strong className="mono">{client}</strong><small>/c/{client}/v1</small></div><label><span>{t("defaultSelectedModel")}</span><select className="mono" required aria-required="true" aria-invalid={!currentKnown} aria-label={`${client} ${t("defaultSelectedModel")}`} value={currentId} onChange={(event) => selectRoute(client, event.target.value)}><option value="" disabled>{t("selectDefaultModel")}</option>{catalog.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select>{!currentKnown && <small className="field-error">{t("routeUnavailable")}</small>}</label><button className="secondary" disabled={!canApply} onClick={() => applyRoute(client)}><Check size={16} />{t("apply")}</button></div>;
+      return <div className="route-row" key={client}><div><strong className="mono">{client}</strong><small>/c/{client}/v1</small></div><label><span>{t("defaultSelectedModel")}</span><select className="mono" required aria-required="true" aria-invalid={!currentKnown} aria-label={`${client} ${t("defaultSelectedModel")}`} title={currentId} value={currentId} onChange={(event) => selectRoute(client, event.target.value)}><option value="" disabled>{t("selectDefaultModel")}</option>{catalog.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select>{currentId && <small className="route-selected-value mono">{t("fullValue")}: {currentId}</small>}{!currentKnown && <small className="field-error">{t("routeUnavailable")}</small>}</label><button className="secondary" disabled={!canApply} onClick={() => applyRoute(client)}><Check size={16} />{t("apply")}</button></div>;
     })}</div></div>
     <div className="route-catalog-header"><div><h3>{t("routeCatalog")}</h3><p className="muted">{t("availabilityDescription")}</p></div><span className="mono muted">{providers.length} {t("providers")}</span></div>
     <div className="route-tree" aria-label={t("routeCatalog")}>{providers.map((provider) => { const treeModels = provider.models?.length ? provider.models : [{ id: provider.default_model, name: "" }]; const expanded = expandedProviders.has(provider.id); const enabledCount = treeModels.filter((model) => model.enabled !== false).length; return <div className="tree-provider" key={provider.id}><div className="tree-provider-row"><button className="tree-provider-toggle" onClick={() => toggleExpanded(provider.id)} aria-expanded={expanded} aria-label={`${provider.name} ${expanded ? t("hideModels") : t("showModels")}`}><ChevronRight className={expanded ? "expanded" : ""} size={15} /><span><b>{provider.name}</b><small>{enabledCount}/{treeModels.length} {t("models")}</small></span></button><span className="mono muted">{provider.id}</span><label className="switch"><input type="checkbox" checked={provider.enabled !== false} onChange={(event) => toggleProvider(provider, event.target.checked)} aria-label={`${t("provider")} ${provider.name}`} /><span /><b>{provider.enabled === false ? t("disabled") : t("enabled")}</b></label></div>{expanded && <div className="tree-models">{treeModels.map((model) => <div className="tree-model-row" key={model.id}><span className="tree-branch" aria-hidden="true"><ChevronRight size={14} /></span><span className="mono">{`${provider.id}/${model.id}`}</span><label className="switch"><input type="checkbox" checked={provider.enabled !== false && model.enabled !== false} disabled={provider.enabled === false} onChange={(event) => toggleModel(provider, model, event.target.checked)} aria-label={`${provider.id}/${model.id} ${t("enabled")}`} /><span /><b>{model.enabled === false ? t("disabled") : t("enabled")}</b></label></div>)}</div>}</div>; })}</div>
@@ -408,7 +464,7 @@ function Routes({ status, providers, t, run }: { status: Status; providers: Prov
 }
 
 function Clients({ clients, t, run }: { clients: Record<string, PointStatus>; t: (key: MessageKey) => string; run: RunOperation }) {
-  return <section><SectionHeader title={t("clients")} description={t("clientsDescription")} /><div className="client-list">{pointClients.map((client) => { const value = clients[client]; return <article className="client-item" key={client}><div className="client-main"><div className="client-title"><div className="client-icon"><ClientsIcon size={18} /></div><div><h3>{client}</h3><State value={value?.point_state || "unknown"} /></div></div><dl><dt>{t("target")}</dt><dd className="mono">{value?.target || "—"}</dd></dl><div className="client-actions"><button className="primary" disabled={value?.point_state === "pointed" || value?.point_state === "client_not_installed"} onClick={() => { if (confirm(t("confirmPoint"))) void run(() => api.point(client), t("success"), ["clients", "status"]); }}><Cable size={16} />{t("point")}</button><button className="secondary" disabled={!value?.backup_available} onClick={() => { if (confirm(t("confirmRestore"))) void run(() => api.restore(client), t("success"), ["clients", "status"]); }}><RotateCcw size={16} />{t("restore")}</button></div></div>{value?.message && <p className="client-message muted">{value.message}</p>}{client === "codex" && <details className="client-advanced" open><summary>{t("advancedSettings")}</summary><div className="client-option"><label className="switch"><input type="checkbox" checked={Boolean(value?.remote_compaction)} onChange={(event) => void run(() => api.setCodexRemoteCompaction(event.target.checked), t("success"), ["clients", "status"])} aria-label={t("remoteCompaction")} /><span /><b>{t("remoteCompaction")}</b></label><p className="muted">{t("remoteCompactionHint")}</p></div></details>}</article>; })}</div></section>;
+  return <section><SectionHeader title={t("clients")} hideTitle description={t("clientsDescription")} /><div className="client-list">{pointClients.map((client) => { const value = clients[client]; return <article className="client-item" key={client}><div className="client-main"><div className="client-title"><div className="client-icon"><ClientsIcon size={18} /></div><div><h3>{client}</h3><State value={value?.point_state || "unknown"} /></div></div><dl><dt>{t("target")}</dt><dd className="mono">{value?.target || "—"}</dd></dl><div className="client-actions"><button className="primary" disabled={value?.point_state === "pointed" || value?.point_state === "client_not_installed"} onClick={() => { if (confirm(t("confirmPoint"))) void run(() => api.point(client), t("success"), ["clients", "status"]); }}><Cable size={16} />{t("point")}</button><button className="secondary" disabled={!value?.backup_available} onClick={() => { if (confirm(t("confirmRestore"))) void run(() => api.restore(client), t("success"), ["clients", "status"]); }}><RotateCcw size={16} />{t("restore")}</button></div></div>{value?.message && <p className="client-message muted">{value.message}</p>}{client === "codex" && <details className="client-advanced" open><summary>{t("advancedSettings")}</summary><div className="client-option"><label className="switch"><input type="checkbox" checked={Boolean(value?.remote_compaction)} onChange={(event) => void run(() => api.setCodexRemoteCompaction(event.target.checked), t("success"), ["clients", "status"])} aria-label={t("remoteCompaction")} /><span /><b>{t("remoteCompaction")}</b></label><p className="muted">{t("remoteCompactionHint")}</p></div></details>}</article>; })}</div></section>;
 }
 
 async function copyText(value: string) {
@@ -429,6 +485,8 @@ function Logs({ items, hasMore, loadMore, enabled, body, t, run, notify }: { ite
   const [detailCount, setDetailCount] = useState(100);
   const [copied, setCopied] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const closeDetail = useCallback(() => setDetail(null), []);
+  const detailDialogRef = useDialogFocus<HTMLElement>(Boolean(detail), closeDetail);
   const copyLog = async (id: string, events?: unknown[]) => {
     try {
       const value = events ? { request_id: id, events } : await api.logDetail(id);
@@ -445,20 +503,23 @@ function Logs({ items, hasMore, loadMore, enabled, body, t, run, notify }: { ite
     setLoadingMore(true);
     try { await loadMore(); } finally { setLoadingMore(false); }
   };
-  return <section><div className="log-toolbar"><SectionHeader title={t("requestLog")} description={`${enabled ? (body ? t("loggingWithBody") : t("loggingMetadataOnly")) : t("disabled")} · ${items.length} ${t(items.length === 1 ? "requestEntry" : "requestEntries")}`} action={<div className="header-switches"><label className="switch"><input type="checkbox" checked={enabled} onChange={(e) => void run(() => api.setLogging(e.target.checked), undefined, ["config", "status", "logs"])} aria-label={t("logging")} /><span /><b>{t("logging")}</b></label><label className="switch"><input type="checkbox" checked={enabled && body} disabled={!enabled} onChange={(e) => void run(() => api.setLoggingBody(e.target.checked), undefined, ["config", "status", "logs"])} aria-label={t("bodyLogging")} /><span /><b>{t("bodyLogging")}</b></label></div>} /></div>
+  return <section><div className="log-toolbar"><SectionHeader title={t("requestLog")} hideTitle description={`${enabled ? (body ? t("loggingWithBody") : t("loggingMetadataOnly")) : t("disabled")} · ${items.length} ${t(items.length === 1 ? "requestEntry" : "requestEntries")}`} action={<div className="header-switches"><label className="switch"><input type="checkbox" checked={enabled} onChange={(e) => void run(() => api.setLogging(e.target.checked), undefined, ["config", "status", "logs"])} aria-label={t("logging")} /><span /><b>{t("logging")}</b></label><label className="switch"><input type="checkbox" checked={enabled && body} disabled={!enabled} onChange={(e) => void run(() => api.setLoggingBody(e.target.checked), undefined, ["config", "status", "logs"])} aria-label={t("bodyLogging")} /><span /><b>{t("bodyLogging")}</b></label></div>} /></div>
     {!enabled && <div className="empty-state inline"><CircleAlert size={18} /><span>{t("disabled")}</span></div>}
-    {items.length === 0 ? <Empty text={t("noLogs")} /> : <><div className="table-wrap log-scroll"><table className="log-table"><thead><tr><th>{t("status")}</th><th>{t("route")}</th><th>{t("clients")}</th><th>{t("requests")}</th><th /></tr></thead><tbody>{items.map((item) => <tr key={item.request_id}><td className="log-status"><State value={item.status} /></td><td className="log-route"><strong>{item.provider || "—"}</strong><small className="mono">{item.model || "—"}</small></td><td className="log-client mono">{item.client || "generic"}</td><td className="log-request"><strong className="mono">{new Date(item.started_at).toLocaleTimeString()}</strong><small>{item.duration_ms || 0} ms · {item.status_code || "—"}</small></td><td className="actions log-actions"><button className="icon-button compact" onClick={() => void copyLog(item.request_id)} title={t("copyRequestLog")} aria-label={`${t("copyRequestLog")} ${item.request_id}`}><Copy size={15} /></button><button className="text-button" onClick={() => void run(async () => { const value = await api.logDetail(item.request_id); setDetailCount(100); setDetail({ id: value.request_id, events: value.events }); })}>{t("details")}</button></td></tr>)}</tbody></table></div>{hasMore && <div className="load-more"><button className="secondary" disabled={loadingMore} onClick={() => void onLoadMore()}>{loadingMore && <RefreshCw size={15} className="spin" />}{loadingMore ? t("loadingMore") : t("loadMore")}</button></div>}</>}
-    {detail && <div className="drawer-backdrop" onMouseDown={() => setDetail(null)}><aside className="drawer" onMouseDown={(e) => e.stopPropagation()} aria-label={t("details")}><div className="drawer-title"><div><p className="eyebrow">REQUEST</p><h2 className="mono">{detail.id}</h2></div><div className="drawer-title-actions"><button className="secondary copy-button" onClick={() => void copyDetail()}><Copy size={15} />{copied ? t("copied") : t("copyRequestLog")}</button><button className="icon-button" onClick={() => setDetail(null)} aria-label={t("close")}><X size={17} /></button></div></div><pre>{JSON.stringify({ request_id: detail.id, events: detail.events.slice(0, detailCount) }, null, 2)}</pre>{detailCount < detail.events.length && <div className="load-more"><button className="secondary" onClick={() => setDetailCount((count) => Math.min(count + 100, detail.events.length))}>{t("loadMoreEvents")}</button></div>}</aside></div>}
+    {items.length === 0 ? <Empty text={t("noLogs")} /> : <><div className="table-wrap log-scroll"><table className="log-table"><thead><tr><th>{t("status")}</th><th>{t("route")}</th><th>{t("clients")}</th><th>{t("requests")}</th><th /></tr></thead><tbody>{items.map((item) => <tr key={item.request_id}><td className="log-status"><State value={item.status} /></td><td className="log-route"><strong>{item.provider || "—"}</strong><small className="mono">{item.model || "—"}</small></td><td className="log-client mono">{item.client || "generic"}</td><td className="log-request"><time className="mono" dateTime={item.started_at} title={item.started_at}>{new Date(item.started_at).toLocaleString(undefined, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time><small>{item.duration_ms || 0} ms · {item.status_code || "—"}</small></td><td className="actions log-actions"><button className="icon-button compact" onClick={() => void copyLog(item.request_id)} title={t("copyRequestLog")} aria-label={`${t("copyRequestLog")} ${item.request_id}`}><Copy size={15} /></button><button className="text-button" onClick={() => void run(async () => { const value = await api.logDetail(item.request_id); setDetailCount(100); setDetail({ id: value.request_id, events: value.events }); })}>{t("details")}</button></td></tr>)}</tbody></table></div>{hasMore && <div className="load-more"><button className="secondary" disabled={loadingMore} onClick={() => void onLoadMore()}>{loadingMore && <RefreshCw size={15} className="spin" />}{loadingMore ? t("loadingMore") : t("loadMore")}</button></div>}</>}
+    {detail && <div className="drawer-backdrop" onMouseDown={closeDetail}><aside ref={detailDialogRef} className="drawer" role="dialog" aria-modal="true" aria-labelledby="log-detail-title" onMouseDown={(e) => e.stopPropagation()}><div className="drawer-title"><div><p className="eyebrow">REQUEST</p><h2 id="log-detail-title" className="mono">{detail.id}</h2></div><div className="drawer-title-actions"><button className="secondary copy-button" onClick={() => void copyDetail()}><Copy size={15} />{copied ? t("copied") : t("copyRequestLog")}</button><button className="icon-button" onClick={closeDetail} aria-label={t("close")}><X size={17} /></button></div></div><pre>{JSON.stringify({ request_id: detail.id, events: detail.events.slice(0, detailCount) }, null, 2)}</pre>{detailCount < detail.events.length && <div className="load-more"><button className="secondary" onClick={() => setDetailCount((count) => Math.min(count + 100, detail.events.length))}>{t("loadMoreEvents")}</button></div>}</aside></div>}
   </section>;
 }
 
 function Usage({ usage, t }: { usage: UsageReport | null; t: (key: MessageKey) => string }) {
   if (!usage) return null;
-  return <section><SectionHeader title={t("usage")} description={usage.total.incomplete ? t("incomplete") : undefined} /><div className="metric-grid usage-metrics"><Metric label={t("requests")} value={String(usage.total.requests)} note={`${usage.total.success} ${t("success")}`} icon={Activity} /><Metric label={t("tokens")} value={(usage.total.usage?.total_tokens || 0).toLocaleString()} note={`${usage.total.usage?.input_tokens || 0} in / ${usage.total.usage?.output_tokens || 0} out`} icon={Database} /></div><UsageTable title={t("providers")} groups={usage.by_provider} t={t} /><UsageTable title={t("clients")} groups={usage.by_client} t={t} /></section>;
+  return <section><SectionHeader title={t("usage")} hideTitle description={usage.total.incomplete ? t("incomplete") : undefined} /><div className="metric-grid usage-metrics"><Metric label={t("requests")} value={String(usage.total.requests)} note={`${usage.total.success} ${t("success")}`} icon={Activity} /><Metric label={t("tokens")} value={(usage.total.usage?.total_tokens || 0).toLocaleString()} note={`${usage.total.usage?.input_tokens || 0} in / ${usage.total.usage?.output_tokens || 0} out`} icon={Database} /></div><UsageTable title={t("providers")} groups={usage.by_provider} t={t} /><UsageTable title={t("clients")} groups={usage.by_client} t={t} /></section>;
 }
 
 function UsageTable({ title, groups, t }: { title: string; groups: Record<string, UsageGroup>; t: (key: MessageKey) => string }) { return <div className="usage-block"><h3>{title}</h3><div className="table-wrap"><table><thead><tr><th>{title}</th><th className="number">{t("requests")}</th><th className="number">{t("tokens")}</th><th>{t("status")}</th></tr></thead><tbody>{Object.entries(groups).map(([key, group]) => <tr key={key}><td className="mono">{key}</td><td className="number mono">{group.requests}</td><td className="number mono">{group.usage?.total_tokens?.toLocaleString() || "—"}</td><td>{group.incomplete ? <State value="incomplete" /> : <State value="ok" />}</td></tr>)}</tbody></table></div></div>; }
 
 function Empty({ text }: { text: string }) { return <div className="empty-state"><Boxes size={20} /><span>{text}</span></div>; }
 
-function RiskModal({ t, onAccept }: { t: (key: MessageKey) => string; onAccept: () => void }) { return <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="risk-title"><div className="modal-icon"><CircleAlert size={20} /></div><h2 id="risk-title">{t("riskTitle")}</h2><p>{t("riskBody")}</p><button className="primary wide-button" autoFocus onClick={onAccept}><Check size={16} />{t("accept")}</button></div></div>; }
+function RiskModal({ t, onAccept }: { t: (key: MessageKey) => string; onAccept: () => void }) {
+  const dialogRef = useDialogFocus<HTMLDivElement>(true);
+  return <div className="modal-backdrop"><div ref={dialogRef} className="modal" role="dialog" aria-modal="true" aria-labelledby="risk-title"><div className="modal-icon"><CircleAlert size={20} /></div><h2 id="risk-title">{t("riskTitle")}</h2><p>{t("riskBody")}</p><button className="primary wide-button" onClick={onAccept}><Check size={16} />{t("accept")}</button></div></div>;
+}
