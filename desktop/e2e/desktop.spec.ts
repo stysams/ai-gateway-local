@@ -161,6 +161,29 @@ test("all primary views fit and remain keyboard reachable", async ({ page }, tes
   await page.screenshot({ path: testInfo.outputPath("settings.png"), fullPage: true });
 });
 
+test("desktop groups related controls into shared rows", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-light", "Desktop density assertions require the desktop viewport.");
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  const limitRows = page.locator(".limits-list .setting-row");
+  const limitTops = await limitRows.evaluateAll((rows) => rows.slice(0, 4).map((row) => Math.round(row.getBoundingClientRect().top)));
+  expect(new Set(limitTops).size).toBe(1);
+
+  await page.getByRole("button", { name: "Local API" }).click();
+  const accessTops = await page.locator(".compact-parameters > div").evaluateAll((rows) => rows.map((row) => Math.round(row.getBoundingClientRect().top)));
+  expect(new Set(accessTops).size).toBe(1);
+
+  await page.getByRole("button", { name: "Routes" }).click();
+  const routeTops = await page.locator(".route-client-grid .route-row").evaluateAll((rows) => rows.map((row) => Math.round(row.getBoundingClientRect().top)));
+  expect(routeTops[0]).toBe(routeTops[1]);
+  expect(routeTops[2]).toBe(routeTops[3]);
+  expect(routeTops[2]).toBeGreaterThan(routeTops[0]);
+
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+  expect(overflow).toBe(false);
+});
+
 test("probe response is displayed as formatted JSON", async ({ page }, testInfo) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Providers" }).click();

@@ -215,10 +215,10 @@ function Overview({ status, usage, t }: { status: Status | null; usage: UsageRep
         <Metric label={t("requests")} value={String(usage?.total.requests || 0)} note={usage?.total.incomplete ? t("incomplete") : t("success")} icon={Activity} />
         <Metric label={t("tokens")} value={tokens.toLocaleString()} note={`${usage?.total.success || 0} ${t("success")}`} icon={Database} />
       </div>
-      <div className="rows"><div className="data-row"><strong>{t("logging")}</strong><State value={status.logging_enabled ? "enabled" : "disabled"} /></div><div className="data-row"><strong>{t("bodyLogging")}</strong><State value={status.logging_enabled && status.logging_body_enabled !== false ? "enabled" : "disabled"} /></div><div className="data-row"><strong>{t("autostart")}</strong><State value={status.autostart_enabled ? "enabled" : "disabled"} /></div></div>
+      <div className="rows overview-statuses"><div className="data-row"><strong>{t("logging")}</strong><State value={status.logging_enabled ? "enabled" : "disabled"} /></div><div className="data-row"><strong>{t("bodyLogging")}</strong><State value={status.logging_enabled && status.logging_body_enabled !== false ? "enabled" : "disabled"} /></div><div className="data-row"><strong>{t("autostart")}</strong><State value={status.autostart_enabled ? "enabled" : "disabled"} /></div></div>
     </section>
     <section><SectionHeader title={t("clientRoutes")} />
-      <div className="rows">{allClients.map((client) => <div className="data-row" key={client}><strong className="mono">{client}</strong><span className="mono">{catalogId(status.routes[client])}</span>{client === "generic" ? <State value="api" /> : <State value={status.clients[client].point_state} />}</div>)}</div>
+      <div className="rows overview-routes">{allClients.map((client) => <div className="data-row" key={client}><strong className="mono">{client}</strong><span className="mono">{catalogId(status.routes[client])}</span>{client === "generic" ? <State value="api" /> : <State value={status.clients[client].point_state} />}</div>)}</div>
     </section>
   </>;
 }
@@ -237,7 +237,7 @@ function LocalAccessPage({ access, t, notify }: { access: LocalAccess; t: (key: 
   return <>
     <section>
       <SectionHeader title={t("connectionParameters")} description={t("localAccessDescription")} />
-      <dl className="access-parameters">
+      <dl className="access-parameters compact-parameters">
         <AccessValue label={t("baseURL")} value={access.base_url} onCopy={copyValue} t={t} />
         <AccessValue label={t("apiKeyPlaceholder")} value={access.api_key} note={access.auth_required ? t("authenticationRequired") : t("authenticationOptional")} onCopy={copyValue} t={t} />
         <AccessValue label={t("defaultModel")} value={access.default_model} note={`${t("defaultRoute")}: ${catalogId(access.default_route)}`} onCopy={copyValue} t={t} />
@@ -337,11 +337,11 @@ function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (k
     <form id="provider-form" className="form-panel provider-form" onSubmit={submit} noValidate>
       <div className="form-actions editor-actions"><button type="button" className="secondary" onClick={() => setOpen(false)}>{t("cancel")}</button><button className="primary" type="submit"><Save size={16} />{t("save")}</button></div>
       <div className="form-grid">
-      <Field label={t("identifier")} error={errors.id}><input value={form.id} disabled={Boolean(editing)} onChange={(e) => setForm({ ...form, id: e.target.value })} /></Field>
-      <Field label={t("name")} error={errors.name}><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
-      <Field label={t("baseURL")} error={errors.base_url} wide><input type="url" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} /></Field>
-      <Field label={t("modelsURL")} error={errors.models_url} wide><input type="url" value={form.models_url} placeholder={t("modelsURLPlaceholder")} onChange={(e) => setForm({ ...form, models_url: e.target.value })} /></Field>
-      <Field label={t("apiKey")} wide><input type="password" autoComplete="new-password" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} placeholder={editing ? t("keepKey") : "sk-…"} /></Field>
+      <Field label={t("identifier")} error={errors.id} className="field-id"><input value={form.id} disabled={Boolean(editing)} onChange={(e) => setForm({ ...form, id: e.target.value })} /></Field>
+      <Field label={t("name")} error={errors.name} className="field-name"><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+      <Field label={t("baseURL")} error={errors.base_url} className="field-base-url"><input type="url" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} /></Field>
+      <Field label={t("modelsURL")} error={errors.models_url} className="field-models-url"><input type="url" value={form.models_url} placeholder={t("modelsURLPlaceholder")} onChange={(e) => setForm({ ...form, models_url: e.target.value })} /></Field>
+      <Field label={t("apiKey")} className="field-api-key"><input type="password" autoComplete="new-password" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} placeholder={editing ? t("keepKey") : "sk-…"} /></Field>
     </div>
     <div className="header-editor disguise-editor"><div className="header-editor-title"><div><h3>{t("disguiseClient")}</h3><p>{t("disguiseClientDescription")}</p></div>
       <label className="field disguise-select"><span>{t("disguiseClient")}</span><select aria-label={t("disguiseClient")} value={form.disguise_client} onChange={(event) => setForm({ ...form, disguise_client: event.target.value as DisguiseClient })}><option value="">{t("disguiseClientOff")}</option><option value="claude">{t("disguiseClientClaude")}</option><option value="codex">{t("disguiseClientCodex")}</option></select></label>
@@ -370,7 +370,7 @@ function formatProbeResponse(value?: string): string {
   }
 }
 
-function Field({ label, error, wide, children }: { label: string; error?: string; wide?: boolean; children: React.ReactNode }) { return <label className={wide ? "field wide" : "field"}><span>{label}</span>{children}{error && <small className="field-error">{error.replaceAll("_", " ")}</small>}</label>; }
+function Field({ label, error, wide, className, children }: { label: string; error?: string; wide?: boolean; className?: string; children: React.ReactNode }) { return <label className={["field", wide ? "wide" : "", className || ""].filter(Boolean).join(" ")}><span>{label}</span>{children}{error && <small className="field-error">{error.replaceAll("_", " ")}</small>}</label>; }
 
 function Routes({ status, providers, t, run }: { status: Status; providers: Provider[]; t: (key: MessageKey) => string; run: RunOperation }) {
   const catalog = useMemo(() => enabledCatalog(providers), [providers]);
@@ -395,7 +395,7 @@ function Routes({ status, providers, t, run }: { status: Status; providers: Prov
     void run(() => api.updateRoute(client, next), t("success"), ["status", "config"]);
   };
   return <section><SectionHeader title={t("routes")} description={t("routesDescription")} />
-    <div className="route-clients primary-route-block"><h3>{t("clientRoutes")}</h3><p className="muted">{t("clientRoutesDescription")}</p><div className="route-list">{allClients.map((client) => {
+      <div className="route-clients primary-route-block"><h3>{t("clientRoutes")}</h3><p className="muted">{t("clientRoutesDescription")}</p><div className="route-list route-client-grid">{allClients.map((client) => {
       const currentKnown = isCatalogRoute(draft[client], catalog);
       const currentId = currentKnown ? catalogId(draft[client]) : "";
       const savedId = catalogId(status.routes[client]);

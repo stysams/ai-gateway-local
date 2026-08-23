@@ -8,6 +8,14 @@
 
 > 当前状态：第一期已验收（带遗留问题），第二期优化已启动。未完成的真实验收证据和延期问题保留在 [`docs/progress.md`](docs/progress.md) 第 12、13 节。
 
+## 最新更新
+
+### 2026-08-23
+
+- 桌面管理界面提高宽屏空间利用率，同组设置、连接参数和客户端路由会在空间充足时横向排列；窄屏仍自动回落为适合阅读和操作的布局。
+
+[查看完整发布说明](docs/releases/release-notes.md)
+
 ## 功能概览
 
 - 支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages。
