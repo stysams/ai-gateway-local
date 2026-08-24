@@ -73,7 +73,8 @@ func (l Limits) RequestBodyBytesValue() int {
 // Desktop writes these through dedicated management endpoints, never by
 // editing the client files directly.
 type Clients struct {
-	Codex CodexClient `yaml:"codex,omitempty"`
+	Codex  CodexClient  `yaml:"codex,omitempty"`
+	Claude ClaudeClient `yaml:"claude,omitempty"`
 }
 
 // CodexClient is the Codex-only preference block.
@@ -81,11 +82,20 @@ type CodexClient struct {
 	// RemoteCompaction, when true, makes a pointed Codex config advertise
 	// the provider display name "OpenAI" so Codex sends
 	// POST /responses/compact to the gateway (docs/v1-scheme.md §12.3).
-	RemoteCompaction *bool `yaml:"remote_compaction,omitempty"`
+	RemoteCompaction *bool  `yaml:"remote_compaction,omitempty"`
+	SubagentModel    string `yaml:"subagent_model,omitempty"`
+	TitleModel       string `yaml:"title_model,omitempty"`
 }
 
 func (c CodexClient) RemoteCompactionValue() bool {
 	return c.RemoteCompaction != nil && *c.RemoteCompaction
+}
+
+// ClaudeClient controls the Claude Code model aliases that are written while
+// the client is pointed at the gateway.
+type ClaudeClient struct {
+	SubagentModel string `yaml:"subagent_model,omitempty"`
+	TitleModel    string `yaml:"title_model,omitempty"`
 }
 
 // Listen configures the shared HTTP listener. The management API remains

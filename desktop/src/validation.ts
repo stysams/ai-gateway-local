@@ -2,7 +2,7 @@ import { isModelAdapter, isWireAdapter, validateCustomEndpoint } from "./endpoin
 import type { ProviderModel } from "./types";
 
 export interface RequestHeader { name: string; value: string }
-export type DisguiseClient = "" | "claude" | "codex";
+export type DisguiseClient = "" | "claude" | "codex" | "pi";
 export interface ProviderFormValue { id: string; name: string; adapter: string; base_url: string; models_url?: string; extra_headers: RequestHeader[]; disguise_client: DisguiseClient; default_model: string; models: ProviderModel[]; api_key: string }
 
 const headerNamePattern = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
@@ -14,7 +14,7 @@ export function validateProvider(value: ProviderFormValue, editing = false): Rec
   if (!value.name.trim()) errors.name = "required";
   if (!value.default_model.trim()) errors.default_model = "required";
   if (!isWireAdapter(value.adapter)) errors.adapter = "invalid_adapter";
-  if (value.disguise_client && !["claude", "codex"].includes(value.disguise_client)) errors.disguise_client = "invalid_disguise_client";
+  if (value.disguise_client && !["claude", "codex", "pi"].includes(value.disguise_client)) errors.disguise_client = "invalid_disguise_client";
   const headerNames = new Set<string>();
   value.extra_headers.forEach((header, index) => {
     const name = header.name.trim();

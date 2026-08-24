@@ -1,12 +1,17 @@
 # Install, operate, and restore
 
+The current version baseline is `0.1.0-rc1` for Windows amd64. The existing
+archive and its verified checksum are recorded in `docs/progress.md` and
+`docs/releases/release-notes.md`. This guide documents that version and does
+not define a later release plan.
+
 ## Windows release package
 
 Build the release archive from a Windows PowerShell session at the repository
 root:
 
 ```powershell
-.\scripts\build-release.ps1 -Version 0.1.0 -Commit <commit-id>
+.\scripts\build-release.ps1 -Version 0.1.0-rc1 -Commit <commit-id>
 ```
 
 The archive under `dist/` contains:
@@ -125,7 +130,7 @@ systemd unit. Build the desktop natively on those systems because Wails needs
 the target WebView/GTK toolchain:
 
 ```powershell
-.\scripts\build-desktop.ps1 -Version 0.1.0 -Commit <commit-id>
+.\scripts\build-desktop.ps1 -Version 0.1.0-rc1 -Commit <commit-id>
 ```
 
 From Windows, `scripts/build-cross.ps1` produces tested headless binaries for
@@ -221,6 +226,6 @@ installation without `autostart off` leaves a stale task that `doctor` will
 report.
 
 The 2026-08-22 product decision accepted phase 1 with residual issues. The
-original twenty-step Windows evidence remains in `docs/progress.md` §12-13;
-the installed-client, real-provider, tray, and logoff/login checks are deferred
-for concentrated follow-up and do not block phase-2 optimization work.
+original twenty-step Windows evidence remains in `docs/progress.md` §12-13.
+The installed-client, real-provider, tray, and logoff/login checks remain
+historical residuals of `0.1.0-rc1`; they do not define another release plan.

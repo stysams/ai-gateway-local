@@ -338,6 +338,59 @@ func TestCodexRemoteCompactionAPI(t *testing.T) {
 	}
 }
 
+func TestClientHelperModelsAPI(t *testing.T) {
+	s := newTestServer(t)
+	ts := httptest.NewServer(s.routes())
+	defer ts.Close()
+
+	selected := "openrouter/anthropic/claude-sonnet-4"
+	resp, body := httpJSON(t, ts.Listener.Addr().String(), http.MethodPut, "/api/v1/clients/codex/helper-models", map[string]any{
+		"subagent_model": selected,
+		"title_model":    "ollama/qwen3",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("set Codex helper models = %d %s", resp.StatusCode, body)
+	}
+	var status point.Status
+	if err := json.Unmarshal(body, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.SubagentModel != selected || status.TitleModel != "ollama/qwen3" {
+		t.Fatalf("Codex helper models = %+v", status)
+	}
+	cfg := s.cfg.View()
+	if cfg.Clients.Codex.SubagentModel != selected || cfg.Clients.Codex.TitleModel != "ollama/qwen3" {
+		t.Fatalf("persisted Codex settings = %+v", cfg.Clients.Codex)
+	}
+
+	resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPut, "/api/v1/clients/claude/helper-models", map[string]any{
+		"subagent_model": "gateway-default",
+		"title_model":    "",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("set Claude helper models = %d %s", resp.StatusCode, body)
+	}
+	if cfg = s.cfg.View(); cfg.Clients.Claude.SubagentModel != "" || cfg.Clients.Claude.TitleModel != "" {
+		t.Fatalf("gateway-default was not normalized: %+v", cfg.Clients.Claude)
+	}
+
+	resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPut, "/api/v1/clients/codex/helper-models", map[string]any{
+		"subagent_model": "missing/model",
+		"title_model":    "ollama/qwen3",
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid helper model = %d %s", resp.StatusCode, body)
+	}
+
+	resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPut, "/api/v1/clients/grok/helper-models", map[string]any{
+		"subagent_model": "",
+		"title_model":    "",
+	})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("Grok helper models = %d %s", resp.StatusCode, body)
+	}
+}
+
 func clientJSON(t *testing.T, server *httptest.Server, method, path string) (*http.Response, []byte) {
 	t.Helper()
 	req, err := http.NewRequest(method, server.URL+path, nil)

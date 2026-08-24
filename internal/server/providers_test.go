@@ -590,6 +590,14 @@ func TestProviderDisguiseClientRoundTrip(t *testing.T) {
 	if got := s.cfg.Snapshot().Providers["masked"].DisguiseClient; got != config.DisguiseClientClaude {
 		t.Fatalf("persisted disguise_client = %q", got)
 	}
+	req["disguise_client"] = "pi"
+	resp, data = httpJSON(t, addr, http.MethodPut, "/api/v1/providers/masked", req)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Pi disguise status = %d body=%s", resp.StatusCode, data)
+	}
+	if got := s.cfg.Snapshot().Providers["masked"].DisguiseClient; got != config.DisguiseClientPi {
+		t.Fatalf("persisted Pi disguise_client = %q", got)
+	}
 	req["disguise_client"] = "gpt"
 	resp, data = httpJSON(t, addr, http.MethodPut, "/api/v1/providers/masked", req)
 	if resp.StatusCode != http.StatusBadRequest {

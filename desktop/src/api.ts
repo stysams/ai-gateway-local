@@ -49,6 +49,7 @@ export const api = {
   client: (client: PointClient) => request<PointStatus>(`/api/v1/clients/${client}`),
   point: (client: PointClient) => request<PointStatus>(`/api/v1/clients/${client}/point`, { method: "POST" }),
   setCodexRemoteCompaction: (enabled: boolean) => request<PointStatus>("/api/v1/clients/codex/remote-compaction", { method: "PUT", body: JSON.stringify({ enabled }) }),
+  setClientHelperModels: (client: "codex" | "claude", subagentModel: string, titleModel: string) => request<PointStatus>(`/api/v1/clients/${client}/helper-models`, { method: "PUT", body: JSON.stringify({ subagent_model: subagentModel, title_model: titleModel }) }),
   restore: (client: PointClient) => request<PointStatus>(`/api/v1/clients/${client}/restore`, { method: "POST" }),
   logs: (cursor?: string) => {
     const query = new URLSearchParams({ limit: "20" });

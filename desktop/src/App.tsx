@@ -12,7 +12,7 @@ import { ClientsIcon, GatewayMark, LogsIcon, OverviewIcon, ProvidersIcon, Routes
 import { api } from "./api";
 import { catalogId, enabledCatalog, isCatalogRoute, reconcileClientRoutes } from "./catalog";
 import { inferWire, isModelAdapter, joinCompletionURL, modelAdapters, presetPath } from "./endpoint";
-import { CLAUDE_CODE_HEADERS, CODEX_HEADERS, mergeHeaderPreset } from "./headerPresets";
+import { CLAUDE_CODE_HEADERS, CODEX_HEADERS, PI_HEADERS, mergeHeaderPreset } from "./headerPresets";
 import { translator, type Language, type MessageKey } from "./i18n";
 import type { ClientID, Config, LocalAccess, LogSummary, PointClient, PointStatus, Provider, ProviderModel, Route, Status, TokenUsage, UsageGroup, UsageReport } from "./types";
 import { validateProvider, type DisguiseClient, type ProviderFormValue } from "./validation";
@@ -243,7 +243,7 @@ export function App() {
             {page === "localAccess" && localAccess && <LocalAccessPage access={localAccess} t={t} notify={pushToast} />}
             {page === "providers" && <Providers providers={providers} t={t} run={run} notify={pushToast} />}
             {page === "routes" && status && <Routes status={status} providers={providers} t={t} run={run} />}
-            {page === "clients" && <Clients clients={clients} t={t} run={run} />}
+            {page === "clients" && <Clients clients={clients} providers={providers} t={t} run={run} />}
             {page === "logs" && config && <Logs items={logs} hasMore={Boolean(logCursor)} loadMore={loadMoreLogs} enabled={config.logging.enabled} body={config.logging.body !== false} redact={config.logging.redact !== false} t={t} run={run} notify={pushToast} />}
             {page === "usage" && <Usage usage={usage} providers={providers} t={t} onQuery={queryUsage} />}
             {page === "settings" && config && <SettingsPage config={config} language={language} theme={theme} setLanguage={setLanguage} setTheme={setTheme} t={t} run={run} />}
@@ -349,7 +349,7 @@ function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (k
   const edit = (p: Provider) => {
     const models = (p.models?.length ? p.models : [{ id: p.default_model, name: "" }]).map((model) => ({ id: model.id, name: model.name, adapter: modelAdapter(model, p.adapter), endpoint: model.endpoint, enabled: model.enabled }));
     const extra_headers = Object.entries(p.extra_headers || {}).sort(([left], [right]) => left.localeCompare(right)).map(([name, value]) => ({ name, value }));
-    const disguise_client: DisguiseClient = p.disguise_client === "claude" || p.disguise_client === "codex" ? p.disguise_client : "";
+    const disguise_client: DisguiseClient = p.disguise_client === "claude" || p.disguise_client === "codex" || p.disguise_client === "pi" ? p.disguise_client : "";
     setEditing(p.id); setForm({ id: p.id, name: p.name, adapter: p.adapter || "openai-chat", base_url: p.base_url, models_url: p.models_url || "", extra_headers, disguise_client, default_model: p.default_model, models, api_key: "" }); setErrors({}); setOpen(true);
   };
   const updateHeader = (index: number, patch: Partial<ProviderFormValue["extra_headers"][number]>) => setForm((current) => ({ ...current, extra_headers: current.extra_headers.map((header, headerIndex) => headerIndex === index ? { ...header, ...patch } : header) }));
@@ -421,9 +421,9 @@ function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (k
       <Field label={t("apiKey")} className="field-api-key"><input type="password" autoComplete="new-password" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} placeholder={editing ? t("keepKey") : "sk-…"} /></Field>
     </div>
     <div className="header-editor disguise-editor"><div className="header-editor-title"><div><h3>{t("disguiseClient")}</h3><p>{t("disguiseClientDescription")}</p></div>
-      <label className="field disguise-select"><span>{t("disguiseClient")}</span><select aria-label={t("disguiseClient")} value={form.disguise_client} onChange={(event) => setForm({ ...form, disguise_client: event.target.value as DisguiseClient })}><option value="">{t("disguiseClientOff")}</option><option value="claude">{t("disguiseClientClaude")}</option><option value="codex">{t("disguiseClientCodex")}</option></select></label>
+      <label className="field disguise-select"><span>{t("disguiseClient")}</span><select aria-label={t("disguiseClient")} value={form.disguise_client} onChange={(event) => setForm({ ...form, disguise_client: event.target.value as DisguiseClient })}><option value="">{t("disguiseClientOff")}</option><option value="claude">{t("disguiseClientClaude")}</option><option value="codex">{t("disguiseClientCodex")}</option><option value="pi">{t("disguiseClientPi")}</option></select></label>
     </div></div>
-    <div className="header-editor"><div className="header-editor-title"><div><h3>{t("customHeaders")}</h3><p>{t("customHeadersDescription")}</p></div><div className="header-editor-actions"><button type="button" className="secondary" onClick={() => setForm((current) => ({ ...current, extra_headers: mergeHeaderPreset(current.extra_headers, CLAUDE_CODE_HEADERS) }))}><Plus size={15} />{t("applyPreset")} Claude Code</button><button type="button" className="secondary" onClick={() => setForm((current) => ({ ...current, extra_headers: mergeHeaderPreset(current.extra_headers, CODEX_HEADERS) }))}><Plus size={15} />{t("applyPreset")} Codex</button><button type="button" className="secondary" onClick={() => setForm((current) => ({ ...current, extra_headers: [...current.extra_headers, { name: "", value: "" }] }))}><Plus size={15} />{t("addHeader")}</button></div></div>
+    <div className="header-editor"><div className="header-editor-title"><div><h3>{t("customHeaders")}</h3><p>{t("customHeadersDescription")}</p></div><div className="header-editor-actions"><button type="button" className="secondary" onClick={() => setForm((current) => ({ ...current, extra_headers: mergeHeaderPreset(current.extra_headers, CLAUDE_CODE_HEADERS) }))}><Plus size={15} />{t("applyPreset")} Claude Code</button><button type="button" className="secondary" onClick={() => setForm((current) => ({ ...current, extra_headers: mergeHeaderPreset(current.extra_headers, CODEX_HEADERS) }))}><Plus size={15} />{t("applyPreset")} Codex</button><button type="button" className="secondary" onClick={() => setForm((current) => ({ ...current, extra_headers: mergeHeaderPreset(current.extra_headers, PI_HEADERS) }))}><Plus size={15} />{t("applyPreset")} Pi</button><button type="button" className="secondary" onClick={() => setForm((current) => ({ ...current, extra_headers: [...current.extra_headers, { name: "", value: "" }] }))}><Plus size={15} />{t("addHeader")}</button></div></div>
       {form.extra_headers.length === 0 ? <div className="header-empty">{t("noCustomHeaders")}</div> : <div className="header-rows" role="table" aria-label={t("customHeaders")}><div className="header-row header-row-head" role="row"><span>{t("headerName")}</span><span>{t("headerValue")}</span><span /></div>{form.extra_headers.map((header, index) => <div className="header-row" role="row" key={`header-row-${index}`}><label><span>{t("headerName")}</span><input className="mono" value={header.name} onChange={(event) => updateHeader(index, { name: event.target.value })} aria-invalid={Boolean(errors[`extra_headers.${index}.name`])} />{errors[`extra_headers.${index}.name`] && <small className="field-error">{errors[`extra_headers.${index}.name`].replaceAll("_", " ")}</small>}</label><label><span>{t("headerValue")}</span><input className="mono" value={header.value} onChange={(event) => updateHeader(index, { value: event.target.value })} aria-invalid={Boolean(errors[`extra_headers.${index}.value`])} />{errors[`extra_headers.${index}.value`] && <small className="field-error">{errors[`extra_headers.${index}.value`].replaceAll("_", " ")}</small>}</label><button type="button" className="icon-button compact danger" onClick={() => removeHeader(index)} title={t("removeHeader")} aria-label={`${t("removeHeader")} ${header.name || index + 1}`}><Trash2 size={15} /></button></div>)}</div>}
     </div><div className="model-catalog"><div className="model-catalog-header"><div><h3>{t("modelCatalog")}</h3><p>{t("modelCatalogDescription")}</p><p className="catalog-hint">{t("claude1mHint")}</p></div><button type="button" className="secondary" onClick={() => void fetchModels()} disabled={fetching}><RefreshCw size={15} className={fetching ? "spin" : ""} />{fetching ? t("fetchingModels") : t("fetchModels")}</button></div>
       {errors.default_model && <small className="field-error catalog-error">{errors.default_model.replaceAll("_", " ")}</small>}
@@ -484,8 +484,46 @@ function Routes({ status, providers, t, run }: { status: Status; providers: Prov
   </section>;
 }
 
-function Clients({ clients, t, run }: { clients: Record<string, PointStatus>; t: (key: MessageKey) => string; run: RunOperation }) {
-  return <section><SectionHeader title={t("clients")} hideTitle description={t("clientsDescription")} /><div className="client-list">{pointClients.map((client) => { const value = clients[client]; return <article className="client-item" key={client}><div className="client-main"><div className="client-title"><div className="client-icon"><ClientsIcon size={18} /></div><div><h3>{client}</h3><State value={value?.point_state || "unknown"} /></div></div><dl><dt>{t("target")}</dt><dd className="mono">{value?.target || "—"}</dd></dl><div className="client-actions"><button className="primary" disabled={value?.point_state === "pointed" || value?.point_state === "client_not_installed"} onClick={() => { if (confirm(t("confirmPoint"))) void run(() => api.point(client), t("success"), ["clients", "status"]); }}><Cable size={16} />{t("point")}</button><button className="secondary" disabled={!value?.backup_available} onClick={() => { if (confirm(t("confirmRestore"))) void run(() => api.restore(client), t("success"), ["clients", "status"]); }}><RotateCcw size={16} />{t("restore")}</button></div></div>{value?.message && <p className="client-message muted">{value.message}</p>}{client === "codex" && <details className="client-advanced" open><summary>{t("advancedSettings")}</summary><div className="client-option"><label className="switch"><input type="checkbox" checked={Boolean(value?.remote_compaction)} onChange={(event) => void run(() => api.setCodexRemoteCompaction(event.target.checked), t("success"), ["clients", "status"])} aria-label={t("remoteCompaction")} /><span /><b>{t("remoteCompaction")}</b></label><p className="muted">{t("remoteCompactionHint")}</p></div></details>}</article>; })}</div></section>;
+function Clients({ clients, providers, t, run }: { clients: Record<string, PointStatus>; providers: Provider[]; t: (key: MessageKey) => string; run: RunOperation }) {
+  const catalog = useMemo(() => enabledCatalog(providers), [providers]);
+  return <section><SectionHeader title={t("clients")} hideTitle description={t("clientsDescription")} /><div className="client-list">{pointClients.map((client) => {
+    const value = clients[client];
+    return <article className="client-item" key={client}>
+      <div className="client-main">
+        <div className="client-title"><div className="client-icon"><ClientsIcon size={18} /></div><div><h3>{client}</h3><State value={value?.point_state || "unknown"} /></div></div>
+        <dl><dt>{t("target")}</dt><dd className="mono">{value?.target || "—"}</dd></dl>
+        <div className="client-actions"><button className="primary" disabled={value?.point_state === "pointed" || value?.point_state === "client_not_installed"} onClick={() => { if (confirm(t("confirmPoint"))) void run(() => api.point(client), t("success"), ["clients", "status"]); }}><Cable size={16} />{t("point")}</button><button className="secondary" disabled={!value?.backup_available} onClick={() => { if (confirm(t("confirmRestore"))) void run(() => api.restore(client), t("success"), ["clients", "status"]); }}><RotateCcw size={16} />{t("restore")}</button></div>
+      </div>
+      {value?.message && <p className="client-message muted">{value.message}</p>}
+      {(client === "codex" || client === "claude") && <ClientAdvancedSettings key={`${client}:${value?.subagent_model || ""}:${value?.title_model || ""}`} client={client} value={value} catalog={catalog} t={t} run={run} />}
+    </article>;
+  })}</div></section>;
+}
+
+function ClientAdvancedSettings({ client, value, catalog, t, run }: { client: "codex" | "claude"; value?: PointStatus; catalog: ReturnType<typeof enabledCatalog>; t: (key: MessageKey) => string; run: RunOperation }) {
+  const savedSubagent = value?.subagent_model || "";
+  const savedTitle = value?.title_model || "";
+  const [subagentModel, setSubagentModel] = useState(savedSubagent);
+  const [titleModel, setTitleModel] = useState(savedTitle);
+  const dirty = subagentModel !== savedSubagent || titleModel !== savedTitle;
+  const options = (selected: string) => <>
+    <option value="">{t("followCurrentRoute")}</option>
+    {selected && !catalog.some((item) => item.id === selected) && <option value={selected} disabled>{selected} ({t("helperModelUnavailable")})</option>}
+    {catalog.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}
+  </>;
+  return <details className="client-advanced" open>
+    <summary>{t("advancedSettings")}</summary>
+    <div className="client-advanced-content">
+      {client === "codex" && <div className="client-option"><label className="switch"><input type="checkbox" checked={Boolean(value?.remote_compaction)} onChange={(event) => void run(() => api.setCodexRemoteCompaction(event.target.checked), t("success"), ["clients", "status"])} aria-label={t("remoteCompaction")} /><span /><b>{t("remoteCompaction")}</b></label><p className="muted">{t("remoteCompactionHint")}</p></div>}
+      <div className="client-helper-settings">
+        <div className="client-helper-grid">
+          <label className="client-helper-field"><span>{t("subagentModel")}</span><select className="mono" value={subagentModel} onChange={(event) => setSubagentModel(event.target.value)} aria-label={`${client} ${t("subagentModel")}`}>{options(subagentModel)}</select></label>
+          <label className="client-helper-field"><span>{t("titleModel")}</span><select className="mono" value={titleModel} onChange={(event) => setTitleModel(event.target.value)} aria-label={`${client} ${t("titleModel")}`}>{options(titleModel)}</select></label>
+        </div>
+        <div className="client-helper-footer"><p className="muted">{t(client === "codex" ? "codexHelperModelsHint" : "claudeHelperModelsHint")}</p><button className="secondary" disabled={!dirty} onClick={() => void run(() => api.setClientHelperModels(client, subagentModel, titleModel), t("success"), ["clients", "status"])}><Save size={15} />{t("apply")}</button></div>
+      </div>
+    </div>
+  </details>;
 }
 
 async function copyText(value: string) {

@@ -1,7 +1,7 @@
 import type { RequestHeader } from "./validation";
 
 // Keep these values aligned with internal/server/disguise.go. They were
-// verified against Claude Code 2.1.228 and Codex CLI 0.147.0.
+// verified against Claude Code 2.1.228, Codex CLI 0.147.0 and Pi 0.84.2.
 
 export const CLAUDE_CODE_HEADERS: RequestHeader[] = [
   { name: "User-Agent", value: "claude-cli/2.1.228 (external, cli)" },
@@ -18,6 +18,10 @@ export const CODEX_HEADERS: RequestHeader[] = [
   { name: "Originator", value: "codex_cli_rs" },
 ];
 
+export const PI_HEADERS: RequestHeader[] = [
+  { name: "User-Agent", value: "Pi Agent/1.0" },
+];
+
 export function presetForAdapter(adapter: string): { label: "Claude Code" | "Codex"; headers: RequestHeader[] } {
   return adapter === "anthropic"
     ? { label: "Claude Code", headers: CLAUDE_CODE_HEADERS }
@@ -25,6 +29,6 @@ export function presetForAdapter(adapter: string): { label: "Claude Code" | "Cod
 }
 
 export function mergeHeaderPreset(current: RequestHeader[], preset: RequestHeader[]): RequestHeader[] {
-  const presetNames = new Set([...CLAUDE_CODE_HEADERS, ...CODEX_HEADERS].map((header) => header.name.toLowerCase()));
+  const presetNames = new Set([...CLAUDE_CODE_HEADERS, ...CODEX_HEADERS, ...PI_HEADERS].map((header) => header.name.toLowerCase()));
   return [...current.filter((header) => !presetNames.has(header.name.trim().toLowerCase())), ...preset.map((header) => ({ ...header }))];
 }

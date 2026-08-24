@@ -1,7 +1,7 @@
 # ai-gateway 代码地图
 
-> 给后续 Grok / Agent 按任务找文件用。  
-> 进度和下一步见 [progress.md](progress.md)。  
+> 当前版本文件地图。
+> 版本状态和历史验收见 [progress.md](progress.md)。
 > 行为合同见 [v1-scheme.md](v1-scheme.md)。  
 > 改代码前先读源码注释里引用的规格小节。
 
@@ -32,7 +32,7 @@
 | 入站协议外形 | `internal/inbound/{chat,responses,messages}` | `Parse` / `ParseRequest` / `Encode*` / `WriteError` |
 | 出站协议外形与上游 HTTP | `internal/outbound/{openaichat,openairesponses,anthropic}` | `outbound/internal/upstream` |
 | 入站 `Anthropic-Beta` 与 `extra_headers` 并集 | `server/anthropicbeta.go` `mergeInboundAnthropicBeta` | `dataplane.go` 组 `providerInfo` 时调用 |
-| 供应商伪装客户端 | `config.Provider.DisguiseClient`；`server/disguise.go`；`inbound/messages` `ApplyClaudeDisguise` | `dataplane.go` `outboundExtraHeaders`；桌面供应商表单 |
+| 供应商伪装客户端（Claude Code、Codex、Pi） | `config.Provider.DisguiseClient`；`server/disguise.go`；`inbound/messages` `ApplyClaudeDisguise` | `dataplane.go` `outboundExtraHeaders`；桌面供应商表单与 `headerPresets.ts` |
 | 图片 / reasoning / context_management 门 | `dataplane.go` `inspectRequestFeatures`、`normalizeReasoning`、`Drop*` | 各 inbound 的 `InspectFeatures` / `DropReasoning` |
 | 钥匙读写与事务 | `internal/secret/` | `internal/server/providers.go`（§6.3） |
 | 指向 / 还原 / 漂移 | `internal/point/point.go` | `point/{codex,claude,grok}`、`point/clientcatalog` |

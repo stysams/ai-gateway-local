@@ -17,8 +17,9 @@ One Go module (`ai-gateway`), two publishable binaries: `ai-gateway`
 
 ## docs/v1-scheme.md is the contract
 
-`docs/progress.md` (Simplified Chinese) is the phase-1 progress and handoff
-for the next agent. Read it before starting work. `docs/code-map.md` is the
+`docs/progress.md` (Simplified Chinese) is the current `0.1.0-rc1` version
+record and historical acceptance log. Read it before starting work.
+`docs/code-map.md` is the
 file-by-file map: look up the change you want, then open those paths.
 `docs/v1-scheme.md` is the
 frozen engineering contract, and it wins over the implementation when they
@@ -236,7 +237,7 @@ inbound protocol's native error shape; management errors use the
 - `docs/v1-scheme.md` §19 defines the real-client Windows acceptance run that
   mocks cannot substitute. The 2026-08-22 product decision accepted phase 1
   with residual issues; the original evidence remains in `docs/progress.md`
-  §12-13 and does not block phase-2 work.
+  §12-13 as a historical record and does not create another release plan.
 
 ## Repo notes
 

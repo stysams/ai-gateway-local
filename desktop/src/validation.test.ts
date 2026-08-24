@@ -6,6 +6,10 @@ describe("validateProvider", () => {
     expect(validateProvider({ id: "openai-main", name: "OpenAI", adapter: "openai-responses", base_url: "https://api.openai.com/v1", extra_headers: [], disguise_client: "", default_model: "gpt-5", models: [{ id: "gpt-5", name: "GPT-5" }], api_key: "" })).toEqual({});
   });
 
+  it("accepts Pi client disguise", () => {
+    expect(validateProvider({ id: "openai-main", name: "OpenAI", adapter: "openai-chat", base_url: "https://api.openai.com/v1", extra_headers: [], disguise_client: "pi", default_model: "gpt-5", models: [{ id: "gpt-5" }], api_key: "" })).toEqual({});
+  });
+
   it("reports each invalid field", () => {
     const errors = validateProvider({ id: "Bad ID", name: "", adapter: "other", base_url: "file:///tmp", extra_headers: [], disguise_client: "gpt" as never, default_model: "", models: [], api_key: "" });
     expect(Object.keys(errors).sort()).toEqual(["adapter", "base_url", "default_model", "disguise_client", "id", "name"]);

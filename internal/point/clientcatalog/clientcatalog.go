@@ -42,6 +42,8 @@ type Settings struct {
 	PreferredModel   string
 	Catalog          []Entry
 	RemoteCompaction bool
+	SubagentModel    string
+	TitleModel       string
 }
 
 // Model returns the model name a client should start with. An unset preferred
@@ -53,9 +55,23 @@ func (s Settings) Model() string {
 	return ReservedModel
 }
 
+func (s Settings) SubagentModelValue() string {
+	if s.SubagentModel != "" {
+		return s.SubagentModel
+	}
+	return ReservedModel
+}
+
+func (s Settings) TitleModelValue() string {
+	if s.TitleModel != "" {
+		return s.TitleModel
+	}
+	return ReservedModel
+}
+
 // Equal reports whether two settings would produce the same client configuration.
 func (s Settings) Equal(other Settings) bool {
-	if s.PreferredModel != other.PreferredModel || s.RemoteCompaction != other.RemoteCompaction || len(s.Catalog) != len(other.Catalog) {
+	if s.PreferredModel != other.PreferredModel || s.RemoteCompaction != other.RemoteCompaction || s.SubagentModel != other.SubagentModel || s.TitleModel != other.TitleModel || len(s.Catalog) != len(other.Catalog) {
 		return false
 	}
 	for i, entry := range s.Catalog {

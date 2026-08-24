@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -66,6 +67,37 @@ func TestTransformIsIdempotent(t *testing.T) {
 	}
 	if string(first) != string(second) {
 		t.Errorf("repeated transform changed the file:\nfirst  %q\nsecond %q", first, second)
+	}
+}
+
+func TestTransformSeparatesStartupSubagentAndTitleModels(t *testing.T) {
+	settings := clientcatalog.Settings{
+		PreferredModel: clientcatalog.ReservedModel,
+		SubagentModel:  "openrouter/claude-opus-5",
+		TitleModel:     "ollama/qwen3",
+	}
+	out, err := Transform([]byte(`{}`), "http://127.0.0.1:12600", settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(out, &document); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL"} {
+		if got := document.Env[key]; got != settings.SubagentModel {
+			t.Errorf("%s = %q, want %q", key, got, settings.SubagentModel)
+		}
+	}
+	for _, key := range []string{"ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_SMALL_FAST_MODEL"} {
+		if got := document.Env[key]; got != settings.TitleModel {
+			t.Errorf("%s = %q, want %q", key, got, settings.TitleModel)
+		}
+	}
+	if got := document.Env["ANTHROPIC_MODEL"]; got != clientcatalog.ReservedModel {
+		t.Errorf("ANTHROPIC_MODEL = %q, want %q", got, clientcatalog.ReservedModel)
 	}
 }
 

@@ -13,12 +13,19 @@ import (
 
 const apiKeyPlaceholder = "sk-ai-gateway-local"
 
-// modelKeys are the single-value slots Claude Code reads for its startup model.
-var modelKeys = []string{
-	"ANTHROPIC_MODEL",
+// subagentModelKeys are the tier aliases Claude Code resolves for Agent tool
+// calls. The startup model remains independent in ANTHROPIC_MODEL.
+var subagentModelKeys = []string{
 	"ANTHROPIC_DEFAULT_OPUS_MODEL",
 	"ANTHROPIC_DEFAULT_SONNET_MODEL",
+	"ANTHROPIC_DEFAULT_FABLE_MODEL",
+}
+
+// titleModelKeys are the small/fast aliases Claude Code uses for title and
+// other inexpensive helper calls.
+var titleModelKeys = []string{
 	"ANTHROPIC_DEFAULT_HAIKU_MODEL",
+	"ANTHROPIC_SMALL_FAST_MODEL",
 }
 
 // discoveryKey makes Claude Code query the gateway for selectable models at
@@ -91,9 +98,12 @@ func targets(baseURL string, settings clientcatalog.Settings) []jsonedit.KV {
 		{Key: "ANTHROPIC_API_KEY", Value: apiKeyPlaceholder},
 		{Key: discoveryKey, Value: "1"},
 	}
-	preferred := settings.Model()
-	for _, key := range modelKeys {
-		out = append(out, jsonedit.KV{Key: key, Value: preferred})
+	out = append(out, jsonedit.KV{Key: "ANTHROPIC_MODEL", Value: settings.Model()})
+	for _, key := range subagentModelKeys {
+		out = append(out, jsonedit.KV{Key: key, Value: settings.SubagentModelValue()})
+	}
+	for _, key := range titleModelKeys {
+		out = append(out, jsonedit.KV{Key: key, Value: settings.TitleModelValue()})
 	}
 	return out
 }

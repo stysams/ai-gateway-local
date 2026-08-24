@@ -67,6 +67,7 @@ func (s *Server) routes() *http.ServeMux {
 	management.HandleFunc("POST /api/v1/clients/{client}/point", s.handlePointClient)
 	management.HandleFunc("POST /api/v1/clients/{client}/restore", s.handleRestoreClient)
 	management.HandleFunc("PUT /api/v1/clients/{client}/remote-compaction", s.handlePutClientRemoteCompaction)
+	management.HandleFunc("PUT /api/v1/clients/{client}/helper-models", s.handlePutClientHelperModels)
 	mux.Handle("/api/v1/", loopbackManagementOnly(management))
 	// Data plane (task package C): OpenAI Chat same-protocol forwarding.
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)

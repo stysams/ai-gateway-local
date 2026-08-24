@@ -236,6 +236,15 @@ ui:
 autostart:
   enabled: false
 
+clients:
+  codex:
+    remote_compaction: false
+    subagent_model: openrouter/anthropic/claude-sonnet-4
+    title_model: ollama/qwen3
+  claude:
+    subagent_model: openrouter/anthropic/claude-sonnet-4
+    title_model: ollama/qwen3
+
 providers:
   openrouter:
     name: OpenRouter
@@ -308,6 +317,14 @@ routes:
 - 限额错误使用入站协议的原生错误外形，错误代码为 `concurrency_limit`。请求完成、上游失败、流式客户端取消或连接关闭时必须释放全部已取得的槽位。
 - 限额按当前已发布配置读取；配置更新只影响下一次尝试取得槽位的请求，已经取得槽位的请求继续按原请求生命周期释放。
 
+#### `clients`
+
+- `codex.remote_compaction`：可选布尔值，缺省为关闭，语义见 §12.3。
+- `codex.subagent_model`、`codex.title_model`、`claude.subagent_model`、
+  `claude.title_model`：可选模型选择。空或缺省表示跟随对应客户端当前路由；非空值
+  使用完整 `<provider-id>/<model-id>`。管理 API 只允许写入当前已启用模型；配置中
+  已保存的模型后来失效时，运行时按 `gateway-default` 处理，不阻断辅助调用。
+
 #### `providers`
 
 - provider id 必须匹配 `^[a-z][a-z0-9_-]{0,31}$`。
@@ -315,7 +332,7 @@ routes:
 - `adapter`：只允许 `openai-chat`、`openai-responses`、`anthropic`。桌面不再单独提供供应商级适配器选项；保存时写入默认模型的协议，供模型发现、连接探测和未指定协议的模型回退。
 - `base_url`：必须是绝对 HTTP 或 HTTPS URL，不得包含查询字符串或片段。
 - `extra_headers`：可选的上游请求头名称到值映射，最多 64 项；用于正常请求、远程压缩、模型发现和连接探测。名称必须符合 HTTP 字段名语法，值不得包含换行或 NUL 字节。`Authorization`、`x-api-key`、Cookie、Host、Content-Length 和逐跳传输字段由网关管理，不允许配置。
-- `disguise_client`：可选。空或缺省表示关闭。只允许 `claude` 或 `codex`。开启后，仅当入站客户端是 `generic`（`/v1/*` 或 `/c/generic/v1/*`）时，网关在 adapter 默认头之后、`extra_headers` 之前套用已核验的对应客户端身份头。`disguise_client` 为 `claude` 且入站是 Messages 时，还要在转发前补齐 Claude Code 2.1.228 与这些身份头一起发送的正文字段：缺省则写入 `thinking: {type: adaptive}`（仅当 `capabilities.reasoning` 为真），并给缺少 `cache_control` 的顶层 `system` 文本块以及 `role: system` 消息补 `{"type":"ephemeral"}`。不得改写 tools、用户消息或系统文本，不得写入会话、安装或设备 `metadata`。已指向的 `claude`、`codex`、`grok` 请求不套用。连接探测和模型发现不套用。身份头不含会话、安装、窗口或系统环境标识。`extra_headers` 覆盖同名伪装头；`Anthropic-Beta` 按令牌并集。证据见 §20「2026-08-17 复核：第三方请求需要可开关的客户端伪装」和「2026-08-17 复核：Claude 伪装必须补齐 thinking 与系统 cache_control」。
+- `disguise_client`：可选。空或缺省表示关闭。只允许 `claude`、`codex` 或 `pi`。开启后，仅当入站客户端是 `generic`（`/v1/*` 或 `/c/generic/v1/*`）时，网关在 adapter 默认头之后、`extra_headers` 之前套用已核验的对应客户端身份头。`pi` 使用本机 Pi 0.84.2 供应商配置中的稳定身份头 `User-Agent: Pi Agent/1.0`。`disguise_client` 为 `claude` 且入站是 Messages 时，还要在转发前补齐 Claude Code 2.1.228 与这些身份头一起发送的正文字段：缺省则写入 `thinking: {type: adaptive}`（仅当 `capabilities.reasoning` 为真），并给缺少 `cache_control` 的顶层 `system` 文本块以及 `role: system` 消息补 `{"type":"ephemeral"}`。不得改写 tools、用户消息或系统文本，不得写入会话、安装或设备 `metadata`。已指向的 `claude`、`codex`、`grok` 请求不套用。连接探测和模型发现不套用。身份头不含会话、安装、窗口或系统环境标识。`extra_headers` 覆盖同名伪装头；`Anthropic-Beta` 按令牌并集。证据见 §20「2026-08-17 复核：第三方请求需要可开关的客户端伪装」、「2026-08-17 复核：Claude 伪装必须补齐 thinking 与系统 cache_control」和「2026-08-24 复核：Pi 客户端请求外形」。
 - `default_model`：非空。
 - `models`：可选模型目录；每项包含非空且在同一 provider 内唯一的 `id`，以及可选 `name`、`adapter` 和 `endpoint`。
 - `models[].adapter`：可选。非空时必须是 `openai-chat`、`openai-responses`、`anthropic` 或 `custom`。前三项覆盖 provider 默认协议，请求端点由网关按 §10 锁定。`custom` 表示用户自己维护该模型的请求路径，必须同时给出 `models[].endpoint`。数据面按解析到的模型取**报文协议**：`custom` 由端点后缀推断（`/chat/completions` → Chat，`/responses` → Responses，`/messages` → Messages）；模型未指定、目录为空、或显式 `<provider-id>/<model>` 未登记时回退到 provider `adapter`。证据见 §20「2026-08-18 复核：出站协议绑定到模型」和「2026-08-18 复核：预设端点默认补 /v1，例外走自定义路径」。
@@ -809,8 +826,8 @@ URL 拼接必须避免重复 `/v1` 或重复斜杠。预设 Claude / GPT 适配�
 - 本地无钥匙 provider 不发送认证头。
 - 入站客户端的 Authorization、x-api-key 或占位 key 不得转发上游。
 - provider 的 `extra_headers` 在 adapter 默认头之后应用，因此可以覆盖 `User-Agent`、`Accept`、`Content-Type` 或 `anthropic-version`；认证头始终由网关最后注入。
-- `disguise_client` 为 `claude` 或 `codex` 时，仅 `generic` 入站在 adapter 默认头之后套用对应身份头，然后再应用 `extra_headers`。`disguise_client` 为 `claude` 且入站是 Messages 时，还要按 §5.2 补齐 `thinking` 与系统 `cache_control`。身份头取值必须与桌面已核验预设相同，且不得包含会话、安装、窗口或系统环境标识。已指向客户端和探测、发现路径不走这条分支。证据见 §20「2026-08-17 复核：第三方请求需要可开关的客户端伪装」和「2026-08-17 复核：Claude 伪装必须补齐 thinking 与系统 cache_control」。
-- 桌面仍提供经过本机真实客户端请求核验的 Claude Code 与 Codex 请求头预设。预设继续是可编辑的 `extra_headers`；`disguise_client` 是独立运行时开关，不得在打开开关时把预设写进 `extra_headers`。
+- `disguise_client` 为 `claude`、`codex` 或 `pi` 时，仅 `generic` 入站在 adapter 默认头之后套用对应身份头，然后再应用 `extra_headers`。`disguise_client` 为 `claude` 且入站是 Messages 时，还要按 §5.2 补齐 `thinking` 与系统 `cache_control`。身份头取值必须与桌面已核验预设相同，且不得包含会话、安装、窗口或系统环境标识。已指向客户端和探测、发现路径不走这条分支。证据见 §20「2026-08-17 复核：第三方请求需要可开关的客户端伪装」、「2026-08-17 复核：Claude 伪装必须补齐 thinking 与系统 cache_control」和「2026-08-24 复核：Pi 客户端请求外形」。
+- 桌面仍提供经过本机真实客户端请求核验的 Claude Code、Codex 与 Pi 请求头预设。预设继续是可编辑的 `extra_headers`；`disguise_client` 是独立运行时开关，不得在打开开关时把预设写进 `extra_headers`。
 - 入站 `Anthropic-Beta`（大小写不敏感）的逗号分隔令牌必须与出站已有的同名头做去重并集后再发送。已有令牌（先伪装头，再 `extra_headers` 多出的令牌）保持原顺序，入站多出的令牌按入站顺序追加。这是唯一允许从入站请求并入的头。证据见 §20「2026-08-17 复核：Anthropic-Beta 必须与 extra_headers 并集」。
 
 禁止把任意入站客户端头自动透传给上游。除上一款的 `Anthropic-Beta` 令牌并集外，只有 provider 配置中明确列出的 `extra_headers`，以及 `generic` 入站时由 `disguise_client` 套用的身份头，可以发送。会话、安装、Cookie、Authorization 和 `x-api-key` 仍不得转发。
@@ -964,6 +981,7 @@ GET  /api/v1/clients/{client}
 POST /api/v1/clients/{client}/point
 POST /api/v1/clients/{client}/restore
 PUT  /api/v1/clients/codex/remote-compaction
+PUT  /api/v1/clients/{client}/helper-models
 ```
 
 `point` 和 `restore` 的详细事务见第 12 节。
@@ -971,6 +989,20 @@ PUT  /api/v1/clients/codex/remote-compaction
 `PUT /api/v1/clients/codex/remote-compaction` 写入 `config.yaml` 的
 `clients.codex.remote_compaction`。若 Codex 已经指向，必须就地改写
 `[model_providers.ai-gateway].name`，不得新建还原点。其它 `{client}` 必须 404。
+
+`PUT /api/v1/clients/{client}/helper-models` 只接受 `codex` 和 `claude`，请求体为：
+
+```json
+{
+  "subagent_model": "openrouter/anthropic/claude-sonnet-4",
+  "title_model": "ollama/qwen3"
+}
+```
+
+两个字段必须同时出现。值为空或 `gateway-default` 表示跟随该客户端当前路由；
+非空值必须是当前已启用模型目录中的完整 `<provider-id>/<model-id>`。响应沿用
+客户端状态外形，并返回规范化后的 `subagent_model` 与 `title_model`。Grok Build
+不提供可核验的独立辅助模型槽位，因此该接口对 `grok` 返回 404。
 
 ### 11.6 日志和用量
 
@@ -1134,6 +1166,16 @@ Codex 只在该字段严格等于 `OpenAI` 时才会向网关发送
 - Codex home 为非空 `CODEX_HOME`，否则 `~/.codex`。
 - 进入 agent 后用 `/model` 选择其它已启用模型；`codex -m <provider-id>/<model-id>`
   仍然可用。完整 HTTP 目录仍由 `/c/codex/v1/models` 提供。
+- `clients.codex.subagent_model` 用于 Codex 协作子代理请求。只在
+  `x-openai-subagent: collab_spawn`，或 `x-codex-turn-metadata` JSON 中
+  `subagent_kind` 严格等于 `thread_spawn` 时改写请求模型；其它
+  `x-openai-subagent` 值不得视为子代理。
+- `clients.codex.title_model` 用于 Codex 的标题及轻量辅助请求。当前可核验信号是
+  未带 provider 前缀的 `gpt-5.6-luna*` 或旧版 `gpt-5.4-mini*`，且 metadata
+  缺失、无法解析，或 `request_kind` 不等于 `turn`。普通主对话不得改写。
+- 子代理识别必须先于标题及轻量辅助识别。字段为空，或已保存模型后来被禁用、
+  删除时，本次请求必须回退到 `gateway-default`，不能因辅助模型失效阻断客户端。
+  每次生效必须在请求日志写入 `model_override` 事件，包含原因、原请求模型和实际模型。
 - 若环境变量原本存在，restore 必须恢复原值。
 - `doctor` 必须检查 provider 块、base URL、wire API、模型和环境变量。
 
@@ -1152,9 +1194,11 @@ Codex 只在该字段严格等于 `OpenAI` 时才会向网关发送
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:12600/c/claude",
     "ANTHROPIC_API_KEY": "sk-ai-gateway-local",
     "ANTHROPIC_MODEL": "gateway-default",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "gateway-default",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "gateway-default",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gateway-default",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "openrouter/anthropic/claude-sonnet-4",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "openrouter/anthropic/claude-sonnet-4",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL": "openrouter/anthropic/claude-sonnet-4",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "ollama/qwen3",
+    "ANTHROPIC_SMALL_FAST_MODEL": "ollama/qwen3",
     "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"
   }
 }
@@ -1163,12 +1207,16 @@ Codex 只在该字段严格等于 `OpenAI` 时才会向网关发送
 规则：
 
 - `ANTHROPIC_BASE_URL` 不带 `/v1`。
-- 四个模型环境变量固定为 `gateway-default`，即 §7.3 的启动首选模型。
+- `ANTHROPIC_MODEL` 固定为 `gateway-default`，即 §7.3 的启动首选模型。
+- Opus、Sonnet、Fable 三个默认槽位写 `clients.claude.subagent_model`；Haiku 与
+  Small Fast 两个槽位写 `clients.claude.title_model`。任一字段为空时，该组槽位
+  写 `gateway-default`。这两个设置变化时，已经托管的 Claude Code 配置必须原地
+  同步，不得新建还原点。
 - `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` 置为 `1`，让 Claude Code 启动时请求
   `/c/claude/v1/models?limit=1000` 并把结果加入模型选择器。
 - `/c/claude/v1/models` 必须返回 §7.5 的可逆选择器别名，使 `/model` 列出全部
-  已启用模型；`display_name` 仍是真实可选 id。四个启动环境变量保持
-  `gateway-default`，禁止把别名写入 `settings.json` 的启动槽。
+  已启用模型；`display_name` 仍是真实可选 id。`ANTHROPIC_MODEL` 保持
+  `gateway-default`，辅助模型槽位只写真实可选 id，禁止把别名写入 `settings.json`。
 - 指向和目录同步还必须预写 `<CLAUDE_CONFIG_DIR>/cache/gateway-models.json`，
   外形与 Claude Code 自己缓存的文件一致：
   `{ "baseUrl", "fetchedAt", "models": [{ "id", "display_name" }] }`。
@@ -1415,7 +1463,7 @@ ai-gateway version
 2. 总览：网关状态、监听地址、日志和登录启动状态。
 3. Providers：列表、新增、编辑、删除、探测、模型列表、自定义请求头和 Claude Code/Codex 请求头预设。
 4. Routes：Codex、Claude Code、Grok Build、Generic 的当前 provider 和 model。
-5. Clients：检查、point、restore、漂移状态和影响说明。
+5. Clients：检查、point、restore、漂移状态、Codex 远程压缩，以及 Codex 与 Claude Code 的子代理和标题生成模型选择。
 6. Logs：摘要列表、正文详情、筛选、脱敏复制与导出、单条删除和非活动日志清理。
 7. Usage：按日期、客户端、provider 和 model 的粗汇总。
 8. Settings：端口、日志开关、日志脱敏、登录启动和语言。
@@ -2523,6 +2571,48 @@ Claude Code 在 LLM 网关后用 `Anthropic-Beta: context-1m-2025-08-07`
 因此 `disguise_client=claude` 在 generic Messages 上还必须补齐上述两个已核验
 正文字段；已有取值保持不变；供应商未启用 reasoning 时不写入 `thinking`。
 
+### 2026-08-24 复核：Pi 客户端请求外形
+
+实验对象：本机 Pi 0.84.2（`@earendil-works/pi-coding-agent`）与其内置
+`@earendil-works/pi-ai` OpenAI Completions 适配器。通过临时
+`PI_CODING_AGENT_DIR` 和本机回环捕获服务器执行一次无工具、无会话、离线请求；
+未修改用户现有 `~/.pi/agent/models.json`。
+
+观察：
+
+- Pi 向 `<baseUrl>/chat/completions` 发送流式 OpenAI Chat Completions 请求，
+  正文包含 `messages`、`stream: true`、`stream_options.include_usage: true`、
+  `store: false` 与最大输出令牌字段。
+- 未显式配置身份头时，请求由 OpenAI JavaScript SDK 发送，其 User-Agent 为
+  SDK 版本值，不是稳定的 Pi 产品身份。
+- 本机 Pi 供应商配置对需要 Pi 身份的 OpenAI 兼容上游显式使用
+  `User-Agent: Pi Agent/1.0`。该值不包含会话、设备、安装或密钥信息。
+
+因此供应商 `disguise_client` 增加 `pi`。它只给 `generic` 入站套用
+`User-Agent: Pi Agent/1.0`，并继续允许 `extra_headers` 覆盖同名头；探测、模型
+发现和三个已指向客户端不套用。桌面同时提供可编辑的 Pi 请求头预设。
+
+### 2026-08-24 复核：Codex 与 Claude Code 辅助模型分流
+
+实验对象：本机安装的 OpenCodex 2.15.1 源码与其 Codex、Claude Code 适配层。
+
+观察：
+
+- OpenCodex 的 `isThreadSpawnRequest` 只把 `x-openai-subagent: collab_spawn`，或
+  `x-codex-turn-metadata` 中 `subagent_kind: thread_spawn` 视为协作子代理；该请求
+  分类在 Responses 数据面完成，不依赖提示词文本。
+- Codex 0.145.0 及后续版本以 `gpt-5.6-luna` 发起标题等轻量辅助调用；旧版来源
+  还包括 `gpt-5.4-mini`。`request_kind: turn` 明确排除普通主对话。OpenCodex 将
+  这类请求统称为 shadow/helper call，因此当前协议无法只分出标题而排除所有其它
+  轻量辅助调用。
+- Claude Code 通过环境变量做模型层级路由：Opus、Sonnet、Fable 是独立默认槽位，
+  Haiku 同时写入 `ANTHROPIC_DEFAULT_HAIKU_MODEL` 和兼容槽
+  `ANTHROPIC_SMALL_FAST_MODEL`。这比分析请求正文稳定。
+
+因此本网关采用同一组已核验信号。Codex 在数据面按请求头分类并改写模型；Claude
+Code 在 point/sync 时写入模型环境变量。桌面将 Codex 标注为“标题生成模型”，但
+必须明确它也覆盖当前无法进一步区分的轻量辅助调用。
+
 ### 2026-08-18 复核：禁用的默认路由不得挡住前缀覆盖
 
 实验对象：Codex 入站 `POST /c/codex/v1/responses`。当时
@@ -2722,4 +2812,4 @@ Messages→Responses、Responses→Chat 三个方向的转换测试固定字段�
 
 正常情况下，全部成立并通过第 19 节验收后，第一阶段完成。
 
-2026-08-22 产品验收例外：产品所有者根据当前实际使用效果，决定第一期按“已验收（带遗留问题）”关闭，并允许进入第二期。该决定不把未执行、部分通过或受环境权限阻塞的验收项改写成通过；原始结果和遗留问题继续保留在 `docs/progress.md` 第 12、13 节，待第二期主体工作后集中处理。
+2026-08-22 产品验收例外：产品所有者根据当前实际使用效果，决定第一期按“已验收（带遗留问题）”关闭，并允许记录第二期完成内容。该决定不把未执行、部分通过或受环境权限阻塞的验收项改写成通过；原始结果和遗留问题继续保留在 `docs/progress.md` 第 12、13 节，作为当前 `0.1.0-rc1` 的历史验收记录，不自动产生新的版本规划。

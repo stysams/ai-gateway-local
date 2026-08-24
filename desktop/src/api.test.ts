@@ -33,6 +33,12 @@ describe("management API client", () => {
     expect(fetcher).toHaveBeenCalledWith("http://127.0.0.1:12600/api/v1/clients/codex/remote-compaction", expect.objectContaining({ method: "PUT", body: "{\"enabled\":true}" }));
   });
 
+  it("updates client helper models through the dedicated endpoint", async () => {
+    const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ client: "claude", subagent_model: "p/large", title_model: "p/small" }));
+    await api.setClientHelperModels("claude", "p/large", "p/small");
+    expect(fetcher).toHaveBeenCalledWith("http://127.0.0.1:12600/api/v1/clients/claude/helper-models", expect.objectContaining({ method: "PUT", body: "{\"subagent_model\":\"p/large\",\"title_model\":\"p/small\"}" }));
+  });
+
   it("updates autostart through its dedicated endpoint", async () => {
     const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ enabled: true, valid: true }));
     await api.setAutostart(true);

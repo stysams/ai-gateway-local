@@ -429,6 +429,7 @@ func TestValidateProvider(t *testing.T) {
 		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", ExtraHeaders: map[string]string{"X-Trace": "line\nbreak"}}, "must not contain newlines"},
 		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", DisguiseClient: "claude"}, ""},
 		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", DisguiseClient: "codex"}, ""},
+		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", DisguiseClient: "pi"}, ""},
 		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", DisguiseClient: "gpt"}, "providers.ok.disguise_client"},
 		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", Models: []ProviderModel{{ID: "m", Adapter: "anthropic"}}}, ""},
 		{"ok", Provider{Name: "x", Adapter: "openai-chat", BaseURL: "https://x.ai", DefaultModel: "m", Models: []ProviderModel{{ID: "m", Adapter: "custom", Endpoint: "/responses"}}}, ""},

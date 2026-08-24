@@ -105,6 +105,8 @@ type Status struct {
 	BackupAvailable  bool   `json:"backup_available"`
 	Message          string `json:"message,omitempty"`
 	RemoteCompaction *bool  `json:"remote_compaction,omitempty"`
+	SubagentModel    string `json:"subagent_model,omitempty"`
+	TitleModel       string `json:"title_model,omitempty"`
 }
 
 type Result struct {

@@ -6,18 +6,14 @@
 
 默认监听地址为 `127.0.0.1:12600`。桌面程序只负责管理网关，不承载 `/v1/*` 数据面请求。
 
-> 当前状态：第一期已验收（带遗留问题），第二期优化已启动。未完成的真实验收证据和延期问题保留在 [`docs/progress.md`](docs/progress.md) 第 12、13 节。
+> 当前版本：`0.1.0-rc1`（Windows amd64）。功能主线已完成，本文及相关文档均以现有发布包为唯一版本基准，不再维护其他优化规划。第一期五项真实验收遗留和源码、发布包差异保留为版本记录，详见 [`docs/feature-checklist.md`](docs/feature-checklist.md)。
 
 ## 最新更新
 
-### 2026-08-23
+### 2026-08-24
 
-- 请求日志默认在写盘前递归脱敏常见凭据字段，桌面支持强制脱敏复制、JSONL 下载、单条删除和非活动日志批量清理。
-- Chat Completions、Responses 与 Messages 的跨协议转换新增 JSON Schema 结构化输出和严格工具定义保留。
-- 桌面管理界面提高宽屏空间利用率，同组设置、连接参数和客户端路由会在空间充足时横向排列；窄屏仍自动回落为适合阅读和操作的布局。
-- 设置项错误会直接显示在对应字段旁，监听地址改为 `0.0.0.0` 前会明确确认；路由模型和请求日志在窄屏下保留完整上下文，底部导航入口全部可达。
-- 日志与供应商操作按钮在桌面端保持同一基线，移动端日志操作区采用两列布局；滚动条更窄，滚动内容不会因滚动槽出现跳动。
-- 客户端路由的应用按钮与模型下拉框保持同一基线，模型标识采用更紧凑的字号，长模型名称在路由页和总览页更易扫描。
+- 供应商伪装客户端新增 Pi。第三方 `/v1` 请求可按 Pi 客户端身份发送 `User-Agent: Pi Agent/1.0`，桌面供应商表单同时提供 Pi 预设。
+- 客户端高级设置新增 Codex 与 Claude Code 的子代理模型、标题生成模型选择；空值跟随当前客户端路由。
 
 [查看完整发布说明](docs/releases/release-notes.md)
 
@@ -28,7 +24,7 @@
 - 一个提供商可以维护多个模型，每个模型可以单独选择 Chat、Responses 或 Messages 接口，并可从上游模型接口发现模型元数据。
 - 支持图片输入、推理或思考内容，以及不支持能力时的明确降级提示。
 - 为每个请求记录脱敏的 JSONL 事件，并汇总上游真实返回的令牌用量。
-- 支持客户端指向网关、漂移检测、还原和 Codex 远程压缩开关。
+- 支持客户端指向网关、漂移检测、还原、Codex 远程压缩，以及 Codex 与 Claude Code 的辅助模型分流。
 - 提供 Windows 桌面程序、系统托盘和命令行管理工具。
 - 默认只监听回环地址；需要局域网访问时可以显式改为 `0.0.0.0`。
 
@@ -53,6 +49,13 @@ dist/ai-gateway-0.1.0-rc1-windows-amd64.zip
 - `ai-gateway.exe`：无头网关和命令行程序。
 - `ai-gateway-desktop.exe`：桌面窗口、系统托盘和桌面管理流程。
 - `README.md`、`LICENSE` 和 `docs/install.md`。
+
+当前版本元数据：
+
+- 版本：`0.1.0-rc1`
+- 包内构建提交：`74083c13630675037172eb3b936df7f30808d777`
+- Windows amd64 压缩包：`dist/ai-gateway-0.1.0-rc1-windows-amd64.zip`
+- 压缩包 SHA-256：`D7AB92FF8BDE781DBA47CB143BA28CE32D23CBA392AF30894CC727DC86562AAF`
 
 双击 `ai-gateway-desktop.exe` 即可启动桌面程序。桌面程序会在网关未运行时启动独立的 `serve` 进程；再次启动桌面程序只会聚焦已有窗口，不会创建第二个网关进程或托盘图标。
 
@@ -159,6 +162,7 @@ Models URL: http://127.0.0.1:12600/v1/models
 - 原子写入客户端配置。
 - 将客户端默认地址改为本机网关对应的客户端路径。
 - 同步该客户端可用的模型目录。
+- 按高级设置同步子代理和标题生成模型；Codex 在请求到达时分类，Claude Code 写入对应模型槽位。
 - 在失败时尝试还原原始内容。
 
 也可以使用管理接口执行相同操作，具体接口见下方“管理接口”。开始真实客户端验收前，请确认客户端已经安装，并准备好至少一个可用的上游提供商。
@@ -233,6 +237,7 @@ POST /c/{client}/v1/messages
 | `POST` | `/api/v1/clients/{client}/point` | 指向网关并创建备份 |
 | `POST` | `/api/v1/clients/{client}/restore` | 还原客户端配置 |
 | `PUT` | `/api/v1/clients/{client}/remote-compaction` | 更新客户端远程压缩设置 |
+| `PUT` | `/api/v1/clients/{client}/helper-models` | 更新 Codex 或 Claude Code 的子代理与标题生成模型 |
 | `GET` | `/api/v1/logs` | 查询请求日志 |
 | `GET` | `/api/v1/logs/{request_id}` | 查看单个请求详情 |
 | `GET` | `/api/v1/logs/{request_id}/export` | 下载强制脱敏的 JSONL 日志 |
@@ -311,7 +316,8 @@ npm --prefix desktop run dev
 - [安装、运行和还原指南](docs/install.md)
 - [运维与故障排查](docs/operations.md)
 - [开发进度和发布约定](docs/progress.md)
-- [优化任务路线图](docs/optimization-roadmap.md)
+- [功能清单与当前版本记录](docs/feature-checklist.md)
+- [已归档的优化路线图](docs/optimization-roadmap.md)
 - [代码结构说明](docs/code-map.md)
 
 ## 许可证

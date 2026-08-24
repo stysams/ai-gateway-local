@@ -44,12 +44,14 @@ var validAdapters = map[string]bool{
 const (
 	DisguiseClientClaude = "claude"
 	DisguiseClientCodex  = "codex"
+	DisguiseClientPi     = "pi"
 )
 
 var validDisguiseClients = map[string]bool{
 	"":                   true,
 	DisguiseClientClaude: true,
 	DisguiseClientCodex:  true,
+	DisguiseClientPi:     true,
 }
 
 // FieldError pinpoints one invalid field. Field uses the dotted path form

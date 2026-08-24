@@ -245,6 +245,16 @@ func (s *Server) serveDataPlaneWith(w http.ResponseWriter, r *http.Request, clie
 		w.Header().Set("X-Request-Id", trace.requestID())
 	}
 	defer func() { trace.finish(r.Context(), tracked.status) }()
+	if !opts.compact {
+		if effectiveModel, reason := codexHelperModel(client, inProto, model, r.Header, cfg); reason != "" {
+			if err := trace.modelOverride(reason, model, effectiveModel); err != nil {
+				trace.setError(err)
+				writeInboundError(w, http.StatusInternalServerError, inProto, err.Error(), "request_log_failed")
+				return
+			}
+			model = effectiveModel
+		}
+	}
 	res, err := route.Resolve(client, model, cfg)
 	if err != nil {
 		writeInboundError(w, http.StatusBadRequest, inProto, err.Error(), "")

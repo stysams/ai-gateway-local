@@ -7,8 +7,9 @@ import (
 	"ai-gateway/internal/route"
 )
 
-// Claude Code 2.1.228 and Codex CLI 0.147.0 identity headers, verified
-// against real client requests. Keep these values aligned with
+// Claude Code 2.1.228, Codex CLI 0.147.0 and Pi 0.84.2 identity headers,
+// verified against real client requests and installed client configuration.
+// Keep these values aligned with
 // desktop/src/headerPresets.ts. Session, install, window and environment
 // identifiers stay out (docs/v1-scheme.md §10.1).
 var (
@@ -22,6 +23,9 @@ var (
 		"User-Agent": "codex_cli_rs/0.147.0",
 		"Originator": "codex_cli_rs",
 	}
+	piDisguiseHeaders = map[string]string{
+		"User-Agent": "Pi Agent/1.0",
+	}
 )
 
 func disguiseHeaders(kind string) map[string]string {
@@ -30,6 +34,8 @@ func disguiseHeaders(kind string) map[string]string {
 		return claudeDisguiseHeaders
 	case config.DisguiseClientCodex:
 		return codexDisguiseHeaders
+	case config.DisguiseClientPi:
+		return piDisguiseHeaders
 	default:
 		return nil
 	}

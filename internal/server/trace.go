@@ -80,6 +80,15 @@ func (t *requestTrace) route(provider, model, adapter string, inbound, outbound 
 	})
 }
 
+func (t *requestTrace) modelOverride(reason, requested, effective string) error {
+	if t == nil {
+		return nil
+	}
+	return t.session.Append("model_override", map[string]any{
+		"reason": reason, "requested_model": requested, "effective_model": effective,
+	})
+}
+
 func (t *requestTrace) upstreamRequest(proto ir.Protocol, p providerInfo, body []byte, stream bool, compact bool) error {
 	if t == nil {
 		return nil

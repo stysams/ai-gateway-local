@@ -474,6 +474,29 @@ func TestGenericDisguiseCodexHeaders(t *testing.T) {
 	}
 }
 
+func TestGenericDisguisePiHeaders(t *testing.T) {
+	var got http.Header
+	up := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	})
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	provider := cfg.Providers["ollama"]
+	provider.DisguiseClient = config.DisguiseClientPi
+	cfg.Providers["ollama"] = provider
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
+
+	resp, data := chatPost(t, addr, "/v1/chat/completions",
+		[]byte(`{"model":"qwen3","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true},"store":false}`), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, body %s", resp.StatusCode, data)
+	}
+	if got.Get("User-Agent") != "Pi Agent/1.0" {
+		t.Fatalf("Pi disguise User-Agent = %q", got.Get("User-Agent"))
+	}
+}
+
 func TestMessagesGenericRoutesUniqueModelToOwningProvider(t *testing.T) {
 	agentrouter := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

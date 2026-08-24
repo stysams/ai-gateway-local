@@ -40,6 +40,20 @@ func TestMergeDisguiseHeadersEmptyLeavesExtra(t *testing.T) {
 	}
 }
 
+func TestMergeDisguiseHeadersPiThenExtra(t *testing.T) {
+	got := mergeDisguiseHeaders(config.DisguiseClientPi, map[string]string{"X-Custom": "kept"})
+	if got["User-Agent"] != "Pi Agent/1.0" {
+		t.Fatalf("Pi User-Agent = %q", got["User-Agent"])
+	}
+	if got["X-Custom"] != "kept" {
+		t.Fatalf("custom header lost: %v", got)
+	}
+	overridden := mergeDisguiseHeaders(config.DisguiseClientPi, map[string]string{"user-agent": "operator-override"})
+	if overridden["user-agent"] != "operator-override" || len(overridden) != 1 {
+		t.Fatalf("Pi extra_headers overlay = %v", overridden)
+	}
+}
+
 func TestOutboundExtraHeadersDisguiseOnlyGeneric(t *testing.T) {
 	p := config.Provider{
 		DisguiseClient: config.DisguiseClientCodex,
@@ -58,5 +72,16 @@ func TestOutboundExtraHeadersDisguiseOnlyGeneric(t *testing.T) {
 	}
 	if claude["X-Trace"] != "1" {
 		t.Fatalf("first-class extra_headers = %v", claude)
+	}
+}
+
+func TestOutboundExtraHeadersPiDisguiseOnlyGeneric(t *testing.T) {
+	p := config.Provider{DisguiseClient: config.DisguiseClientPi}
+	generic := outboundExtraHeaders(p, route.Generic, http.Header{})
+	if generic["User-Agent"] != "Pi Agent/1.0" {
+		t.Fatalf("generic Pi disguise = %v", generic)
+	}
+	if got := outboundExtraHeaders(p, route.Codex, http.Header{}); got["User-Agent"] != "" {
+		t.Fatalf("first-class client received Pi disguise: %v", got)
 	}
 }

@@ -10,7 +10,7 @@ const providers = [
   { id: "ollama", name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", enabled: true, models: [{ id: "qwen3", name: "Qwen 3" }], has_secret: false, capabilities: { image_input: false, reasoning: false } },
   { id: "openrouter", name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", enabled: true, models: [{ id: "gpt-5", name: "GPT-5" }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4" }], has_secret: true, capabilities: { image_input: true, reasoning: true } },
 ];
-const pointStatus = (client: string) => ({ client, point_state: client === "codex" ? "not_pointed" : "client_not_installed", target: `C:/${client}/config`, backup_available: false, ...(client === "codex" ? { remote_compaction: false } : {}) });
+const pointStatus = (client: string) => ({ client, point_state: client === "codex" ? "not_pointed" : "client_not_installed", target: `C:/${client}/config`, backup_available: false, ...(["codex", "claude"].includes(client) ? { subagent_model: "", title_model: "" } : {}), ...(client === "codex" ? { remote_compaction: false } : {}) });
 
 let liveProviders: typeof providers;
 
@@ -50,6 +50,7 @@ beforeEach(() => {
     if (url.endsWith("/api/v1/autostart") && init?.method === "PUT") return Response.json({ enabled: true, valid: true });
     if (url.endsWith("/api/v1/clients/codex/point")) return Response.json({ ...pointStatus("codex"), point_state: "pointed", changed: true });
     if (url.endsWith("/api/v1/clients/codex/remote-compaction") && init?.method === "PUT") return Response.json({ ...pointStatus("codex"), remote_compaction: true });
+    if (url.endsWith("/api/v1/clients/claude/helper-models") && init?.method === "PUT") return Response.json({ ...pointStatus("claude"), ...JSON.parse(String(init.body || "{}")) });
     return Response.json({ error: { code: "not_mocked", message: url } }, { status: 500 });
   });
 });
@@ -98,6 +99,22 @@ describe("desktop workflow", () => {
     await user.selectOptions(modelSelect, "openrouter/gpt-5");
     expect(modelSelect).toHaveValue("openrouter/gpt-5");
     expect(screen.getAllByRole("button", { name: "Apply" })[0]).toBeEnabled();
+  });
+
+  it("selects separate Claude subagent and title models", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await ready();
+    await user.click(screen.getByRole("button", { name: "Clients" }));
+    const subagent = screen.getByRole("combobox", { name: "claude Subagent model" });
+    const title = screen.getByRole("combobox", { name: "claude Title generation model" });
+    expect(subagent).toHaveValue("");
+    expect(within(subagent).getByRole("option", { name: "Follow current route" })).toBeVisible();
+    await user.selectOptions(subagent, "openrouter/anthropic/claude-sonnet-4");
+    await user.selectOptions(title, "ollama/qwen3");
+    const applyButtons = screen.getAllByRole("button", { name: "Apply" });
+    await user.click(applyButtons.at(-1)!);
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/clients/claude/helper-models"), expect.objectContaining({ method: "PUT", body: "{\"subagent_model\":\"openrouter/anthropic/claude-sonnet-4\",\"title_model\":\"ollama/qwen3\"}" })));
   });
 
   it("shows local access parameters and copies a model identifier", async () => {
@@ -188,6 +205,18 @@ describe("desktop workflow", () => {
     await user.selectOptions(screen.getByRole("combobox", { name: "Disguise client" }), "claude");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ method: "POST", body: expect.stringContaining('"disguise_client":"claude"') })));
+  });
+
+  it("saves Pi disguise and applies the Pi request-header preset", async () => {
+    const user = userEvent.setup(); render(<App />); await ready(); await user.click(screen.getByRole("button", { name: "Providers" })); await user.click(screen.getByRole("button", { name: "Add provider" }));
+    await user.type(screen.getByLabelText("Identifier"), "pi-upstream"); await user.type(screen.getByLabelText("Name"), "Pi Upstream"); await user.type(screen.getByLabelText("Base URL"), "https://example.com/v1");
+    await user.click(screen.getByRole("button", { name: "Add model manually" })); await user.type(screen.getAllByLabelText("Model ID").at(-1)!, "gpt-5"); await user.click(screen.getAllByRole("radio", { name: "Default model" })[0]);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Disguise client" }), "pi");
+    await user.click(screen.getByRole("button", { name: "Apply preset Pi" }));
+    expect(screen.getByDisplayValue("Pi Agent/1.0")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ method: "POST", body: expect.stringContaining('"disguise_client":"pi"') })));
+    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ body: expect.stringContaining('"User-Agent":"Pi Agent/1.0"') }));
   });
 
   it("requires confirmation before pointing", async () => {

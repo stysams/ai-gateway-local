@@ -41,7 +41,7 @@ export interface Provider {
   base_url: string;
   models_url?: string;
   extra_headers?: Record<string, string>;
-  disguise_client?: "" | "claude" | "codex";
+  disguise_client?: "" | "claude" | "codex" | "pi";
   default_model: string;
   enabled?: boolean;
   models: ProviderModel[];
@@ -91,6 +91,8 @@ export interface PointStatus {
   backup_dir?: string;
   changed?: boolean;
   remote_compaction?: boolean;
+  subagent_model?: string;
+  title_model?: string;
 }
 export interface LogSummary {
   request_id: string;
