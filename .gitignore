@@ -5,8 +5,11 @@
 /desktop/dist/
 /desktop/test-results/
 /desktop/playwright-report/
+/desktop/preview-artifacts/
 /memory/
 /.snow/
+/.finesse/
+/.idea/
 .env
 .env.*
 *.pid

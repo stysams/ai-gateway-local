@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity, Boxes, Cable, Check, ChevronRight, CircleAlert, Copy, Database, Download,
-  Filter, Gauge, Plus, RefreshCw, RotateCcw, Save, Server, Settings, Upload,
+  Filter, Gauge, Moon, Plus, RefreshCw, RotateCcw, Save, Server, Settings, Sun, Upload,
   ShieldCheck, Trash2, X,
 } from "lucide-react";
 import {
@@ -27,10 +27,19 @@ type UsageQuery = { from?: string; to?: string; provider?: string; model?: strin
 const pointClients: PointClient[] = ["codex", "claude", "grok"];
 const allClients: ClientID[] = ["codex", "claude", "grok", "generic"];
 
-const navigation: { id: Page; icon: AppIcon }[] = [
-  { id: "overview", icon: OverviewIcon }, { id: "localAccess", icon: GatewayMark }, { id: "providers", icon: ProvidersIcon }, { id: "routes", icon: RoutesIcon },
-  { id: "clients", icon: ClientsIcon }, { id: "logs", icon: LogsIcon }, { id: "usage", icon: UsageIcon }, { id: "settings", icon: SettingsIcon },
+type NavigationGroup = "workspace" | "configuration" | "observe" | "systemGroup";
+
+const navigation: { id: Page; icon: AppIcon; group: NavigationGroup }[] = [
+  { id: "overview", icon: OverviewIcon, group: "workspace" }, { id: "localAccess", icon: GatewayMark, group: "workspace" },
+  { id: "providers", icon: ProvidersIcon, group: "configuration" }, { id: "routes", icon: RoutesIcon, group: "configuration" }, { id: "clients", icon: ClientsIcon, group: "configuration" },
+  { id: "logs", icon: LogsIcon, group: "observe" }, { id: "usage", icon: UsageIcon, group: "observe" }, { id: "settings", icon: SettingsIcon, group: "systemGroup" },
 ];
+
+const navigationGroups: NavigationGroup[] = ["workspace", "configuration", "observe", "systemGroup"];
+const pageDescriptions: Record<Page, MessageKey> = {
+  overview: "overviewDescription", localAccess: "localAccessTopDescription", providers: "providersTopDescription", routes: "routesTopDescription",
+  clients: "clientsTopDescription", logs: "logsTopDescription", usage: "usageTopDescription", settings: "settingsTopDescription",
+};
 
 const emptyProvider: ProviderFormValue = { id: "", name: "", adapter: "openai-chat", base_url: "", models_url: "", extra_headers: [], disguise_client: "", default_model: "", models: [], api_key: "" };
 
@@ -223,23 +232,24 @@ export function App() {
 
   return (
     <div className="shell">
+      <a className="skip-link" href="#main-content">{t("skipToContent")}</a>
       <aside className="sidebar" aria-label="Primary navigation">
-        <div className="brand"><span className="brand-mark"><GatewayMark size={18} /></span><span>ai-gateway</span></div>
+        <div className="brand"><span className="brand-mark"><GatewayMark size={18} /></span><span><b>ai-gateway</b><small>LOCAL CONTROL</small></span></div>
         <nav>
-          {navigation.map(({ id, icon: Icon }) => <button key={id} ref={page === id ? activeNavRef : undefined} className={page === id ? "nav-item active" : "nav-item"} onClick={() => setPage(id)} aria-label={t(id)} title={t(id)} aria-current={page === id ? "page" : undefined}><Icon size={17} /><span>{t(id)}</span></button>)}
+          {navigationGroups.map((group) => <div className="nav-group" key={group}><p>{t(group)}</p>{navigation.filter((item) => item.group === group).map(({ id, icon: Icon }) => <button key={id} ref={page === id ? activeNavRef : undefined} className={page === id ? "nav-item active" : "nav-item"} onClick={() => setPage(id)} aria-label={t(id)} title={t(id)} aria-current={page === id ? "page" : undefined}><Icon size={17} /><span>{t(id)}</span></button>)}</div>)}
         </nav>
-        <div className="sidebar-status"><span className={status ? "status-dot ok" : "status-dot"} />{status ? t("connected") : t("loading")}</div>
+        <div className="sidebar-status"><div><span className={status ? "status-dot ok" : "status-dot"} /><strong>{status ? t("connected") : t("loading")}</strong>{status && <small>{status.version}</small>}</div>{status && <><code>{status.listen}</code><p><span>PID {status.pid}</span><span>{t("localMode")}</span></p></>}</div>
       </aside>
-      <main className="main">
+      <main className="main" id="main-content">
         <header className="topbar">
           <div className="topbar-inner">
-            <div><p className="eyebrow">AI GATEWAY / {t(page).toUpperCase()}</p><h1>{t(page)}</h1></div>
-            <button className="icon-button" onClick={() => void refresh()} title={t("refresh")} aria-label={t("refresh")} disabled={busy}><RefreshCw size={17} className={busy ? "spin" : ""} /></button>
+            <div><p className="eyebrow">AI GATEWAY / {t(page).toUpperCase()}</p><h1>{t(page)}</h1><p className="topbar-description">{t(pageDescriptions[page])}</p></div>
+            <div className="topbar-actions"><State value={status ? "connected" : "unknown"} /><button className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title={t(theme === "dark" ? "light" : "dark")} aria-label={t(theme === "dark" ? "light" : "dark")}>{theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}</button><button className="icon-button" onClick={() => void refresh()} title={t("refresh")} aria-label={t("refresh")} disabled={busy}><RefreshCw size={17} className={busy ? "spin" : ""} /></button></div>
           </div>
         </header>
         {busy && !status ? <div className="loading"><RefreshCw className="spin" size={18} />{t("loading")}</div> : (
           <div className="content">
-            {page === "overview" && <Overview status={status} usage={usage} t={t} />}
+            {page === "overview" && <Overview status={status} usage={usage} logs={logs} t={t} navigate={setPage} />}
             {page === "localAccess" && localAccess && <LocalAccessPage access={localAccess} t={t} notify={pushToast} />}
             {page === "providers" && <Providers providers={providers} t={t} run={run} notify={pushToast} />}
             {page === "routes" && status && <Routes status={status} providers={providers} t={t} run={run} />}
@@ -272,30 +282,39 @@ function SectionHeader({ title, description, action, hideTitle = false }: { titl
 }
 
 function State({ value }: { value: string }) {
-  const good = ["pointed", "success", "ok", "enabled"].includes(value);
+  const good = ["connected", "pointed", "success", "ok", "enabled"].includes(value);
   const warn = ["drifted", "interrupted", "incomplete"].includes(value);
-  const stateKeys: Record<string, MessageKey> = { pointed: "pointed", not_pointed: "notPointed", drifted: "drifted", client_not_installed: "clientNotInstalled", unknown: "unknown", "key ready": "keyReady", keyless: "keyless", api: "api", ok: "ok", success: "success", failed: "failed", cancelled: "cancelled", interrupted: "interrupted", incomplete: "incomplete", enabled: "enabled", disabled: "disabled" };
+  const stateKeys: Record<string, MessageKey> = { connected: "connected", pointed: "pointed", not_pointed: "notPointed", drifted: "drifted", client_not_installed: "clientNotInstalled", unknown: "unknown", "key ready": "keyReady", keyless: "keyless", api: "api", ok: "ok", success: "success", failed: "failed", cancelled: "cancelled", interrupted: "interrupted", incomplete: "incomplete", enabled: "enabled", disabled: "disabled" };
   const stateLanguage: Language = document.documentElement.lang === "en-US" ? "en-US" : "zh-CN";
   const label = stateKeys[value] ? translator(stateLanguage)(stateKeys[value]) : value.replaceAll("_", " ");
   return <span className={`state ${good ? "good" : warn ? "warn" : "neutral"}`}><span />{label}</span>;
 }
 
-function Overview({ status, usage, t }: { status: Status | null; usage: UsageReport | null; t: (key: MessageKey) => string }) {
+function Overview({ status, usage, logs, t, navigate }: { status: Status | null; usage: UsageReport | null; logs: LogSummary[]; t: (key: MessageKey) => string; navigate: (page: Page) => void }) {
   if (!status) return null;
   const tokens = usage?.total.usage?.total_tokens || 0;
-  return <>
-    <section><SectionHeader title={t("runtime")} description={`${status.listen} · PID ${status.pid} · ${status.version}`} />
-      <div className="metric-grid overview-metrics">
-        <Metric label={t("status")} value={t("connected")} note="127.0.0.1 only" icon={Server} />
-        <Metric label={t("requests")} value={String(usage?.total.requests || 0)} note={usage?.total.incomplete ? t("incomplete") : t("success")} icon={Activity} />
-        <Metric label={t("tokens")} value={tokens.toLocaleString()} note={`${usage?.total.success || 0} ${t("success")}`} icon={Database} />
+  const recentLogs = logs.slice(0, 4);
+  const averageDuration = recentLogs.length ? Math.round(recentLogs.reduce((sum, item) => sum + (item.duration_ms || 0), 0) / recentLogs.length) : 0;
+  const routeIssues = pointClients.filter((client) => status.clients[client].point_state !== "pointed");
+  const defaultRoute = catalogId(status.routes.generic);
+  return <div className="overview-page">
+    <section className="gateway-summary" aria-labelledby="gateway-health-title">
+      <div className="gateway-health"><span className="health-icon"><ShieldCheck size={22} /></span><div><p className="summary-label">GATEWAY HEALTH</p><h2 id="gateway-health-title">{t("gatewayHealthy")}</h2><p>{status.listen} · PID {status.pid} · {status.version}</p></div></div>
+      <Metric label={t("requests")} value={String(usage?.total.requests || 0)} note={`${usage?.total.success || 0} ${t("success")} · ${usage?.total.failed || 0} ${t("failed")}`} icon={Activity} />
+      <Metric label={t("tokens")} value={tokens.toLocaleString()} note={`${usage?.total.usage?.input_tokens || 0} ${t("inputMetric")} · ${usage?.total.usage?.output_tokens || 0} ${t("outputMetric")}`} icon={Database} />
+      <Metric label={t("averageResponse")} value={`${averageDuration} ms`} note={t("recentRequests")} icon={Server} />
+    </section>
+    <section className="overview-primary-grid">
+      <div className="overview-panel traffic-panel"><SectionHeader title={t("liveTraffic")} description={t("recentRequests")} action={<button className="text-button" onClick={() => navigate("logs")}>{t("viewAll")}<ChevronRight size={14} /></button>} />
+        {recentLogs.length === 0 ? <Empty text={t("noLogs")} /> : <div className="overview-request-table" role="table" aria-label={t("liveTraffic")}><div className="overview-request-row overview-request-head" role="row"><span>{t("requestTime")}</span><span>{t("clients")}</span><span>{t("upstreamModel")}</span><span>{t("duration")}</span><span>{t("status")}</span></div>{recentLogs.map((item) => <div className="overview-request-row" role="row" key={item.request_id}><time className="mono" dateTime={item.started_at}>{new Date(item.started_at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time><span>{item.client || "generic"}</span><span><strong>{item.provider || t("unknown")}</strong><small className="mono">{item.model || t("unknown")}</small></span><span className="mono overview-duration">{item.duration_ms || 0} ms</span><State value={item.status} /></div>)}</div>}
       </div>
-      <div className="rows overview-statuses"><div className="data-row"><strong>{t("logging")}</strong><State value={status.logging_enabled ? "enabled" : "disabled"} /></div><div className="data-row"><strong>{t("bodyLogging")}</strong><State value={status.logging_enabled && status.logging_body_enabled !== false ? "enabled" : "disabled"} /></div><div className="data-row"><strong>{t("autostart")}</strong><State value={status.autostart_enabled ? "enabled" : "disabled"} /></div></div>
+      <aside className="overview-panel route-watch"><SectionHeader title={t("routeAttention")} description={t("routeAttentionDescription")} />
+        <div className="route-watch-list">{routeIssues.length === 0 ? <div className="route-watch-empty"><ShieldCheck size={18} /><span>{t("noRouteIssues")}</span></div> : routeIssues.map((client) => <button className="route-watch-item" key={client} onClick={() => navigate("clients")}><span className="watch-icon"><CircleAlert size={16} /></span><span><b>{client}</b><State value={status.clients[client].point_state} /></span><ChevronRight size={16} /></button>)}</div>
+        <button className="secondary overview-wide-action" onClick={() => navigate("routes")}><RoutesIcon size={15} />{t("checkAllRoutes")}</button>
+      </aside>
     </section>
-    <section><SectionHeader title={t("clientRoutes")} />
-      <div className="rows overview-routes">{allClients.map((client) => <div className="data-row" key={client}><strong className="mono">{client}</strong><span className="mono">{catalogId(status.routes[client])}</span>{client === "generic" ? <State value="api" /> : <State value={status.clients[client].point_state} />}</div>)}</div>
-    </section>
-  </>;
+    <section className="request-path" aria-label={t("requestPath")}><div><p className="summary-label">CURRENT REQUEST PATH</p><strong>{t("defaultRoute")}</strong></div><span className="path-node"><GatewayMark size={15} />Local API</span><ChevronRight size={15} /><span className="path-node"><Server size={15} />ai-gateway</span><ChevronRight size={15} /><span className="path-node active">{defaultRoute}</span></section>
+  </div>;
 }
 
 function LocalAccessPage({ access, t, notify }: { access: LocalAccess; t: (key: MessageKey) => string; notify: (kind: ToastKind, message: string) => void }) {

@@ -25,6 +25,25 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("operational overview renders the new desktop hierarchy in both themes", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-light", "Desktop theme screenshots use the desktop viewport.");
+  const consoleErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Gateway is healthy" })).toBeVisible();
+  await expect(page.getByRole("table", { name: "Live traffic" })).toBeVisible();
+  await expect(page.getByText("openrouter/gpt-5", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
+  await page.screenshot({ path: "preview-artifacts/ai-gateway-production-light.png", fullPage: true });
+  await page.getByRole("button", { name: "Dark", exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.waitForTimeout(200);
+  await page.screenshot({ path: "preview-artifacts/ai-gateway-production-dark.png", fullPage: true });
+  expect(consoleErrors).toEqual([]);
+});
+
 test("provider form exposes an editable upstream model catalog", async ({ page }, testInfo) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Providers" }).click();
@@ -112,9 +131,13 @@ test("client routes list every enabled model as provider/model id", async ({ pag
   expect(overflow).toBe(false);
   await page.screenshot({ path: testInfo.outputPath("client-routes.png"), fullPage: true });
   await page.getByRole("button", { name: "Overview" }).click();
-  const overviewModel = page.locator(".overview-routes .data-row > span.mono").first();
-  await expect(overviewModel).toHaveCSS("font-size", "11px");
-  await page.screenshot({ path: testInfo.outputPath("overview-routes.png"), fullPage: true });
+    await expect(page.getByRole("heading", { name: "Gateway is healthy" })).toBeVisible();
+    await expect(page.locator(".request-path .path-node.active")).toHaveText("openrouter/gpt-5");
+    const hasHorizontalOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    );
+    expect(hasHorizontalOverflow).toBe(false);
+    await page.screenshot({ path: testInfo.outputPath("overview-routes.png"), fullPage: true });
 });
 
 test("disabling a provider clears the required client route", async ({ page }, testInfo) => {
