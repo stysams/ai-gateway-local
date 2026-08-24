@@ -53,9 +53,9 @@ dist/ai-gateway-0.1.0-rc1-windows-amd64.zip
 当前版本元数据：
 
 - 版本：`0.1.0-rc1`
-- 包内构建提交：`74083c13630675037172eb3b936df7f30808d777`
+- 包内构建提交：`829777f7b4913020f5619787a65837acfd3ab4f0`
 - Windows amd64 压缩包：`dist/ai-gateway-0.1.0-rc1-windows-amd64.zip`
-- 压缩包 SHA-256：`D7AB92FF8BDE781DBA47CB143BA28CE32D23CBA392AF30894CC727DC86562AAF`
+- 压缩包 SHA-256：`F32A38C208ECF74FEBA2C7EBF0C5D9E6DA6706651E3A46CC33487655002355CC`
 
 双击 `ai-gateway-desktop.exe` 即可启动桌面程序。桌面程序会在网关未运行时启动独立的 `serve` 进程；再次启动桌面程序只会聚焦已有窗口，不会创建第二个网关进程或托盘图标。
 
