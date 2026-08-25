@@ -106,6 +106,21 @@ func XAPIKey(ctx context.Context, secrets secret.Store, ref string) (*Credential
 	})
 }
 
+// BearerValue formats an already-resolved plaintext API key. New key groups
+// intentionally keep their credential in the config snapshot rather than the
+// legacy system key store; callers still use Credential.Zero for the
+// temporary byte copy after the request header has been built.
+func BearerValue(key string) *Credential {
+	raw := []byte(key)
+	return &Credential{Header: "Authorization", Value: "Bearer " + key, raw: raw}
+}
+
+// XAPIKeyValue formats an already-resolved Anthropic API key.
+func XAPIKeyValue(key string) *Credential {
+	raw := []byte(key)
+	return &Credential{Header: "x-api-key", Value: key, raw: raw}
+}
+
 func read(ctx context.Context, secrets secret.Store, ref string, format func(key string) (string, string)) (*Credential, error) {
 	b, err := secrets.Get(ctx, ref)
 	if err != nil {

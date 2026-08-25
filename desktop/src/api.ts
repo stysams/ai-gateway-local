@@ -1,4 +1,4 @@
-import type { ClientID, Config, DiscoveredProviderModel, LocalAccess, LogSummary, PointClient, PointStatus, Provider, Route, Status, UsageReport } from "./types";
+import type { ClientID, Config, DiscoveredProviderModel, KeyGroup, LocalAccess, LogSummary, PointClient, PointStatus, Provider, Route, Status, UsageReport } from "./types";
 
 export class APIError extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); }
@@ -40,10 +40,14 @@ export const api = {
   providers: () => request<Provider[]>("/api/v1/providers"),
   saveProvider: (value: Record<string, unknown>, editing?: string) => request<Provider>(editing ? `/api/v1/providers/${editing}` : "/api/v1/providers", { method: editing ? "PUT" : "POST", body: JSON.stringify(value) }),
   deleteProvider: (id: string) => request<{ deleted: boolean; warning?: string }>(`/api/v1/providers/${id}`, { method: "DELETE" }),
-  probeProvider: (id: string) => request<{ ok: boolean; status: number; latency_ms: number; models?: number; error?: string; response?: string }>(`/api/v1/providers/${id}/probe`, { method: "POST" }),
-  discoverProviderModels: (value: { provider_id: string; adapter: string; base_url: string; models_url?: string; extra_headers?: Record<string, string>; api_key?: string }) =>
+  probeProvider: (id: string, keyID: string) => request<{ ok: boolean; status: number; latency_ms: number; models?: number; error?: string; response?: string }>(`/api/v1/providers/${id}/probe?key_id=${encodeURIComponent(keyID)}`, { method: "POST" }),
+  keyGroups: (providerID: string) => request<KeyGroup[]>(`/api/v1/providers/${providerID}/keys`),
+  saveKeyGroup: (providerID: string, keyID: string | undefined, value: Record<string, unknown>) => request<KeyGroup>(keyID ? `/api/v1/providers/${providerID}/keys/${keyID}` : `/api/v1/providers/${providerID}/keys`, { method: keyID ? "PUT" : "POST", body: JSON.stringify(keyID ? value : { ...value, key_id: value.key_id || keyID }) }),
+  deleteKeyGroup: (providerID: string, keyID: string) => request<{ deleted: boolean }>(`/api/v1/providers/${providerID}/keys/${keyID}`, { method: "DELETE" }),
+  probeKeyGroup: (providerID: string, keyID: string) => request<{ ok: boolean; status: number; latency_ms: number; models?: number; error?: string; response?: string }>(`/api/v1/providers/${providerID}/keys/${keyID}/probe`, { method: "POST" }),
+  discoverProviderModels: (value: { provider_id: string; key_id: string; adapter?: string; endpoint?: string; default_model?: string; base_url?: string; models_url?: string; extra_headers?: Record<string, string>; api_key?: string }) =>
     request<{ object: "list"; provider: string; data: DiscoveredProviderModel[] }>("/api/v1/provider-models/discover", { method: "POST", body: JSON.stringify(value) }),
-  updateProviderAvailability: (id: string, value: { enabled?: boolean; models?: Record<string, boolean> }) =>
+  updateProviderAvailability: (id: string, value: { enabled?: boolean; models?: Record<string, boolean>; key_groups?: Record<string, { enabled?: boolean; models?: Record<string, boolean> }> }) =>
     request<Provider>(`/api/v1/providers/${id}/availability`, { method: "PUT", body: JSON.stringify(value) }),
   updateRoute: (client: ClientID, route: Route) => request<Route & { client: ClientID }>(`/api/v1/routes/${client}`, { method: "PUT", body: JSON.stringify(route) }),
   client: (client: PointClient) => request<PointStatus>(`/api/v1/clients/${client}`),

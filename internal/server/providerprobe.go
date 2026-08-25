@@ -40,6 +40,7 @@ var providerProbeClient = &http.Client{
 type ProviderModel struct {
 	ID              string `json:"id"`
 	ProviderID      string `json:"provider_id"`
+	KeyID           string `json:"key_id,omitempty"`
 	RawID           string `json:"raw_id"`
 	DisplayName     string `json:"display_name,omitempty"`
 	OwnedBy         string `json:"owned_by,omitempty"`
@@ -49,9 +50,12 @@ type ProviderModel struct {
 
 type DiscoverProviderModelsRequest struct {
 	ProviderID   string            `json:"provider_id"`
+	KeyID        string            `json:"key_id,omitempty"`
 	Adapter      string            `json:"adapter"`
 	BaseURL      string            `json:"base_url"`
 	ModelsURL    string            `json:"models_url,omitempty"`
+	Endpoint     string            `json:"endpoint,omitempty"`
+	DefaultModel string            `json:"default_model,omitempty"`
 	ExtraHeaders map[string]string `json:"extra_headers"`
 	APIKey       *string           `json:"api_key"`
 }
@@ -59,6 +63,7 @@ type DiscoverProviderModelsRequest struct {
 type ProviderModelsResponse struct {
 	Object   string          `json:"object"`
 	Provider string          `json:"provider"`
+	KeyID    string          `json:"key_id,omitempty"`
 	Data     []ProviderModel `json:"data"`
 }
 
@@ -76,6 +81,33 @@ func (s *Server) handleProbeProvider(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if len(p.KeyGroups) > 0 {
+		keyID := strings.TrimSpace(r.URL.Query().Get("key_id"))
+		if keyID == "" {
+			if len(p.KeyGroups) != 1 {
+				writeAPIError(w, http.StatusConflict, "probe_key_required", "provider probe requires an explicit key_id when multiple key groups exist", nil)
+				return
+			}
+			for id := range p.KeyGroups {
+				keyID = id
+			}
+		}
+		group, exists := p.KeyGroups[keyID]
+		if !exists {
+			writeAPIError(w, http.StatusNotFound, "key_group_not_found", fmt.Sprintf("key group %q does not exist for provider %q", keyID, id), nil)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), providerProbeTimeout)
+		defer cancel()
+		started := time.Now()
+		status, err, responseBody := s.probeKeyGroup(ctx, id, keyID, p, group)
+		result := ProbeResponse{OK: err == nil, Status: status, LatencyMS: time.Since(started).Milliseconds(), Models: len(group.Models), Response: responseBody}
+		if err != nil {
+			result.Error = err.Error()
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), providerProbeTimeout)
 	defer cancel()
 	started := time.Now()
@@ -89,6 +121,61 @@ func (s *Server) handleProbeProvider(w http.ResponseWriter, r *http.Request) {
 		result.Error = err.Error()
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) probeKeyGroup(ctx context.Context, providerID, keyID string, p config.Provider, group config.KeyGroup) (int, error, string) {
+	model := strings.TrimSpace(group.DefaultModel)
+	adapter := group.ModelAdapter(model)
+	requestURL := endpoint.Join(p.BaseURL, adapter, group.EffectiveEndpoint(model))
+	var payload any
+	switch adapter {
+	case endpoint.Chat:
+		payload = map[string]any{"model": model, "messages": []map[string]string{{"role": "user", "content": probePrompt}}, "stream": false}
+	case endpoint.Responses:
+		payload = map[string]any{"model": model, "input": probePrompt, "stream": false}
+	case endpoint.Messages:
+		payload = map[string]any{"model": model, "max_tokens": 256, "messages": []map[string]string{{"role": "user", "content": probePrompt}}, "stream": false}
+	default:
+		return 0, fmt.Errorf("provider %q key group %q model %q uses unsupported adapter %q", providerID, keyID, model, adapter), ""
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return 0, fmt.Errorf("encode probe request: %w", err), ""
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(body))
+	if err != nil {
+		return 0, fmt.Errorf("build probe request: %w", err), ""
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "ai-gateway/provider-probe")
+	applyExtraHeaders(req.Header, p.ExtraHeaders)
+	if group.APIKey != "" {
+		if adapter == endpoint.Messages {
+			req.Header.Set("x-api-key", group.APIKey)
+			req.Header.Set("anthropic-version", anthropic.APIVersion)
+		} else {
+			req.Header.Set("Authorization", "Bearer "+group.APIKey)
+		}
+	} else if adapter == endpoint.Messages {
+		req.Header.Set("anthropic-version", anthropic.APIVersion)
+	}
+	resp, err := providerProbeClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("probe request failed: %w", err), ""
+	}
+	defer resp.Body.Close()
+	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxProbeResponse+1))
+	if readErr != nil {
+		return resp.StatusCode, fmt.Errorf("read probe response: %w", readErr), ""
+	}
+	if len(responseBody) > maxProbeResponse {
+		responseBody = responseBody[:maxProbeResponse]
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return resp.StatusCode, fmt.Errorf("upstream returned %s", resp.Status), ""
+	}
+	return resp.StatusCode, nil, formatProbeResponse(responseBody)
 }
 
 // probeProvider performs a minimal real completion request. Model discovery is
@@ -197,6 +284,36 @@ func (s *Server) handleProviderModels(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if len(p.KeyGroups) > 0 {
+		keyID := strings.TrimSpace(r.URL.Query().Get("key_id"))
+		if keyID == "" && len(p.KeyGroups) == 1 {
+			for id := range p.KeyGroups {
+				keyID = id
+			}
+		}
+		if keyID == "" {
+			writeAPIError(w, http.StatusConflict, "probe_key_required", "provider model discovery requires an explicit key_id when multiple key groups exist", nil)
+			return
+		}
+		group, exists := p.KeyGroups[keyID]
+		if !exists {
+			writeAPIError(w, http.StatusNotFound, "key_group_not_found", fmt.Sprintf("key group %q does not exist for provider %q", keyID, id), nil)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), providerProbeTimeout)
+		defer cancel()
+		models, status, err, _ := s.fetchProviderModelsForGroup(ctx, id, keyID, p, group, nil, true)
+		if err != nil {
+			details := map[string]string{}
+			if status != 0 {
+				details["upstream_status"] = fmt.Sprint(status)
+			}
+			writeAPIError(w, http.StatusBadGateway, "provider_models_failed", err.Error(), details)
+			return
+		}
+		writeJSON(w, http.StatusOK, ProviderModelsResponse{Object: "list", Provider: id, KeyID: keyID, Data: models})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), providerProbeTimeout)
 	defer cancel()
 	models, status, err := s.fetchProviderModels(ctx, id, p)
@@ -211,12 +328,98 @@ func (s *Server) handleProviderModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ProviderModelsResponse{Object: "list", Provider: id, Data: models})
 }
 
+func (s *Server) handleKeyGroupModels(w http.ResponseWriter, r *http.Request) {
+	providerID, keyID := r.PathValue("id"), r.PathValue("key_id")
+	provider, group, ok := s.lookupKeyGroup(w, providerID, keyID)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), providerProbeTimeout)
+	defer cancel()
+	models, status, err, _ := s.fetchProviderModelsForGroup(ctx, providerID, keyID, provider, group, nil, true)
+	if err != nil {
+		details := map[string]string{}
+		if status != 0 {
+			details["upstream_status"] = fmt.Sprint(status)
+		}
+		writeAPIError(w, http.StatusBadGateway, "provider_models_failed", err.Error(), details)
+		return
+	}
+	writeJSON(w, http.StatusOK, ProviderModelsResponse{Object: "list", Provider: providerID, KeyID: keyID, Data: models})
+}
+
 func (s *Server) handleDiscoverProviderModels(w http.ResponseWriter, r *http.Request) {
 	var request DiscoverProviderModelsRequest
 	if !decodeJSON(w, r, &request) {
 		return
 	}
 	id := strings.TrimSpace(request.ProviderID)
+	if keyID := strings.TrimSpace(request.KeyID); keyID != "" {
+		var provider config.Provider
+		var group config.KeyGroup
+		if existing := s.cfg.View(); existing != nil {
+			if saved, ok := existing.Providers[id]; ok {
+				provider = saved
+				group = saved.KeyGroups[keyID]
+			}
+		}
+		if provider.Name == "" {
+			provider = config.Provider{Name: "model discovery"}
+		}
+		if strings.TrimSpace(request.BaseURL) != "" {
+			provider.BaseURL = strings.TrimSpace(request.BaseURL)
+		}
+		if strings.TrimSpace(request.ModelsURL) != "" {
+			provider.ModelsURL = strings.TrimSpace(request.ModelsURL)
+		}
+		provider.ExtraHeaders = cloneStringMap(request.ExtraHeaders)
+		if strings.TrimSpace(request.Endpoint) != "" {
+			group.Endpoint = strings.TrimSpace(request.Endpoint)
+		}
+		if strings.TrimSpace(request.Adapter) != "" {
+			group.Adapter = strings.TrimSpace(request.Adapter)
+		}
+		if strings.TrimSpace(request.DefaultModel) != "" {
+			group.DefaultModel = strings.TrimSpace(request.DefaultModel)
+		}
+		if group.DefaultModel == "" {
+			group.DefaultModel = "discovery-placeholder"
+		}
+		if group.Endpoint == "" && group.Adapter == "" {
+			writeAPIError(w, http.StatusBadRequest, "config_invalid", "key group endpoint or adapter is required for model discovery", map[string]string{"field": "endpoint"})
+			return
+		}
+		// An explicit non-empty draft key replaces the saved value. An empty
+		// draft key means "reuse the currently saved key-group api_key".
+		if request.APIKey != nil && strings.TrimSpace(*request.APIKey) != "" {
+			group.APIKey = *request.APIKey
+		}
+		group.Name = "model discovery"
+		group.Models = []config.ProviderModel{{ID: group.DefaultModel, Endpoint: group.Endpoint, Adapter: group.Adapter}}
+		provider.KeyGroups = map[string]config.KeyGroup{keyID: group}
+		if err := config.ValidateProvider(id, provider); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "config_invalid", err.Error(), map[string]string{"field": validationField(err)})
+			return
+		}
+		var key []byte
+		if group.APIKey != "" {
+			key = []byte(group.APIKey)
+			defer secret.Zero(key)
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), providerProbeTimeout)
+		defer cancel()
+		models, status, err, _ := s.fetchProviderModelsForGroup(ctx, id, keyID, provider, group, key, false)
+		if err != nil {
+			details := map[string]string{}
+			if status != 0 {
+				details["upstream_status"] = fmt.Sprint(status)
+			}
+			writeAPIError(w, http.StatusBadGateway, "provider_models_failed", err.Error(), details)
+			return
+		}
+		writeJSON(w, http.StatusOK, ProviderModelsResponse{Object: "list", Provider: id, KeyID: keyID, Data: models})
+		return
+	}
 	p := config.Provider{Name: "model discovery", Adapter: strings.TrimSpace(request.Adapter), BaseURL: strings.TrimSpace(request.BaseURL), ModelsURL: strings.TrimSpace(request.ModelsURL), ExtraHeaders: cloneStringMap(request.ExtraHeaders), DefaultModel: "discovery-placeholder"}
 	if existing := s.cfg.View(); existing != nil {
 		if saved, ok := existing.Providers[id]; ok {
@@ -275,11 +478,24 @@ func (s *Server) fetchProviderModelsDetailed(ctx context.Context, id string, p c
 }
 
 func (s *Server) fetchProviderModelsDetailedWithKey(ctx context.Context, id string, p config.Provider, suppliedKey []byte, cache bool) ([]ProviderModel, int, error, string) {
-	endpoint, err := providerModelsURL(p)
+	return s.fetchProviderModelsRequest(ctx, id, "", p, p.Adapter, suppliedKey, cache)
+}
+
+func (s *Server) fetchProviderModelsForGroup(ctx context.Context, providerID, keyID string, p config.Provider, group config.KeyGroup, suppliedKey []byte, cache bool) ([]ProviderModel, int, error, string) {
+	key := suppliedKey
+	if key == nil && group.APIKey != "" {
+		key = []byte(group.APIKey)
+		defer secret.Zero(key)
+	}
+	return s.fetchProviderModelsRequest(ctx, providerID, keyID, p, group.ModelAdapter(group.DefaultModel), key, cache)
+}
+
+func (s *Server) fetchProviderModelsRequest(ctx context.Context, id, keyID string, p config.Provider, adapter string, suppliedKey []byte, cache bool) ([]ProviderModel, int, error, string) {
+	modelsURL, err := providerModelsURLFor(p, adapter)
 	if err != nil {
 		return nil, 0, err, ""
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("build models request: %w", err), ""
 	}
@@ -297,7 +513,7 @@ func (s *Server) fetchProviderModelsDetailedWithKey(ctx context.Context, id stri
 		}
 		defer secret.Zero(key)
 	}
-	if p.Adapter == "anthropic" {
+	if adapter == "anthropic" {
 		if len(key) > 0 {
 			req.Header.Set("x-api-key", string(key))
 		}
@@ -371,11 +587,19 @@ func (s *Server) fetchProviderModelsDetailedWithKey(ctx context.Context, id stri
 		if maxOutputTokens < 0 {
 			maxOutputTokens = 0
 		}
-		models = append(models, ProviderModel{ID: id + "/" + rawID, ProviderID: id, RawID: rawID, DisplayName: displayName, OwnedBy: model.OwnedBy, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens})
+		canonicalID := id + "/" + rawID
+		if keyID != "" {
+			canonicalID = id + "/" + keyID + "/" + rawID
+		}
+		models = append(models, ProviderModel{ID: canonicalID, ProviderID: id, KeyID: keyID, RawID: rawID, DisplayName: displayName, OwnedBy: model.OwnedBy, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens})
 	}
 	if cache {
 		sort.Slice(models, func(i, j int) bool { return models[i].RawID < models[j].RawID })
-		s.cacheModels(id, models)
+		cacheID := id
+		if keyID != "" {
+			cacheID = modelCacheKey(id, keyID)
+		}
+		s.cacheModels(cacheID, models)
 	}
 	return models, resp.StatusCode, nil, sanitizeProbeBody(body, true)
 }
@@ -412,6 +636,14 @@ func (s *Server) invalidateModels(id string) {
 		return
 	}
 	delete(s.modelCache, id)
+	// Provider-level invalidation must also drop every key-group cache entry
+	// keyed as providerID + NUL + keyID (see modelCacheKey).
+	prefix := id + "\x00"
+	for cacheID := range s.modelCache {
+		if strings.HasPrefix(cacheID, prefix) {
+			delete(s.modelCache, cacheID)
+		}
+	}
 }
 
 func (s *Server) cachedModels() map[string][]ProviderModel {
@@ -425,6 +657,10 @@ func (s *Server) cachedModels() map[string][]ProviderModel {
 }
 
 func providerModelsURL(p config.Provider) (string, error) {
+	return providerModelsURLFor(p, p.Adapter)
+}
+
+func providerModelsURLFor(p config.Provider, adapter string) (string, error) {
 	base, err := url.Parse(strings.TrimRight(p.BaseURL, "/"))
 	if err != nil {
 		return "", fmt.Errorf("parse provider base URL: %w", err)
@@ -437,14 +673,18 @@ func providerModelsURL(p config.Provider) (string, error) {
 		return custom.String(), nil
 	}
 	path := strings.TrimRight(base.Path, "/")
-	if p.Adapter == "anthropic" && !strings.HasSuffix(path, "/v1") {
+	if adapter == "anthropic" && !strings.HasSuffix(path, "/v1") {
 		path += "/v1"
 	}
 	base.Path = path + "/models"
-	if p.Adapter == "anthropic" {
+	if adapter == "anthropic" {
 		q := base.Query()
 		q.Set("limit", "1000")
 		base.RawQuery = q.Encode()
 	}
 	return base.String(), nil
+}
+
+func modelCacheKey(providerID, keyID string) string {
+	return providerID + "\x00" + keyID
 }

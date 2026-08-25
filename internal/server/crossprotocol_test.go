@@ -25,16 +25,33 @@ func dualProviderConfig(t *testing.T, chatAdapter, antAdapter string) (*config.C
 	antUp := newFakeUpstream(t, nil)
 	c := config.Defaults()
 	c.Providers["openrouter"] = config.Provider{
-		Name: "OpenRouter", Adapter: chatAdapter,
-		BaseURL: chatUp.URL, DefaultModel: "anthropic/claude-sonnet-4",
+		Name: "OpenRouter", BaseURL: chatUp.URL,
+		KeyGroups: map[string]config.KeyGroup{
+			"default": {Name: "Default", Adapter: chatAdapter, Endpoint: endpointForAdapter(chatAdapter), DefaultModel: "anthropic/claude-sonnet-4", Models: []config.ProviderModel{{ID: "anthropic/claude-sonnet-4"}}},
+		},
 	}
 	c.Providers["ollama"] = config.Provider{
-		Name: "Ollama", Adapter: antAdapter,
-		BaseURL: antUp.URL, DefaultModel: "qwen3",
+		Name: "Ollama", BaseURL: antUp.URL,
+		KeyGroups: map[string]config.KeyGroup{
+			"default": {Name: "Default", Adapter: antAdapter, Endpoint: endpointForAdapter(antAdapter), DefaultModel: "qwen3", Models: []config.ProviderModel{{ID: "qwen3"}}},
+		},
 	}
-	c.Routes.Codex = config.Route{Provider: "openrouter", Model: "anthropic/claude-sonnet-4"}
-	c.Routes.Generic = config.Route{Provider: "ollama", Model: "qwen3"}
+	c.Routes.Codex = config.Route{Provider: "openrouter", KeyID: "default", Model: "anthropic/claude-sonnet-4"}
+	c.Routes.Generic = config.Route{Provider: "ollama", KeyID: "default", Model: "qwen3"}
 	return c, chatUp.URL, antUp.URL
+}
+
+func endpointForAdapter(adapter string) string {
+	switch adapter {
+	case "openai-chat":
+		return "/chat/completions"
+	case "openai-responses":
+		return "/responses"
+	case "anthropic":
+		return "/messages"
+	default:
+		return ""
+	}
 }
 
 // responsesTextHandler answers a non-streaming Responses document.
@@ -72,9 +89,7 @@ const messagesTextBody = `{
 func TestCrossChatToResponsesNonStream(t *testing.T) {
 	up := newFakeUpstream(t, responsesTextHandler(responsesTextBody))
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["ollama"]
-	p.Adapter = "openai-responses"
-	cfg.Providers["ollama"] = p
+	setKeyGroupWire(cfg, "ollama", "default", "openai-responses")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/v1/chat/completions",
@@ -103,9 +118,7 @@ func TestCrossChatToResponsesNonStream(t *testing.T) {
 func TestCrossResponsesToChatNonStream(t *testing.T) {
 	up := newFakeUpstream(t, nil) // chat 默认 handler 返回 pong
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["ollama"]
-	p.Adapter = "openai-chat"
-	cfg.Providers["ollama"] = p
+	setKeyGroupWire(cfg, "ollama", "default", "openai-chat")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/v1/responses",
@@ -136,9 +149,7 @@ func TestCrossResponsesToChatNonStream(t *testing.T) {
 func TestCrossResponsesToChatReplaysAssistantOutputText(t *testing.T) {
 	up := newFakeUpstream(t, nil)
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["openrouter"]
-	p.Adapter = "openai-chat"
-	cfg.Providers["openrouter"] = p
+	setKeyGroupWire(cfg, "openrouter", "default", "openai-chat")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	body := []byte(`{"model":"gateway-default","input":[
@@ -175,9 +186,7 @@ func TestCrossResponsesToChatReplaysAssistantOutputText(t *testing.T) {
 func TestCrossMessagesToChatNonStream(t *testing.T) {
 	up := newFakeUpstream(t, nil)
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["ollama"]
-	p.Adapter = "openai-chat"
-	cfg.Providers["ollama"] = p
+	setKeyGroupWire(cfg, "ollama", "default", "openai-chat")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/v1/messages",
@@ -208,9 +217,7 @@ func TestCrossClaudeMessagesSystemRoleToChatStream(t *testing.T) {
 		io.WriteString(w, "data: [DONE]\n\n")
 	})
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["openrouter"]
-	p.Adapter = "openai-chat"
-	cfg.Providers["openrouter"] = p
+	setKeyGroupWire(cfg, "openrouter", "default", "openai-chat")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/c/claude/v1/messages", []byte(`{
@@ -253,9 +260,7 @@ func TestCrossClaudeMessagesSystemRoleToChatStream(t *testing.T) {
 func TestCrossResponsesCodexDesktopToolsToMessages(t *testing.T) {
 	up := newFakeUpstream(t, messagesTextHandler(messagesTextBody))
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["openrouter"]
-	p.Adapter = "anthropic"
-	cfg.Providers["openrouter"] = p
+	setKeyGroupWire(cfg, "openrouter", "default", "anthropic")
 	s, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	body := []byte(`{
@@ -336,9 +341,7 @@ func TestCrossResponsesToChatCustomToolCallArgumentsAreString(t *testing.T) {
 	// (docs/v1-scheme.md §20 2026-08-16 Console Go).
 	up := newFakeUpstream(t, nil)
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["openrouter"]
-	p.Adapter = "openai-chat"
-	cfg.Providers["openrouter"] = p
+	setKeyGroupWire(cfg, "openrouter", "default", "openai-chat")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	body := []byte(`{
@@ -390,9 +393,7 @@ func TestCrossResponsesToChatToolResultsFollowToolCalls(t *testing.T) {
 	// function_call_output. Chat Completions rejects that order.
 	up := newFakeUpstream(t, nil)
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["openrouter"]
-	p.Adapter = "openai-chat"
-	cfg.Providers["openrouter"] = p
+	setKeyGroupWire(cfg, "openrouter", "default", "openai-chat")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	body := []byte(`{
@@ -465,9 +466,7 @@ data: {"type":"message_stop"}
 `)
 	})
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["openrouter"]
-	p.Adapter = "anthropic"
-	cfg.Providers["openrouter"] = p
+	setKeyGroupWire(cfg, "openrouter", "default", "anthropic")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	body := []byte(`{
@@ -525,9 +524,7 @@ func TestCrossResponsesChatToolCallIndexStream(t *testing.T) {
 func TestCrossResponsesToMessagesNonStream(t *testing.T) {
 	up := newFakeUpstream(t, messagesTextHandler(messagesTextBody))
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["openrouter"]
-	p.Adapter = "anthropic"
-	cfg.Providers["openrouter"] = p
+	setKeyGroupWire(cfg, "openrouter", "default", "anthropic")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/c/codex/v1/responses",
@@ -549,9 +546,7 @@ func TestCrossResponsesToMessagesNonStream(t *testing.T) {
 func TestCrossMessagesToResponsesNonStream(t *testing.T) {
 	up := newFakeUpstream(t, responsesTextHandler(responsesTextBody))
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["openrouter"]
-	p.Adapter = "openai-responses"
-	cfg.Providers["openrouter"] = p
+	setKeyGroupWire(cfg, "openrouter", "default", "openai-responses")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/c/codex/v1/messages",
@@ -577,9 +572,7 @@ func TestCrossMessagesToResponsesNonStream(t *testing.T) {
 func TestCrossMessagesAssistantHistoryToResponses(t *testing.T) {
 	up := newFakeUpstream(t, responsesTextHandler(responsesTextBody))
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["openrouter"]
-	p.Adapter = "openai-responses"
-	cfg.Providers["openrouter"] = p
+	setKeyGroupWire(cfg, "openrouter", "default", "openai-responses")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/c/claude/v1/messages",
@@ -639,9 +632,7 @@ data: {"type":"message_stop"}
 		w.Write([]byte(body))
 	})
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["ollama"]
-	p.Adapter = "anthropic"
-	cfg.Providers["ollama"] = p
+	setKeyGroupWire(cfg, "ollama", "default", "anthropic")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/v1/chat/completions",
@@ -691,9 +682,7 @@ data: {"type":"response.completed","response":{"id":"r"}}
 		w.Write([]byte(body))
 	})
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["ollama"]
-	p.Adapter = "openai-responses"
-	cfg.Providers["ollama"] = p
+	setKeyGroupWire(cfg, "ollama", "default", "openai-responses")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/v1/chat/completions",
@@ -737,9 +726,7 @@ data: {"type":"response.completed","response":{"id":"r"}}
 		w.Write([]byte(body))
 	})
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["ollama"]
-	p.Adapter = "openai-responses"
-	cfg.Providers["ollama"] = p
+	setKeyGroupWire(cfg, "ollama", "default", "openai-responses")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/v1/messages",
@@ -762,9 +749,7 @@ data: {"type":"response.completed","response":{"id":"r"}}
 func TestCrossImageRejected(t *testing.T) {
 	up := newFakeUpstream(t, nil)
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["ollama"]
-	p.Adapter = "openai-responses"
-	cfg.Providers["ollama"] = p
+	setKeyGroupWire(cfg, "ollama", "default", "openai-responses")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	body := `{"model":"gateway-default","messages":[{"role":"user","content":[{"type":"text","text":"x"},{"type":"image_url","image_url":{"url":"https://x/i.png"}}]}]}`
@@ -778,9 +763,7 @@ func TestCrossImageRejected(t *testing.T) {
 	// messages 侧同样拒绝。
 	up2 := newFakeUpstream(t, nil)
 	cfg2 := dataPlaneConfig(up2.URL, up2.URL, false)
-	p2 := cfg2.Providers["ollama"]
-	p2.Adapter = "openai-chat"
-	cfg2.Providers["ollama"] = p2
+	setKeyGroupWire(cfg2, "ollama", "default", "openai-chat")
 	_, addr2 := startWithStore(t, cfg2, secret.NewMemStore())
 	body2 := `{"model":"gateway-default","messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]}]}`
 	resp2, data2 := chatPost(t, addr2, "/v1/messages", []byte(body2), nil)
@@ -801,9 +784,9 @@ func TestCrossImageSupportedPreservesURLAndBase64(t *testing.T) {
 	up := newFakeUpstream(t, responsesTextHandler(responsesTextBody))
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
 	p := cfg.Providers["ollama"]
-	p.Adapter = "openai-responses"
 	p.Capabilities.ImageInput = true
 	cfg.Providers["ollama"] = p
+	setKeyGroupWire(cfg, "ollama", "default", "openai-responses")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	body := `{"model":"gateway-default","messages":[{"role":"user","content":[{"type":"text","text":"x"},{"type":"image_url","image_url":{"url":"https://x/i.png"}}]}]}`
@@ -819,9 +802,9 @@ func TestCrossImageSupportedPreservesURLAndBase64(t *testing.T) {
 	up2 := newFakeUpstream(t, nil)
 	cfg2 := dataPlaneConfig(up2.URL, up2.URL, false)
 	p2 := cfg2.Providers["ollama"]
-	p2.Adapter = "openai-chat"
 	p2.Capabilities.ImageInput = true
 	cfg2.Providers["ollama"] = p2
+	setKeyGroupWire(cfg2, "ollama", "default", "openai-chat")
 	_, addr2 := startWithStore(t, cfg2, secret.NewMemStore())
 	body2 := `{"model":"gateway-default","messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]}]}`
 	resp2, data2 := chatPost(t, addr2, "/v1/messages", []byte(body2), nil)
@@ -838,9 +821,9 @@ func TestReasoningPreservedBetweenOpenAIProtocols(t *testing.T) {
 	up := newFakeUpstream(t, responsesTextHandler(responsesTextBody))
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
 	p := cfg.Providers["ollama"]
-	p.Adapter = "openai-responses"
 	p.Capabilities.Reasoning = true
 	cfg.Providers["ollama"] = p
+	setKeyGroupWire(cfg, "ollama", "default", "openai-responses")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	body := `{"model":"gateway-default","reasoning_effort":"high","messages":[{"role":"user","content":"solve"}]}`
@@ -885,9 +868,9 @@ func TestReasoningDowngradeWhenTargetProtocolCannotExpress(t *testing.T) {
 	up := newFakeUpstream(t, nil)
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
 	p := cfg.Providers["ollama"]
-	p.Adapter = "openai-chat"
 	p.Capabilities.Reasoning = true
 	cfg.Providers["ollama"] = p
+	setKeyGroupWire(cfg, "ollama", "default", "openai-chat")
 	s, addr := startWithStore(t, cfg, secret.NewMemStore())
 	body := `{"model":"gateway-default","thinking":{"type":"enabled","budget_tokens":2048},"messages":[{"role":"user","content":"solve"}]}`
 	resp, data := chatPost(t, addr, "/v1/messages", []byte(body), nil)
@@ -913,9 +896,7 @@ func TestCrossStreamBrokenUpstream(t *testing.T) {
 		// 断流：无 [DONE]、无 completed。
 	})
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["ollama"]
-	p.Adapter = "openai-responses"
-	cfg.Providers["ollama"] = p
+	setKeyGroupWire(cfg, "ollama", "default", "openai-responses")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/v1/chat/completions",
@@ -946,9 +927,7 @@ func TestCrossStreamClientCancel(t *testing.T) {
 		close(upstreamCanceled)
 	})
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["ollama"]
-	p.Adapter = "openai-responses"
-	cfg.Providers["ollama"] = p
+	setKeyGroupWire(cfg, "ollama", "default", "openai-responses")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -974,9 +953,7 @@ func TestCrossStreamClientCancel(t *testing.T) {
 func TestCrossSameProtocolPassthroughResponses(t *testing.T) {
 	up := newFakeUpstream(t, responsesTextHandler(responsesTextBody))
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["ollama"]
-	p.Adapter = "openai-responses"
-	cfg.Providers["ollama"] = p
+	setKeyGroupWire(cfg, "ollama", "default", "openai-responses")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	body := `{"model":"gateway-default","input":"hi","temperature":0.7,"x-custom":{"a":1}}`
@@ -1008,10 +985,7 @@ func TestCrossSameProtocolPassthroughMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["ollama"]
-	p.Adapter = "anthropic"
-	p.SecretRef = "provider.ollama"
-	cfg.Providers["ollama"] = p
+	setKeyGroupWire(cfg, "ollama", "default", "anthropic")
 	_, addr := startWithStore(t, cfg, store)
 
 	resp, data := chatPost(t, addr, "/v1/messages",
@@ -1045,15 +1019,23 @@ func TestCrossConcurrentIsolation(t *testing.T) {
 	}
 	cfg := config.Defaults()
 	cfg.Providers["openrouter"] = config.Provider{
-		Name: "OpenRouter", Adapter: "openai-chat",
-		BaseURL: chatUp.URL, DefaultModel: "m1", SecretRef: "provider.openrouter",
+		Name: "OpenRouter", BaseURL: chatUp.URL,
+		KeyGroups: map[string]config.KeyGroup{
+			"default": {Name: "Default", Adapter: "openai-chat", Endpoint: "/chat/completions", DefaultModel: "m1", APIKey: "sk-chat-key", Models: []config.ProviderModel{{ID: "m1"}}},
+		},
 	}
 	cfg.Providers["ollama"] = config.Provider{
-		Name: "Ollama", Adapter: "anthropic",
-		BaseURL: antUp.URL, DefaultModel: "m2",
+		Name: "Ollama", BaseURL: antUp.URL,
+		KeyGroups: map[string]config.KeyGroup{
+			"default": {Name: "Default", Adapter: "anthropic", Endpoint: "/messages", DefaultModel: "m2", Models: []config.ProviderModel{{ID: "m2"}}},
+		},
 	}
-	cfg.Routes.Codex = config.Route{Provider: "openrouter", Model: "m1"}
-	cfg.Routes.Generic = config.Route{Provider: "ollama", Model: "m2"}
+	// Keep every first-class route on an enabled model after replacing catalogs.
+	setRoute(cfg, "codex", "openrouter", "default", "m1")
+	setRoute(cfg, "claude", "openrouter", "default", "m1")
+	setRoute(cfg, "claude_desktop", "openrouter", "default", "m1")
+	setRoute(cfg, "grok", "openrouter", "default", "m1")
+	setRoute(cfg, "generic", "ollama", "default", "m2")
 	_, addr := startWithStore(t, cfg, store)
 
 	var wg sync.WaitGroup
@@ -1097,9 +1079,7 @@ func TestCrossConcurrentIsolation(t *testing.T) {
 func TestCrossClaudeToolSearchResultToResponses(t *testing.T) {
 	up := newFakeUpstream(t, responsesTextHandler(responsesTextBody))
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["openrouter"]
-	p.Adapter = "openai-responses"
-	cfg.Providers["openrouter"] = p
+	setKeyGroupWire(cfg, "openrouter", "default", "openai-responses")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	body := []byte(`{
@@ -1201,9 +1181,7 @@ func TestCrossClaudeToolSearchResultToChat(t *testing.T) {
 func TestCrossToolResultContinuation(t *testing.T) {
 	up := newFakeUpstream(t, responsesTextHandler(responsesTextBody))
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["ollama"]
-	p.Adapter = "openai-responses"
-	cfg.Providers["ollama"] = p
+	setKeyGroupWire(cfg, "ollama", "default", "openai-responses")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	body := `{"model":"gateway-default","messages":[

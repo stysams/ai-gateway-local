@@ -124,11 +124,57 @@ func Parse(data []byte) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, &ParseError{Err: err}
 	}
+	if err := rejectLegacyProviderShape(data); err != nil {
+		return nil, &ParseError{Err: err}
+	}
 	cfg.normalize()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// rejectLegacyProviderShape makes the new configuration contract explicit.
+// The old provider-level credential fields remain on the Go struct only so
+// package-level fixtures can be migrated independently; they are never
+// accepted from config.yaml or the new management API.
+func rejectLegacyProviderShape(data []byte) error {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return err
+	}
+	if len(root.Content) == 0 {
+		return nil
+	}
+	doc := root.Content[0]
+	providers := mappingValue(doc, "providers")
+	if providers == nil || providers.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(providers.Content); i += 2 {
+		providerID := providers.Content[i].Value
+		provider := providers.Content[i+1]
+		for j := 0; j+1 < len(provider.Content); j += 2 {
+			field := providers.Content[i+1].Content[j].Value
+			switch field {
+			case "adapter", "default_model", "models", "secret_ref":
+				return fmt.Errorf("providers.%s.%s: provider-level field was removed; use key_groups", providerID, field)
+			}
+		}
+	}
+	return nil
+}
+
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
 }
 
 // Write persists cfg following the atomic write procedure from

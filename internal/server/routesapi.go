@@ -11,6 +11,7 @@ import (
 
 type RouteRequest struct {
 	Provider string `json:"provider"`
+	KeyID    string `json:"key_id"`
 	Model    string `json:"model"`
 }
 
@@ -25,6 +26,7 @@ func (s *Server) handlePutRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Provider = strings.TrimSpace(req.Provider)
+	req.KeyID = strings.TrimSpace(req.KeyID)
 	req.Model = strings.TrimSpace(req.Model)
 	if req.Model == "" {
 		writeAPIError(w, http.StatusBadRequest, "config_invalid", "route model must not be empty", map[string]string{"field": "routes." + string(client) + ".model"})
@@ -42,7 +44,19 @@ func (s *Server) handlePutRoute(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "config_invalid", fmt.Sprintf("provider %q does not exist", req.Provider), map[string]string{"field": "routes." + string(client) + ".provider"})
 		return
 	}
-	next := config.Route{Provider: req.Provider, Model: req.Model}
+	provider := cfg.Providers[req.Provider]
+	if len(provider.KeyGroups) > 0 {
+		if req.KeyID == "" {
+			writeAPIError(w, http.StatusBadRequest, "route_key_required", "route key_id must not be empty", map[string]string{"field": "routes." + string(client) + ".key_id"})
+			return
+		}
+		group, exists := provider.KeyGroups[req.KeyID]
+		if !exists || !group.EnabledValue() || !group.ModelEnabled(req.Model) {
+			writeAPIError(w, http.StatusBadRequest, "config_invalid", fmt.Sprintf("key group %q does not expose enabled model %q", req.KeyID, req.Model), map[string]string{"field": "routes." + string(client) + ".model"})
+			return
+		}
+	}
+	next := config.Route{Provider: req.Provider, KeyID: req.KeyID, Model: req.Model}
 	switch client {
 	case route.Codex:
 		cfg.Routes.Codex = next
@@ -71,5 +85,5 @@ func (s *Server) handlePutRoute(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "config_write_failed", err.Error(), nil)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"client": client, "provider": next.Provider, "model": next.Model})
+	writeJSON(w, http.StatusOK, map[string]any{"client": client, "provider": next.Provider, "key_id": next.KeyID, "model": next.Model})
 }

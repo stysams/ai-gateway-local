@@ -2,13 +2,14 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import type { Provider } from "./types";
 
-const status = { version: "test", pid: 42, listen: "127.0.0.1:12600", logging_enabled: false, logging_body_enabled: false, autostart_enabled: false, clients: { codex: { point_state: "not_pointed" }, claude: { point_state: "client_not_installed" }, "claude-desktop": { point_state: "not_pointed", mcp_point_state: "not_pointed" }, grok: { point_state: "drifted" }, generic: { point_state: "unknown" } }, routes: { codex: { provider: "ollama", model: "qwen3" }, claude: { provider: "ollama", model: "qwen3" }, "claude-desktop": { provider: "ollama", model: "qwen3" }, grok: { provider: "ollama", model: "qwen3" }, generic: { provider: "ollama", model: "qwen3" } } };
-const localAccess = { base_url: "http://127.0.0.1:12600/v1", api_key: "ai-gateway", auth_required: false, default_model: "gateway-default", default_route: status.routes.generic, endpoints: { models: "http://127.0.0.1:12600/v1/models", chat_completions: "http://127.0.0.1:12600/v1/chat/completions", responses: "http://127.0.0.1:12600/v1/responses", messages: "http://127.0.0.1:12600/v1/messages" }, models: [{ id: "gateway-default", object: "model", created: 0, owned_by: "ai-gateway", display_name: "gateway-default" }, { id: "ollama/qwen3", object: "model", created: 0, owned_by: "ollama", display_name: "ollama/qwen3" }] };
-const config = { version: 1, listen: { port: 12600 }, logging: { enabled: false, body: false, redact: true, dir: "logs" }, ui: { language: "en-US", logging_notice_accepted: true }, autostart: { enabled: false }, providers: { ollama: { name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", models: [{ id: "qwen3", name: "Qwen 3" }], capabilities: { image_input: false, reasoning: false } }, openrouter: { name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", models: [{ id: "gpt-5", name: "GPT-5" }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4" }], capabilities: { image_input: true, reasoning: true } } }, routes: status.routes };
-const providers = [
-  { id: "ollama", name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", enabled: true, models: [{ id: "qwen3", name: "Qwen 3" }], has_secret: false, capabilities: { image_input: false, reasoning: false } },
-  { id: "openrouter", name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", enabled: true, models: [{ id: "gpt-5", name: "GPT-5" }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4" }], has_secret: true, capabilities: { image_input: true, reasoning: true } },
+const status = { version: "test", pid: 42, listen: "127.0.0.1:12600", logging_enabled: false, logging_body_enabled: false, autostart_enabled: false, clients: { codex: { point_state: "not_pointed" }, claude: { point_state: "client_not_installed" }, "claude-desktop": { point_state: "not_pointed", mcp_point_state: "not_pointed" }, grok: { point_state: "drifted" }, generic: { point_state: "unknown" } }, routes: { codex: { provider: "ollama", key_id: "default", model: "qwen3" }, claude: { provider: "ollama", key_id: "default", model: "qwen3" }, "claude-desktop": { provider: "ollama", key_id: "default", model: "qwen3" }, grok: { provider: "ollama", key_id: "default", model: "qwen3" }, generic: { provider: "ollama", key_id: "default", model: "qwen3" } } };
+const localAccess = { base_url: "http://127.0.0.1:12600/v1", api_key: "ai-gateway", auth_required: false, default_model: "gateway-default", default_route: status.routes.generic, endpoints: { models: "http://127.0.0.1:12600/v1/models", chat_completions: "http://127.0.0.1:12600/v1/chat/completions", responses: "http://127.0.0.1:12600/v1/responses", messages: "http://127.0.0.1:12600/v1/messages" }, models: [{ id: "gateway-default", object: "model", created: 0, owned_by: "ai-gateway", display_name: "gateway-default" }, { id: "ollama/default/qwen3", object: "model", created: 0, owned_by: "ollama/default", display_name: "ollama/default/qwen3" }] };
+const config = { version: 1, listen: { port: 12600 }, logging: { enabled: false, body: false, redact: true, dir: "logs" }, ui: { language: "en-US", logging_notice_accepted: true }, autostart: { enabled: false }, providers: { ollama: { name: "Ollama", base_url: "http://127.0.0.1:11434/v1", key_groups: { default: { name: "Default", enabled: true, has_api_key: false, model_count: 1, default_model: "qwen3", models: [{ id: "qwen3", name: "Qwen 3" }] } }, capabilities: { image_input: false, reasoning: false } }, openrouter: { name: "OpenRouter", base_url: "https://openrouter.ai/api/v1", key_groups: { default: { name: "Default", enabled: true, has_api_key: true, model_count: 2, default_model: "gpt-5", models: [{ id: "gpt-5", name: "GPT-5" }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4" }] } }, capabilities: { image_input: true, reasoning: true } } }, routes: status.routes };
+const providers: Provider[] = [
+  { id: "ollama", name: "Ollama", base_url: "http://127.0.0.1:11434/v1", enabled: true, key_groups: { default: { key_id: "default", name: "Default", enabled: true, has_api_key: false, model_count: 1, default_model: "qwen3", models: [{ id: "qwen3", name: "Qwen 3" }] } }, capabilities: { image_input: false, reasoning: false, context_management: false } },
+  { id: "openrouter", name: "OpenRouter", base_url: "https://openrouter.ai/api/v1", enabled: true, key_groups: { default: { key_id: "default", name: "Default", enabled: true, has_api_key: true, model_count: 2, default_model: "gpt-5", models: [{ id: "gpt-5", name: "GPT-5" }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4" }] } }, capabilities: { image_input: true, reasoning: true, context_management: false } },
 ];
 const pointStatus = (client: string) => ({ client, point_state: client === "codex" || client === "claude-desktop" ? "not_pointed" : "client_not_installed", target: `C:/${client}/config`, backup_available: client === "claude-desktop", ...(client === "claude-desktop" ? { mcp_point_state: "not_pointed", mcp_target: "C:/Claude/claude_desktop_config.json", mcp_backup_available: true } : {}), ...(["codex", "claude"].includes(client) ? { subagent_model: "", title_model: "" } : {}), ...(client === "codex" ? { remote_compaction: false } : {}) });
 
@@ -17,28 +18,28 @@ let liveProviders: typeof providers;
 beforeEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
-  liveProviders = providers.map((provider) => ({ ...provider, models: provider.models.map((model) => ({ ...model })) }));
+  liveProviders = providers.map((provider) => ({ ...provider, key_groups: Object.fromEntries(Object.entries(provider.key_groups).map(([id, group]) => [id, { ...group, models: group.models.map((model) => ({ ...model })) }])) }));
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
     if (url.endsWith("/api/v1/status")) return Response.json(status);
     if (url.endsWith("/api/v1/local-access")) return Response.json(localAccess);
     if (url.endsWith("/api/v1/config")) return Response.json(config);
+    if (url.endsWith("/api/v1/providers") && init?.method === "POST") return Response.json(providers[0]);
     if (url.endsWith("/api/v1/providers")) return Response.json(liveProviders);
     const availability = url.match(/\/api\/v1\/providers\/([^/]+)\/availability$/);
     if (availability && init?.method === "PUT") {
-      const body = JSON.parse(String(init.body || "{}")) as { enabled?: boolean; models?: Record<string, boolean> };
+      const body = JSON.parse(String(init.body || "{}")) as { enabled?: boolean; key_groups?: Record<string, { enabled?: boolean; models?: Record<string, boolean> }> };
       liveProviders = liveProviders.map((provider) => {
         if (provider.id !== availability[1]) return provider;
         return {
           ...provider,
           enabled: typeof body.enabled === "boolean" ? body.enabled : provider.enabled,
-          models: provider.models.map((model) => body.models && model.id in body.models ? { ...model, enabled: body.models[model.id] } : model),
+          key_groups: Object.fromEntries(Object.entries(provider.key_groups).map(([id, group]) => { const update = body.key_groups?.[id]; return [id, { ...group, enabled: typeof update?.enabled === "boolean" ? update.enabled : group.enabled, models: group.models.map((model) => update?.models && model.id in update.models ? { ...model, enabled: update.models[model.id] } : model) }]; })),
         };
       });
       return Response.json(liveProviders.find((provider) => provider.id === availability[1]));
     }
     if (url.endsWith("/api/v1/provider-models/discover") && init?.method === "POST") return Response.json({ object: "list", provider: "new-provider", data: [{ id: "new-provider/model-a", provider_id: "new-provider", raw_id: "model-a", display_name: "Model A", context_window: 131072, max_output_tokens: 16384 }, { id: "new-provider/model-b", provider_id: "new-provider", raw_id: "model-b" }] });
-    if (url.endsWith("/api/v1/providers") && init?.method === "POST") return Response.json(providers[0]);
     if (url.includes("/api/v1/logs?") && url.includes("cursor=next-page")) return Response.json({ items: [{ request_id: "req-next", started_at: "2026-08-15T07:59:00Z", client: "claude", provider: "openrouter", model: "gpt-5", status: "success", status_code: 200, duration_ms: 84 }] });
     if (url.includes("/api/v1/logs?")) return Response.json({ items: [{ request_id: "req-copy", started_at: "2026-08-15T08:00:00Z", client: "codex", provider: "ollama", model: "qwen3", status: "success", status_code: 200, duration_ms: 42 }], next_cursor: "next-page" });
     if (url.endsWith("/api/v1/logs/req-copy/export")) return new Response('{"request_id":"req-copy","type":"request","headers":{"Authorization":["[REDACTED]"]},"body":{"model":"qwen3"}}\n', { headers: { "Content-Type": "application/x-ndjson" } });
@@ -70,15 +71,15 @@ describe("desktop workflow", () => {
     expect(clientRoutes.compareDocumentPosition(routeCatalog) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const modelSelect = screen.getByRole("combobox", { name: "codex Default selected model" });
     expect(modelSelect).toBeRequired();
-    expect(modelSelect).toHaveValue("ollama/qwen3");
+    expect(modelSelect).toHaveValue("ollama/default/qwen3");
     expect(within(modelSelect).getByRole("option", { name: "Select a default model" })).toBeDisabled();
-    expect(within(modelSelect).getByRole("option", { name: "ollama/qwen3" })).toBeVisible();
-    expect(within(modelSelect).getByRole("option", { name: "openrouter/gpt-5" })).toBeVisible();
-    expect(within(modelSelect).getByRole("option", { name: "openrouter/anthropic/claude-sonnet-4" })).toBeVisible();
+    expect(within(modelSelect).getByRole("option", { name: "ollama/default/qwen3" })).toBeVisible();
+    expect(within(modelSelect).getByRole("option", { name: "openrouter/default/gpt-5" })).toBeVisible();
+    expect(within(modelSelect).getByRole("option", { name: "openrouter/default/anthropic/claude-sonnet-4" })).toBeVisible();
     expect(screen.getAllByRole("button", { name: "Apply" })[0]).toBeDisabled();
-    await user.selectOptions(modelSelect, "openrouter/anthropic/claude-sonnet-4");
+    await user.selectOptions(modelSelect, "openrouter/default/anthropic/claude-sonnet-4");
     await user.click(screen.getAllByRole("button", { name: "Apply" })[0]);
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/routes/codex"), expect.objectContaining({ method: "PUT", body: "{\"provider\":\"openrouter\",\"model\":\"anthropic/claude-sonnet-4\"}" })));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/routes/codex"), expect.objectContaining({ method: "PUT", body: "{\"provider\":\"openrouter\",\"key_id\":\"default\",\"model\":\"anthropic/claude-sonnet-4\"}" })));
     const toast = await screen.findByRole("status");
     expect(toast).toHaveTextContent("Success");
     await user.click(within(toast).getByRole("button", { name: "Close" }));
@@ -91,15 +92,15 @@ describe("desktop workflow", () => {
     await ready();
     await user.click(screen.getByRole("button", { name: "Routes" }));
     const modelSelect = screen.getByRole("combobox", { name: "codex Default selected model" });
-    expect(modelSelect).toHaveValue("ollama/qwen3");
+    expect(modelSelect).toHaveValue("ollama/default/qwen3");
     expect(screen.getAllByRole("button", { name: "Apply" })[0]).toBeDisabled();
     await user.click(screen.getByRole("checkbox", { name: "Provider Ollama" }));
     await waitFor(() => expect(modelSelect).toHaveValue(""));
-    expect(within(modelSelect).queryByRole("option", { name: "ollama/qwen3" })).not.toBeInTheDocument();
+    expect(within(modelSelect).queryByRole("option", { name: "ollama/default/qwen3" })).not.toBeInTheDocument();
     expect(screen.getAllByText("The current default route is no longer available. Select another model and apply it.").length).toBe(5);
     expect(screen.getAllByRole("button", { name: "Apply" })[0]).toBeDisabled();
-    await user.selectOptions(modelSelect, "openrouter/gpt-5");
-    expect(modelSelect).toHaveValue("openrouter/gpt-5");
+    await user.selectOptions(modelSelect, "openrouter/default/gpt-5");
+    expect(modelSelect).toHaveValue("openrouter/default/gpt-5");
     expect(screen.getAllByRole("button", { name: "Apply" })[0]).toBeEnabled();
   });
 
@@ -112,11 +113,11 @@ describe("desktop workflow", () => {
     const title = screen.getByRole("combobox", { name: "claude Title generation model" });
     expect(subagent).toHaveValue("");
     expect(within(subagent).getByRole("option", { name: "Follow current route" })).toBeVisible();
-    await user.selectOptions(subagent, "openrouter/anthropic/claude-sonnet-4");
-    await user.selectOptions(title, "ollama/qwen3");
+    await user.selectOptions(subagent, "openrouter/default/anthropic/claude-sonnet-4");
+    await user.selectOptions(title, "ollama/default/qwen3");
     const applyButtons = screen.getAllByRole("button", { name: "Apply" });
     await user.click(applyButtons.at(-1)!);
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/clients/claude/helper-models"), expect.objectContaining({ method: "PUT", body: "{\"subagent_model\":\"openrouter/anthropic/claude-sonnet-4\",\"title_model\":\"ollama/qwen3\"}" })));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/clients/claude/helper-models"), expect.objectContaining({ method: "PUT", body: "{\"subagent_model\":\"openrouter/default/anthropic/claude-sonnet-4\",\"title_model\":\"ollama/default/qwen3\"}" })));
   });
 
   it("shows local access parameters and copies a model identifier", async () => {
@@ -125,9 +126,9 @@ describe("desktop workflow", () => {
     render(<App />); await ready(); await user.click(screen.getByRole("button", { name: "Local API" }));
     expect(screen.getByText("http://127.0.0.1:12600/v1")).toBeVisible();
     expect(screen.getByText("http://127.0.0.1:12600/v1/models")).toBeVisible();
-    expect(screen.getByText("ollama/qwen3")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Copy ollama/qwen3" }));
-    expect(writeText).toHaveBeenCalledWith("ollama/qwen3");
+    expect(screen.getByText("ollama/default/qwen3")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Copy ollama/default/qwen3" }));
+    expect(writeText).toHaveBeenCalledWith("ollama/default/qwen3");
   });
 
   it("keeps focus while typing a model id", async () => {
@@ -148,7 +149,7 @@ describe("desktop workflow", () => {
   it("loads upstream model metadata and includes edits in the provider payload", async () => {
     const user = userEvent.setup(); render(<App />); await ready(); await user.click(screen.getByRole("button", { name: "Providers" })); await user.click(screen.getByRole("button", { name: "Add provider" }));
     await user.type(screen.getByLabelText("Identifier"), "new-provider"); await user.type(screen.getByLabelText("Name"), "New Provider"); await user.type(screen.getByLabelText("Base URL"), "https://example.com/v1");
-    expect(screen.getByText(/append the \[1m\] suffix/)).toBeVisible();
+    expect(screen.getByText(/Manage separate keys/)).toBeVisible();
     expect(screen.queryByLabelText("Default adapter")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Context window")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Apply preset Codex" }));
@@ -193,7 +194,7 @@ describe("desktop workflow", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ method: "POST", body: expect.stringContaining('"endpoint":"/responses"') })));
     expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ body: expect.stringContaining('"adapter":"custom"') }));
-    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ body: expect.stringContaining('"adapter":"openai-responses"') }));
+    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/providers$/), expect.objectContaining({ body: expect.not.stringContaining('"adapter":"openai-responses"') }));
   });
 
   it("saves disguise_client for third-party requests", async () => {

@@ -465,18 +465,12 @@ func TestServeWithCustomPortConfig(t *testing.T) {
 }
 
 func TestServeMissingRequiredSecretFails(t *testing.T) {
-	// A config whose provider declares a secret_ref without a readable
-	// secret must fail startup with a remediation hint and exit code 3
-	// (docs/v1-scheme.md §6.2). The default config has no secret_ref, so
-	// this only triggers for configs that actually need keys.
+	// Provider-level secret fields are no longer part of the configuration
+	// contract. A legacy-shaped file must fail parsing before serve binds.
 	dataDir := t.TempDir()
 	t.Setenv("AI_GATEWAY_DATA_DIR", dataDir)
-	cfg := config.Defaults()
-	p := cfg.Providers["openrouter"]
-	p.SecretRef = "provider.openrouter"
-	cfg.Providers["openrouter"] = p
-	mgr := config.NewManager(filepath.Join(dataDir, config.ConfigFileName))
-	if err := mgr.Write(cfg); err != nil {
+	legacy := []byte("version: 1\nproviders:\n  openrouter: {name: OpenRouter, adapter: openai-chat, base_url: https://example.com, default_model: gpt-5}\nroutes:\n  codex: {provider: openrouter, key_id: default, model: gpt-5}\n  claude: {provider: openrouter, key_id: default, model: gpt-5}\n  claude_desktop: {provider: openrouter, key_id: default, model: gpt-5}\n  grok: {provider: openrouter, key_id: default, model: gpt-5}\n  generic: {provider: openrouter, key_id: default, model: gpt-5}\n")
+	if err := os.WriteFile(filepath.Join(dataDir, config.ConfigFileName), legacy, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -486,16 +480,8 @@ func TestServeMissingRequiredSecretFails(t *testing.T) {
 	if code != ExitConfig {
 		t.Fatalf("exit = %d, want %d (stderr: %s)", code, ExitConfig, errOut.String())
 	}
-	// Two distinct platform behaviors must both fail startup: on a platform
-	// with a working store the missing ref is named; on a platform whose
-	// store is unavailable (macOS/Linux build-time implementations) the
-	// unavailability itself is the failure.
-	if !strings.Contains(errOut.String(), "provider.openrouter") &&
-		!strings.Contains(errOut.String(), "system key store unavailable") {
-		t.Errorf("stderr should name the missing ref or the unavailable store:\n%s", errOut.String())
-	}
-	if !strings.Contains(errOut.String(), "修复") {
-		t.Errorf("stderr should carry a remediation hint:\n%s", errOut.String())
+	if !strings.Contains(errOut.String(), "provider-level field was removed") {
+		t.Errorf("stderr should reject the legacy provider shape:\n%s", errOut.String())
 	}
 	// No listener may have been bound and no pid file left behind.
 	if _, err := os.Stat(filepath.Join(dataDir, process.PIDFileName)); !os.IsNotExist(err) {
@@ -520,8 +506,20 @@ func TestServeWithKeyedProviderAndSecretStarts(t *testing.T) {
 
 	cfg := config.Defaults()
 	p := cfg.Providers["openrouter"]
-	p.SecretRef = "provider.openrouter"
+	group := p.KeyGroups["default"]
+	group.APIKey = "sk-serve-test"
+	p.KeyGroups["default"] = group
 	cfg.Providers["openrouter"] = p
+	// also key the other routed groups so readyz is green
+	for name, provider := range cfg.Providers {
+		for keyID, g := range provider.KeyGroups {
+			if strings.TrimSpace(g.APIKey) == "" {
+				g.APIKey = "sk-serve-" + name + "-" + keyID
+				provider.KeyGroups[keyID] = g
+			}
+		}
+		cfg.Providers[name] = provider
+	}
 	mgr := config.NewManager(filepath.Join(dataDir, config.ConfigFileName))
 	if err := mgr.Write(cfg); err != nil {
 		t.Fatal(err)
@@ -531,29 +529,17 @@ func TestServeWithKeyedProviderAndSecretStarts(t *testing.T) {
 	codeCh, _, _ := runServeInTest(t, dataDir, port)
 	waitFor(t, 10*time.Second, func() bool { return healthzOK(port) }, "serve to become healthy")
 
-	// The plaintext key must never appear on disk anywhere under the data
-	// root (Windows acceptance step 2: search ~/.ai-gateway).
-	err := filepath.Walk(dataDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil // locked pid/lock files may fail to read; not a key leak
-		}
-		if strings.Contains(string(data), "sk-serve-test") {
-			t.Errorf("plaintext key found in %s", path)
-		}
-		return nil
-	})
+	// Plaintext api_key is intentionally persisted in config.yaml under the
+	// approved key-group contract. It must still never appear in request logs.
+	disk, err := os.ReadFile(filepath.Join(dataDir, config.ConfigFileName))
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(string(disk), "sk-serve-test") {
+		t.Fatalf("config.yaml missing plaintext api_key")
+	}
 
-	// And the live gateway must still report ready (secret readable).
+	// And the live gateway must still report ready (key groups readable).
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/readyz", port), nil)

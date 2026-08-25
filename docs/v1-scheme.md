@@ -184,7 +184,6 @@ desktop -> HTTP /api/v1，不直接导入网关内部包
   config.yaml
   gateway.lock
   gateway.pid.json
-  secrets/                    Windows DPAPI 密文文件
   logs/
     2026-08-14/
       <request-id>.jsonl
@@ -239,31 +238,40 @@ autostart:
 clients:
   codex:
     remote_compaction: false
-    subagent_model: openrouter/anthropic/claude-sonnet-4
-    title_model: ollama/qwen3
+    subagent_model: openrouter/default/anthropic/claude-sonnet-4
+    title_model: ollama/default/qwen3
   claude:
-    subagent_model: openrouter/anthropic/claude-sonnet-4
-    title_model: ollama/qwen3
+    subagent_model: openrouter/default/anthropic/claude-sonnet-4
+    title_model: ollama/default/qwen3
 
 providers:
   openrouter:
     name: OpenRouter
-    adapter: openai-chat
     base_url: https://openrouter.ai/api/v1
-    default_model: anthropic/claude-sonnet-4
-    models:
-      - id: anthropic/claude-sonnet-4
-        name: Claude Sonnet 4
+    key_groups:
+      default:
+        name: Default
+        api_key: sk-example
         adapter: openai-chat
-    secret_ref: provider.openrouter
+        endpoint: /v1/chat/completions
+        default_model: anthropic/claude-sonnet-4
+        models:
+          - id: anthropic/claude-sonnet-4
+            name: Claude Sonnet 4
     capabilities:
       image_input: true
       reasoning: true
   ollama:
     name: Ollama
-    adapter: openai-chat
     base_url: http://127.0.0.1:11434/v1
-    default_model: qwen3
+    key_groups:
+      default:
+        name: Default
+        adapter: openai-chat
+        endpoint: /v1/chat/completions
+        default_model: qwen3
+        models:
+          - id: qwen3
     capabilities:
       image_input: false
       reasoning: false
@@ -271,15 +279,23 @@ providers:
 routes:
   codex:
     provider: openrouter
+    key_id: default
     model: anthropic/claude-sonnet-4
   claude:
     provider: openrouter
+    key_id: default
+    model: anthropic/claude-sonnet-4
+  claude_desktop:
+    provider: openrouter
+    key_id: default
     model: anthropic/claude-sonnet-4
   grok:
     provider: openrouter
+    key_id: default
     model: anthropic/claude-sonnet-4
   generic:
     provider: ollama
+    key_id: default
     model: qwen3
 ```
 
@@ -322,34 +338,38 @@ routes:
 - `codex.remote_compaction`：可选布尔值，缺省为关闭，语义见 §12.3。
 - `codex.subagent_model`、`codex.title_model`、`claude.subagent_model`、
   `claude.title_model`：可选模型选择。空或缺省表示跟随对应客户端当前路由；非空值
-  使用完整 `<provider-id>/<model-id>`。管理 API 只允许写入当前已启用模型；配置中
+  使用完整 `<provider-id>/<key-id>/<model-id>`。管理 API 只允许写入当前已启用模型；配置中
   已保存的模型后来失效时，运行时按 `gateway-default` 处理，不阻断辅助调用。
 
 #### `providers`
 
 - provider id 必须匹配 `^[a-z][a-z0-9_-]{0,31}$`。
 - `name`：非空显示名称。
-- `adapter`：只允许 `openai-chat`、`openai-responses`、`anthropic`。桌面不再单独提供供应商级适配器选项；保存时写入默认模型的协议，供模型发现、连接探测和未指定协议的模型回退。
 - `base_url`：必须是绝对 HTTP 或 HTTPS URL，不得包含查询字符串或片段。
+- `key_groups`：至少包含一个密钥组。密钥组 id 必须匹配 `^[a-z][a-z0-9_-]{0,31}$`，且在 provider 内唯一。
+- `key_groups[].name`：非空显示名称。
+- `key_groups[].api_key`：该组共享的明文 API Key；允许本地免认证上游使用空值。明文随 `config.yaml` 持久化，只能出现在显式密钥组读写接口，不得出现在 provider 列表、状态、日志或错误中。
+- `key_groups[].adapter`：只允许 `openai-chat`、`openai-responses`、`anthropic`，作为组内模型的缺省报文协议。
+- `key_groups[].endpoint`：组内模型的缺省请求路径。必须以 `/` 开头，不得含查询、片段或空白，并且后缀必须能确定报文协议。
+- `key_groups[].default_model`：非空，且必须引用同组 `models` 中已启用的模型。
+- `key_groups[].models`：至少包含一个模型；每项 `id` 非空且在同组唯一，可带 `name`、`adapter`、`endpoint` 和 `enabled`。
+- `key_groups[].models[].adapter`：可选。允许 `openai-chat`、`openai-responses`、`anthropic` 或 `custom`。前三种使用固定协议端点；`custom` 必须同时提供模型级 `endpoint`。
+- `key_groups[].models[].endpoint`：仅模型 adapter 为 `custom` 时允许；其校验规则与组端点相同。未设置时继承密钥组端点。
 - `extra_headers`：可选的上游请求头名称到值映射，最多 64 项；用于正常请求、远程压缩、模型发现和连接探测。名称必须符合 HTTP 字段名语法，值不得包含换行或 NUL 字节。`Authorization`、`x-api-key`、Cookie、Host、Content-Length 和逐跳传输字段由网关管理，不允许配置。
 - `disguise_client`：可选。空或缺省表示关闭。只允许 `claude`、`codex` 或 `pi`。开启后，仅当入站客户端是 `generic`（`/v1/*` 或 `/c/generic/v1/*`）时，网关在 adapter 默认头之后、`extra_headers` 之前套用已核验的对应客户端身份头。`pi` 使用本机 Pi 0.84.2 供应商配置中的稳定身份头 `User-Agent: Pi Agent/1.0`。`disguise_client` 为 `claude` 且入站是 Messages 时，还要在转发前补齐 Claude Code 2.1.228 与这些身份头一起发送的正文字段：缺省则写入 `thinking: {type: adaptive}`（仅当 `capabilities.reasoning` 为真），并给缺少 `cache_control` 的顶层 `system` 文本块以及 `role: system` 消息补 `{"type":"ephemeral"}`。不得改写 tools、用户消息或系统文本，不得写入会话、安装或设备 `metadata`。已指向的 `claude`、`codex`、`grok` 请求不套用。连接探测和模型发现不套用。身份头不含会话、安装、窗口或系统环境标识。`extra_headers` 覆盖同名伪装头；`Anthropic-Beta` 按令牌并集。证据见 §20「2026-08-17 复核：第三方请求需要可开关的客户端伪装」、「2026-08-17 复核：Claude 伪装必须补齐 thinking 与系统 cache_control」和「2026-08-24 复核：Pi 客户端请求外形」。
-- `default_model`：非空。
-- `models`：可选模型目录；每项包含非空且在同一 provider 内唯一的 `id`，以及可选 `name`、`adapter` 和 `endpoint`。
-- `models[].adapter`：可选。非空时必须是 `openai-chat`、`openai-responses`、`anthropic` 或 `custom`。前三项覆盖 provider 默认协议，请求端点由网关按 §10 锁定。`custom` 表示用户自己维护该模型的请求路径，必须同时给出 `models[].endpoint`。数据面按解析到的模型取**报文协议**：`custom` 由端点后缀推断（`/chat/completions` → Chat，`/responses` → Responses，`/messages` → Messages）；模型未指定、目录为空、或显式 `<provider-id>/<model>` 未登记时回退到 provider `adapter`。证据见 §20「2026-08-18 复核：出站协议绑定到模型」和「2026-08-18 复核：预设端点默认补 /v1，例外走自定义路径」。
-- `models[].endpoint`：仅 `adapter` 为 `custom` 时允许且必须。必须是以 `/` 开头的绝对路径，不得含查询、片段或空白，且必须以 `/chat/completions`、`/responses` 或 `/messages` 结尾。预设 Claude / GPT 适配器禁止带此字段。
 - 上下文窗口由客户端与上游协商，不在供应商模型目录里配置。Claude 的 1M 上下文通过模型 ID 后缀 `[1m]` 选择，例如 `claude-opus-5[1m]`。旧配置里的 `context_window` 和 `max_output_tokens` 仍可读取，桌面不再编辑；`0` 或缺失表示未配置。
-- 当 `models` 非空时，`default_model` 必须引用目录中的模型。旧配置没有 `models` 时继续兼容。
-- `secret_ref`：可选；需要认证的供应商必须设置。
 - `capabilities.image_input`：布尔值，默认 `false`。
 - `capabilities.reasoning`：布尔值，默认 `false`。
 - `capabilities.context_management`：布尔值，默认 `false`。为兼容未实现 Anthropic 上下文管理扩展的第三方供应商，未启用时网关会移除请求中的 `context_management` 并记录 `context_management_dropped` 警告。
-- 删除仍被路由引用的 provider 必须返回冲突错误，不得级联修改路由。
+- provider 层出现旧字段 `adapter`、`default_model`、`models` 或 `secret_ref` 时，解析必须失败；本阶段不迁移旧供应商配置。
+- 删除仍被路由引用的 provider、密钥组或模型必须返回 409，不得级联修改路由。
 
 #### `routes`
 
-- 固定包含 `codex`、`claude`、`grok`、`generic`。
+- 固定包含 `codex`、`claude`、`claude_desktop`、`grok`、`generic`。
 - `provider` 必须引用已存在的 provider id。
-- `model` 必须非空。
+- `key_id` 必须引用该 provider 中已存在且已启用的密钥组。
+- `model` 必须引用该密钥组中已存在且已启用的模型。
 
 ### 5.3 配置写入
 
@@ -380,7 +400,7 @@ routes:
 
 ### 5.5 Provider 填表预设
 
-预设只负责在桌面中预填默认 `adapter` 和 `base_url`，不是运行时特殊分支。用户保存后得到普通 provider 配置。出站协议以解析到的模型 adapter 为准，未指定时回退到 provider 默认 adapter。
+预设只负责在桌面中预填首个密钥组的 `adapter`、`endpoint` 和 provider `base_url`，不是运行时特殊分支。出站协议以模型配置为准，未指定时回退到密钥组 adapter 或端点推断结果。
 
 | 预设 | adapter | base_url |
 |---|---|---|
@@ -395,50 +415,25 @@ routes:
 
 ---
 
-## 6. 钥匙合同
+## 6. 密钥组合同
 
-### 6.1 接口
+### 6.1 持久化与内存边界
 
-`internal/secret` 必须暴露等价于以下语义的接口：
+- API Key 明文持久化在对应 provider 的 `key_groups.<key_id>.api_key`。
+- 一个密钥组绑定一个上游 API Key，并拥有自己的端点、协议缺省值和模型目录。
+- provider 的 `base_url` 是所有密钥组共享的基础地址；密钥组和模型只保存路径与协议选择。
+- provider 列表、provider 详情、配置摘要、状态、日志和错误不得返回 API Key。
+- 明文 API Key 只允许出现在显式密钥组列表、详情、创建、更新和探测流程中；管理界面输入框使用密码控件。
+- 旧的 provider-level `secret_ref` 不属于当前配置合同；解析遇到该字段必须失败。
 
-```go
-type Store interface {
-    Put(ctx context.Context, ref string, value []byte) error
-    Get(ctx context.Context, ref string) ([]byte, error)
-    Delete(ctx context.Context, ref string) error
-    Available(ctx context.Context) error
-}
-```
+### 6.2 密钥组操作规则
 
-规则：
-
-- `ref` 使用配置中的 `secret_ref`。
-- `Get` 返回的新字节切片由调用方负责尽快清零。
-- 错误必须区分“不存在”和“系统存储不可用”。
-- API key 只能通过写接口进入，任何读接口都不得回传明文。
-
-### 6.2 平台实现
-
-- Windows：使用当前用户 DPAPI 加密，密文写入 `~/.ai-gateway/secrets/`。
-- macOS：使用当前用户 Keychain。
-- Linux：使用当前用户 Secret Service。
-
-若当前平台的系统存储不可用：
-
-- 需要钥匙的 provider 操作必须失败。
-- 网关若存在需要钥匙的已配置 provider，启动必须失败并给出修复说明。
-- 禁止退回明文 YAML、环境变量文件或桌面本地存储。
-
-### 6.3 Provider 更新事务
-
-新增或修改 provider 且请求中包含新钥匙时：
-
-1. 校验 provider 字段。
-2. 写入系统钥匙存储。
-3. 原子写配置。
-4. 若配置写入失败，恢复旧钥匙；若无法恢复，返回明确的部分失败错误并由 `doctor` 报告。
-
-删除 provider 时，先确认没有路由引用，再删除配置，最后删除钥匙。钥匙删除失败不得恢复已删除 provider，但必须返回警告并由 `doctor` 报告孤儿钥匙引用。
+- 创建或更新密钥组时，先校验完整 provider 快照，再原子写入配置，最后发布新快照。
+- 更新请求省略 `api_key` 时保留原值；显式传入空字符串时清空原值。
+- 相同 provider 下相同 API Key 的密钥组保留并标记重复，不自动合并或删除。
+- 探测必须由调用方明确选择一个密钥组；探测不得自动修改密钥组、模型或路由。
+- 删除仍被路由引用的密钥组或模型返回 `409`，不得自动切换路由。
+- 删除 provider 前必须确认没有任何路由引用；删除失败不得留下半写入配置。
 
 ---
 
@@ -446,11 +441,12 @@ type Store interface {
 
 ### 7.1 客户端标识
 
-内部只允许四个客户端标识：
+内部只允许五个客户端标识：
 
 ```text
 codex
 claude
+claude-desktop
 grok
 generic
 ```
@@ -461,6 +457,7 @@ generic
 |---|---|---|
 | Codex | `http://127.0.0.1:12600/c/codex/v1` | `/c/codex/v1/responses` |
 | Claude Code | `http://127.0.0.1:12600/c/claude` | `/c/claude/v1/messages` |
+| Claude Desktop | `http://127.0.0.1:12600/c/claude-desktop` | `/c/claude-desktop/v1/messages` |
 | Grok Build | `http://127.0.0.1:12600/c/grok/v1` | `/c/grok/v1/responses`，并兼容另外两种协议 |
 | 通用应用 | `http://127.0.0.1:12600/v1` | `/v1/chat/completions`、`/v1/responses`、`/v1/messages` |
 
@@ -480,12 +477,12 @@ generic
 `gateway-default` 是网关保留的模型名，含义是“使用该客户端当前路由中的默认模型”。
 
 客户端路由的语义是**该客户端的启动首选模型**，不是该客户端唯一可用的模型。
-进入 agent 之后，用户仍然可以选择任意已启用的 `<provider-id>/<model-id>`：
+进入 agent 之后，用户仍然可以选择任意已启用的 `<provider-id>/<key-id>/<model-id>`：
 完整目录由 `/c/{client}/v1/models` 提供（§7.5），这是三个一等客户端唯一共同
 可用的入口。请求携带的模型名按 §7.4 解析，与该客户端的路由无关。
 
 三个一等客户端执行 point 后，写入的首选模型必须是 `gateway-default`，或当前路由
-对应的 `<provider-id>/<model-id>`。两种形式都必须能被 §7.4 正确解析。
+对应的 `<provider-id>/<key-id>/<model-id>`。两种形式都必须能被 §7.4 正确解析。
 
 客户端配置文件中落地完整目录只在客户端原生支持、且不破坏系统提示词时进行。
 依据 §20 的 2026-08-16 复核，Codex 通过克隆 bundled 模板写入 `model_catalog_json`
@@ -500,47 +497,47 @@ sidecar；Grok Build 在配置里追加条目。Claude Code 的完整可选目�
 
 输入为客户端、请求中的模型字符串和配置快照。必须按以下顺序解析：
 
-0. 若请求模型是 Claude Code 选择器别名（§7.5），先解码为 `gateway-default` 或 `<provider-id>/<model-id>`。不是合法别名则原样保留。
-1. 读取该客户端的当前路由，得到 `route.provider` 和 `route.model`。
-2. 若请求模型为空或等于 `gateway-default`，使用当前路由的 provider 和 model。
-3. 否则，若请求模型形如 `<prefix>/<rest>`，且 `<prefix>` 正好命中一个已配置 provider id，则本次请求使用该 provider，模型为 `<rest>`。
-4. 否则，若客户端是 `generic`，并且请求模型完整匹配唯一一个已启用 provider 明确登记且已启用的 `default_model` 或 `models[].id`，则使用该 provider，模型名保持完整。
-5. 若 `generic` 请求的模型被多个已启用 provider 登记，且当前路由 provider 也是其中之一，则使用当前路由 provider；否则返回明确的模型归属歧义错误，要求调用方使用 `<provider-id>/<model-id>`。
-6. 否则，若请求模型完整匹配当前路由 provider 明确登记且已启用的 `default_model` 或 `models[].id`，则使用当前路由 provider，模型名保持完整。这一步不得因为模型名包含 `/` 而报“未知供应商”。例如当前路由指向 OpenRouter 且其 `default_model` 为 `anthropic/claude-sonnet-4` 时，该字符串是合法的上游模型名。
+0. 若请求模型是 Claude Code 选择器别名（§7.5），先解码为 `gateway-default` 或 `<provider-id>/<key-id>/<model-id>`。不是合法别名则原样保留。
+1. 读取该客户端的当前路由，得到 `route.provider`、`route.key_id` 和 `route.model`。
+2. 若请求模型为空或等于 `gateway-default`，使用当前路由的 provider、key group 和 model。
+3. 否则，若请求模型形如 `<provider-id>/<key-id>/<model-id>`，且 provider 与 key group 均存在并已启用，则使用该目标。模型 ID 可继续包含 `/`，只剥离前两个路径段。
+4. 否则，若客户端是 `generic`，并且请求模型完整匹配唯一一个已启用密钥组明确登记且已启用的 `default_model` 或 `models[].id`，则使用该 provider 和 key group，模型名保持完整。
+5. 若 `generic` 请求的模型被多个已启用密钥组登记，且当前路由目标也是其中之一，则使用当前路由目标；否则返回明确的模型归属歧义错误，要求调用方使用 `<provider-id>/<key-id>/<model-id>`。
+6. 否则，若请求模型完整匹配当前路由密钥组明确登记且已启用的 `default_model` 或 `models[].id`，则使用当前路由目标，模型名保持完整。这一步不得因为模型名包含 `/` 而报“未知供应商”。
 7. 否则拒绝本次请求。数据面必须在接触上游之前返回 400，错误信息必须为 `未匹配当前选择的[<requested-model>],请选择正确的 供应商/模型ID`。禁止把无法归属到任何已配置 provider 的模型名透传到当前路由 provider。
 
-当前路由引用的 provider 被禁用或不存在时：第 2 步必须拒绝；第 3 步只要前缀命中另一个已启用 provider，就必须覆盖成功，不得回报当前路由 provider 已禁用。第 6 步仅在请求模型已登记在当前路由 provider 时，才因该 provider 禁用而拒绝；否则按第 7 步返回未匹配错误。generic 唯一归属（第 4 步）只看已启用 provider，不得因为当前路由 provider 禁用而失败。
+当前路由引用的 provider 或密钥组被禁用、不存在时，第 2 步必须拒绝。第 3 步只校验请求显式指定的目标，不得受当前路由状态影响。generic 唯一归属只看已启用 provider、密钥组和模型。
 
-请求级 provider 覆盖只在前缀命中已配置 provider 时生效。客户端或调用方若需要确定性地覆盖，必须使用已存在的 provider id。显式 `<provider-id>/<model-id>` 仍可以把未写入该 provider 目录的模型名发给该 provider；未带供应商前缀、且未被任何已启用 provider 登记的名字不得再走这条路。
+请求级覆盖必须使用完整 `<provider-id>/<key-id>/<model-id>`，且模型必须登记并启用。两段式 `<provider-id>/<model-id>` 不再兼容；未登记模型不得透传。
 
 ### 7.5 模型列表
 
 `GET /v1/models` 和客户端前缀版本必须至少返回：
 
 - `gateway-default`。
-- 每个 provider 持久化模型目录中的模型，id 为 `<provider-id>/<model-id>`；旧配置没有目录时至少返回 `<provider-id>/<default-model>`。
+- 每个密钥组持久化模型目录中的已启用模型，id 为 `<provider-id>/<key-id>/<model-id>`。
 
-若管理面成功从某个 provider 拉取模型列表，返回值中的模型 id 必须加 `<provider-id>/` 前缀。不同 provider 的同名模型不得互相覆盖。
+若管理面成功从某个密钥组拉取模型列表，返回值中的模型 id 必须加 `<provider-id>/<key-id>/` 前缀。不同密钥组的同名模型不得互相覆盖。
 
 模型列表拉取失败不得影响数据面启动。
 
 每项必须带 `display_name`。除 `/c/claude/v1/models` 外，`display_name` 必须等于
-该项的 `id`（`gateway-default` 或 `<provider-id>/<model-id>`）。客户端选择器按
-`供应商/模型 ID` 展示全部已启用模型。模型目录中的 `name` 只用于网关管理面，
+该项的 `id`（`gateway-default` 或 `<provider-id>/<key-id>/<model-id>`）。客户端选择器按
+`供应商/密钥组/模型 ID` 展示全部已启用模型。模型目录中的 `name` 只用于网关管理面，
 不得改写客户端选择器标签。Grok Build 的选择器 `name` 字段同样写成该 id。
 
 `/c/claude/v1/models` 是唯一例外。Claude Code 的网关模型发现只保留 id 匹配
 `/(claude|anthropic)/i` 的条目（官方契约，证据见 §20）。因此该路径的 `id`
 必须改写成可逆选择器别名，`display_name` 仍必须等于真实可选 id
-（`gateway-default` 或 `<provider-id>/<model-id>`），以便选择器按
-`供应商/模型 ID` 显示。别名语法借鉴 OpenCodex 的可读别名，前缀改为本网关
+（`gateway-default` 或 `<provider-id>/<key-id>/<model-id>`），以便选择器按
+`供应商/密钥组/模型 ID` 显示。别名语法借鉴 OpenCodex 的可读别名，前缀改为本网关
 自有前缀，避免与 OpenCodex 碰撞：
 
 | 真实可选 id | 选择器 `id` |
 |---|---|
 | `gateway-default` | `claude-gw-default` |
-| `<provider>/<model>`（`model` 不含 `/` 或 `~`） | `claude-gw-<provider>--<model>` |
-| `<provider>/<model>`（`model` 含 `/` 或 `~`） | `claude-gw2-<provider>--<escaped>` |
+| `<provider>/<rest>`（`rest` 不含 `/` 或 `~`） | `claude-gw-<provider>--<rest>` |
+| `<provider>/<rest>`（`rest` 含 `/` 或 `~`，包括三段式模型 id） | `claude-gw2-<provider>--<escaped>` |
 | provider 含 `--`、无法按 `--` 切开 | `claude-gw3-<escaped-full-id>` |
 
 转义只用于 v2 / v3：`~` → `~t`，`/` → `~s`。解码时 v1 按字面还原，v2 / v3
@@ -725,7 +722,8 @@ GET  /readyz
 
 `GET /readyz`：
 
-- 校验配置可用、系统钥匙存储可用、必需 secret 存在。
+- 校验配置可用，并只检查当前五类客户端路由实际引用的 provider、密钥组、模型、端点和 API Key。
+- 未被当前路由引用的密钥组不会阻断就绪；当前路由引用的密钥组缺 Key 时返回未就绪。
 - 成功返回 200。
 - 未就绪返回 503 和错误列表。
 - 不对所有上游发真实模型请求。
@@ -906,9 +904,9 @@ GET /api/v1/config
 PUT /api/v1/config
 ```
 
-- GET 不返回任何 secret 明文。
+- GET 返回 provider 的共享字段、密钥组摘要和路由 `key_id`，不返回 API Key 明文。
 - PUT 必须进行完整校验和原子写。
-- PUT 不接受 secret 明文；钥匙通过 provider 接口写入。
+- PUT 不接受旧的 provider-level `adapter`、`default_model`、`models`、`secret_ref` 字段；密钥组使用显式密钥组接口写入。
 
 ### 11.3 Provider
 
@@ -920,26 +918,35 @@ PUT    /api/v1/providers/{id}
 DELETE /api/v1/providers/{id}
 POST   /api/v1/providers/{id}/probe
 GET    /api/v1/providers/{id}/models
+GET    /api/v1/providers/{id}/keys
+POST   /api/v1/providers/{id}/keys
+GET    /api/v1/providers/{id}/keys/{key_id}
+PUT    /api/v1/providers/{id}/keys/{key_id}
+DELETE /api/v1/providers/{id}/keys/{key_id}
+POST   /api/v1/providers/{id}/keys/{key_id}/probe
+GET    /api/v1/providers/{id}/keys/{key_id}/models
 POST   /api/v1/provider-models/discover
 ```
 
-创建和更新请求可以包含写入后即丢弃的 `api_key` 字段。响应只返回：
+创建和更新 provider 请求只包含共享字段和 `key_groups` 摘要；旧的 provider-level
+`adapter`、`default_model`、`models`、`secret_ref` 字段会被拒绝。provider 响应只返回：
 
 ```json
 {
   "id": "openrouter",
   "name": "OpenRouter",
-  "adapter": "openai-chat",
   "base_url": "https://openrouter.ai/api/v1",
-  "default_model": "anthropic/claude-sonnet-4",
-  "models": [
+  "key_groups": [
     {
-      "id": "anthropic/claude-sonnet-4",
-      "name": "Claude Sonnet 4",
-      "adapter": "openai-chat"
+      "key_id": "default",
+      "name": "Default",
+      "enabled": true,
+      "has_api_key": true,
+      "model_count": 1,
+      "default_model": "anthropic/claude-sonnet-4",
+      "models": [{"id": "anthropic/claude-sonnet-4", "name": "Claude Sonnet 4"}]
     }
   ],
-  "has_secret": true,
   "capabilities": {
     "image_input": true,
     "reasoning": true
@@ -947,11 +954,10 @@ POST   /api/v1/provider-models/discover
 }
 ```
 
-`probe` 必须进行最小真实上游请求或模型列表请求，并返回耗时、状态和可读错误；不得自动保存任何配置修改。
+`POST /api/v1/providers/{id}/keys/{key_id}/probe` 必须对指定密钥组进行最小真实上游请求或模型列表请求，并返回耗时、状态和可读错误；不得自动保存任何配置修改。provider 下存在多个密钥组时，桌面端必须先弹窗让用户选择一个密钥组。
 
-`POST /api/v1/provider-models/discover` 接收尚未保存的 `provider_id`、
-`adapter`、`base_url` 和可选 `api_key`，供管理端在创建 provider 时获取模型。
-编辑已有 provider 且 `api_key` 为空时使用已保存密钥。发现结果不得保存 provider、
+`POST /api/v1/provider-models/discover` 接收尚未保存的 `provider_id`、`key_id`、
+共享 `base_url`、密钥组 `adapter`、端点和可选 `api_key`，供管理端在创建或编辑密钥组时获取模型。发现结果不得保存 provider、
 密钥或污染数据面模型缓存。上游明确发布的 `context_length`、
 `max_completion_tokens` 等元数据映射到模型目录；缺失字段返回零值，禁止推测。
 用户保存时可以覆盖这些值。上下文和输出令牌数目前仅是管理元数据，不代表数据面
@@ -968,6 +974,7 @@ PUT /api/v1/routes/{client}
 ```json
 {
   "provider": "openrouter",
+  "key_id": "default",
   "model": "anthropic/claude-sonnet-4"
 }
 ```
@@ -994,13 +1001,13 @@ PUT  /api/v1/clients/{client}/helper-models
 
 ```json
 {
-  "subagent_model": "openrouter/anthropic/claude-sonnet-4",
-  "title_model": "ollama/qwen3"
+  "subagent_model": "openrouter/default/anthropic/claude-sonnet-4",
+  "title_model": "ollama/default/qwen3"
 }
 ```
 
 两个字段必须同时出现。值为空或 `gateway-default` 表示跟随该客户端当前路由；
-非空值必须是当前已启用模型目录中的完整 `<provider-id>/<model-id>`。响应沿用
+非空值必须是当前已启用模型目录中的完整 `<provider-id>/<key-id>/<model-id>`。响应沿用
 客户端状态外形，并返回规范化后的 `subagent_model` 与 `title_model`。Grok Build
 不提供可核验的独立辅助模型槽位，因此该接口对 `grok` 返回 404。
 
@@ -1158,13 +1165,13 @@ Codex 只在该字段严格等于 `OpenAI` 时才会向网关发送
 - 必须写入根键 `model_catalog_json`，值为与 `config.toml` 同目录的绝对路径
   `ai-gateway-catalog.json`。该键写在 `[model_providers.ai-gateway]` 表内不生效。
 - 目录文件是替换式的 `{ "models": [...] }`，只包含 `gateway-default` 和全部已启用
-  `<provider-id>/<model-id>`，不合并官方 `gpt-*` 原生行。
+  `<provider-id>/<key-id>/<model-id>`，不合并官方 `gpt-*` 原生行。
 - 每条路由条目必须从本机 `codex debug models --bundled`（失败则读同目录
   `models_cache.json`）里带非空 `base_instructions` 的原生模板克隆：保留
   `base_instructions`，删除 `model_messages`，`display_name` 等于 `slug`。
   找不到模板时 point / sync 必须失败，禁止写入短桩提示词。证据见 §20。
 - Codex home 为非空 `CODEX_HOME`，否则 `~/.codex`。
-- 进入 agent 后用 `/model` 选择其它已启用模型；`codex -m <provider-id>/<model-id>`
+- 进入 agent 后用 `/model` 选择其它已启用模型；`codex -m <provider-id>/<key-id>/<model-id>`
   仍然可用。完整 HTTP 目录仍由 `/c/codex/v1/models` 提供。
 - `clients.codex.subagent_model` 用于 Codex 协作子代理请求。只在
   `x-openai-subagent: collab_spawn`，或 `x-codex-turn-metadata` JSON 中
@@ -1194,11 +1201,11 @@ Codex 只在该字段严格等于 `OpenAI` 时才会向网关发送
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:12600/c/claude",
     "ANTHROPIC_API_KEY": "sk-ai-gateway-local",
     "ANTHROPIC_MODEL": "gateway-default",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "openrouter/anthropic/claude-sonnet-4",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "openrouter/anthropic/claude-sonnet-4",
-    "ANTHROPIC_DEFAULT_FABLE_MODEL": "openrouter/anthropic/claude-sonnet-4",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "ollama/qwen3",
-    "ANTHROPIC_SMALL_FAST_MODEL": "ollama/qwen3",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "openrouter/default/anthropic/claude-sonnet-4",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "openrouter/default/anthropic/claude-sonnet-4",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL": "openrouter/default/anthropic/claude-sonnet-4",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "ollama/default/qwen3",
+    "ANTHROPIC_SMALL_FAST_MODEL": "ollama/default/qwen3",
     "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"
   }
 }
@@ -1228,7 +1235,7 @@ Codex 只在该字段严格等于 `OpenAI` 时才会向网关发送
   则 restore 删除它。已经托管的配置同步目录时就地改写缓存，不得新建还原点。
   旧还原点没有记录该文件时，restore 只删除 `baseUrl` 属于本网关的缓存，不得
   删除 OpenCodex 或其它产品的缓存。
-- `claude --model <provider-id>/<model-id>` 与选择器别名都必须可用。上游收到的
+- `claude --model <provider-id>/<key-id>/<model-id>` 与选择器别名都必须可用。上游收到的
   模型名必须是解码后的真实模型，不得把别名交给上游。证据见 §20。
 - 只改用户级配置，禁止改项目内 `.claude/settings.json`。
 - 指向说明必须明确：自定义非 Anthropic base URL 会禁用 Remote Control。
@@ -1256,10 +1263,10 @@ name = "gateway-default"
 api_backend = "responses"
 api_key = "sk-ai-gateway-local"
 
-[model."ai-gateway:openrouter/anthropic/claude-sonnet-4"]
-model = "openrouter/anthropic/claude-sonnet-4"
+[model."ai-gateway:openrouter/default/anthropic/claude-sonnet-4"]
+model = "openrouter/default/anthropic/claude-sonnet-4"
 base_url = "http://127.0.0.1:12600/c/grok/v1"
-name = "openrouter/anthropic/claude-sonnet-4"
+name = "openrouter/default/anthropic/claude-sonnet-4"
 api_backend = "responses"
 api_key = "sk-ai-gateway-local"
 ```
@@ -1269,10 +1276,10 @@ api_key = "sk-ai-gateway-local"
 - `api_backend` 第一阶段固定为 `responses`。
 - `[model."ai-gateway"]` 是 §7.3 的启动首选模型，由 `[models] default` 指向。
 - Grok Build 是唯一能在配置文件里承载完整目录的客户端：每个已启用的
-  `<provider-id>/<model-id>` 各写一个 `[model."ai-gateway:<provider-id>/<model-id>"]`
+  `<provider-id>/<key-id>/<model-id>` 各写一个 `[model."ai-gateway:<provider-id>/<key-id>/<model-id>"]`
   条目，与内置模型并存而非替换（证据见 §20）。
 - 选择器显示名 `name` 必须写成该条目的模型 id（`gateway-default` 或
-  `<provider-id>/<model-id>`），不得改写成目录中的友好名称。
+  `<provider-id>/<key-id>/<model-id>`），不得改写成目录中的友好名称。
 - 网关写入的条目一律以 `ai-gateway:` 为 id 前缀，除首选模型条目 `ai-gateway` 之外。
   restore 必须删除网关写入的全部条目，不得删除用户自己声明的模型。
 - 目录条目的增删只发生在 point 与路由同步时，且不得替换最初 point 创建的恢复点。
@@ -1670,7 +1677,7 @@ Invoke-RestMethod http://127.0.0.1:12600/healthz
 {"status":"ok"}
 ```
 
-### B. 系统钥匙存储
+### B. 密钥组配置
 
 前置条件：A。
 
@@ -1684,11 +1691,9 @@ internal/server/
 
 必须交付：
 
-- `secret.Store` 接口。
-- Windows DPAPI 实现。
-- macOS Keychain 和 Linux Secret Service 的平台实现或明确的构建期实现文件。
-- provider CRUD 的 secret 写入事务。
-- `readyz` 和 `doctor` 的 secret 检查。
+- provider 下多个 `key_groups` 的配置校验和原子写入。
+- 密钥组 API Key 的显式读取、更新、探测和重复告警。
+- `readyz` 只检查当前 routes 使用的密钥组。
 
 必须测试：
 
@@ -1697,12 +1702,11 @@ internal/server/
 - 配置中不出现明文 key。
 - provider 更新失败时恢复旧 secret。
 
-Windows 人工验收：
+人工验收：
 
-1. 添加含钥匙 provider。
-2. 搜索 `~/.ai-gateway`，确认没有明文钥匙。
-3. 重启网关。
-4. 仍能读取钥匙完成 probe。
+1. 添加同一 provider 下两个 API Key 不同的密钥组。
+2. 确认配置保存、密钥组详情读取和探测都使用指定 `key_id`。
+3. 确认未使用的空密钥组不阻断 `readyz`，而当前路由使用的空密钥组返回 503。
 
 ### C. 路由与 OpenAI Chat 同协议
 
@@ -2078,7 +2082,7 @@ docs/
 
 ### 2026-08-15 复核：客户端可选模型目录
 
-本次复核针对「把全部已启用 `<provider-id>/<model-id>` 交给客户端选择」这一需求，
+本次复核针对「把全部已启用 `<provider-id>/<key-id>/<model-id>` 交给客户端选择」这一需求，
 在本机安装的真实客户端上做了可复现实验，结论直接约束第 7.3、7.5 和 12.3 至 12.5 节。
 
 实验对象：Codex `0.147.0`、Claude Code `2.1.228`、Grok Build `1.0.4`。
@@ -2095,13 +2099,13 @@ docs/
   `experimental_supported_tools`，并且必须提供 `base_instructions` 或 `model_messages`
   之一，否则 Codex 拒绝启动。
 - `visibility` 取值为 `list` 或 `hide`。`slug` 允许包含 `/`：`codex debug models`
-  能正确列出 `openrouter/anthropic/claude-sonnet-4` 这类 slug。
+  能正确列出 `openrouter/default/anthropic/claude-sonnet-4` 这类 slug。
 - 自定义目录**整体替换**内置目录，不是追加。
 - 决定性证据：条目中的 `base_instructions` 会替换 Codex 真正的 agent 系统提示词。
   用哨兵字符串做对照实验，上游收到的 `instructions` 从 21178 字符降到 32 字符；
   改为克隆内置条目的 `model_messages` 后，上游收到的 `instructions` 长度为 0。
 - 同时验证了目录并非必需：只把根级 `model` 写成
-  `openrouter/anthropic/claude-sonnet-4`、完全不配置目录，Codex 仍能正常完成回合，
+  `openrouter/default/anthropic/claude-sonnet-4`、完全不配置目录，Codex 仍能正常完成回合，
   上游收到的模型名逐字一致，系统提示词保持 21178 字符，仅多打印一行元数据缺失警告。
 
 2026-08-15 结论当时是：不写 `model_catalog_json`，因为手写短 `base_instructions`
@@ -2114,12 +2118,12 @@ docs/
 - `codex debug models --bundled` 可用。bundled 目录 8 个模型**同时**带
   `base_instructions`（11097–21544 字符）和 `model_messages.instructions_template`。
 - 自定义目录整体替换内置目录。`codex debug models`（非 `--bundled`）对
-  Path A 目录只列出 `openrouter/anthropic/claude-sonnet-4`。
+  Path A 目录只列出 `openrouter/default/anthropic/claude-sonnet-4`。
 - Codex `0.147.0` 的 Responses 请求**不再带顶层 `instructions`**。官方提示词在
   `input[]` 里以 `You are Codex...` 文本块出现。2026-08-15 测到的顶层
   `instructions` 长度 0，在本版本上是字段缺席，不是提示词被清空。
 - 三组对照（同一假上游，`codex exec`，模型 id 均为
-  `openrouter/anthropic/claude-sonnet-4`）：
+  `openrouter/default/anthropic/claude-sonnet-4`）：
 
   | 变换 | 上游 `input` 中官方提示词长度 |
   |---|---|
@@ -2149,10 +2153,10 @@ bundled 模板时拒绝指向。完整目录同时由 sidecar 与 `/c/codex/v1/m
 - 生效前置条件：`ANTHROPIC_BASE_URL` 已设置且 host 不是 `api.anthropic.com`，
   并且存在 `ANTHROPIC_AUTH_TOKEN` 或 `ANTHROPIC_API_KEY`。缺少 key 时静默跳过发现。
 - 决定性约束：Claude Code 只保留 id 匹配 `/(claude|anthropic)/i` 的条目。实验中网关
-  返回 4 个模型，缓存文件里只剩 `openrouter/anthropic/claude-sonnet-4` 一个，
+  返回 4 个模型，缓存文件里只剩 `openrouter/default/anthropic/claude-sonnet-4` 一个，
   `gateway-default`、`deepseek/deepseek-chat`、`zhipu/glm-5` 全部被丢弃。
   因此 Claude Code 的选择器天然无法展示全部已启用模型，这是客户端行为，不是网关缺陷。
-- 另一项验证：`--model <provider-id>/<model-id>` 可以直接使用任意模型名，
+- 另一项验证：`--model <provider-id>/<key-id>/<model-id>` 可以直接使用任意模型名，
   上游收到的 `model` 逐字一致，不做改写；模型名不在其内置表中时只降级
   auto-compact 的上下文窗口估算，并按子串匹配打印退役提示（例如 id 中包含
   `claude-sonnet-4` 会触发退役警告），不影响请求成功。
@@ -2161,20 +2165,20 @@ bundled 模板时拒绝指向。完整目录同时由 sidecar 与 `/c/codex/v1/m
 
 - `[model."<id>"]` 可以声明任意多个自定义模型，与内置模型**并存**而非替换。
 - 第一次实测（id 直接用模型名）：内置 `grok-4.6`、`grok-4.5` 与自定义
-  `gateway-default`、`openrouter/anthropic/claude-sonnet-4`、`deepseek/deepseek-chat`
+  `gateway-default`、`openrouter/default/anthropic/claude-sonnet-4`、`deepseek/default/deepseek-chat`
   同时列出，`[models] default` 指定的条目被标记为默认。
 - 第二次实测（id 加 `ai-gateway:` 前缀，并预置一个用户自有模型 `my-own-model`）：
   `grok models` 输出 `grok-4.6`、`grok-4.5`、`ai-gateway`（默认）、
-  `ai-gateway:openrouter/anthropic/claude-sonnet-4`、`ai-gateway:deepseek/deepseek-chat`、
+  `ai-gateway:openrouter/default/anthropic/claude-sonnet-4`、`ai-gateway:deepseek/default/deepseek-chat`、
   `my-own-model`。即 id 含 `/` 和 `:` 都不影响解析，且用户自有条目不受影响。
 - `grok models` 列出的是配置中的表 id，不是 `name`。`name` 按官方 settings reference
   是选择器显示名；第一阶段把该字段写成与 `model` 相同的
-  `<provider-id>/<model-id>`（或 `gateway-default`），不使用目录中的友好名称。
+  `<provider-id>/<key-id>/<model-id>`（或 `gateway-default`），不使用目录中的友好名称。
 
 #### 由此确定的第一阶段做法
 
 - 客户端路由从「客户端唯一可用模型」改为「客户端启动首选模型」，语义见 §7.3。
-- 完整的已启用 `<provider-id>/<model-id>` 目录一律由 `/c/{client}/v1/models` 提供，
+- 完整的已启用 `<provider-id>/<key-id>/<model-id>` 目录一律由 `/c/{client}/v1/models` 提供，
   这是三个客户端唯一共同可用的入口。
 - 只有 Grok Build 在主配置文件里落地完整目录；Codex 通过 sidecar 落地；Claude
   Code 通过 `cache/gateway-models.json` 落地，完整 HTTP 目录仍走
@@ -2203,8 +2207,8 @@ bundled 模板时拒绝指向。完整目录同时由 sidecar 与 `/c/codex/v1/m
    `claude-ocx*` 前缀，避免两个产品互相解码。
 4. 别名只出现在 `/c/claude/v1/models` 的 `id`。`display_name`、Codex sidecar、
    Grok 配置、桌面/托盘选择器、以及发往上游的模型名，一律仍是
-   `gateway-default` 或 `<provider-id>/<model-id>`。
-5. `claude --model <provider-id>/<model-id>` 与选择器别名都必须继续工作。
+   `gateway-default` 或 `<provider-id>/<key-id>/<model-id>`。
+5. `claude --model <provider-id>/<key-id>/<model-id>` 与选择器别名都必须继续工作。
    `route.Resolve` 在 §7.4 原有步骤之前解码。
 
 禁止事项（新冻结）：
@@ -2490,7 +2494,7 @@ messages following tool_calls message)
 
 这不是调用方选错模型后的上游鉴权失败，而是网关把“没有供应商的模型
 名”透传给了当前路由。第三方目录与桌面选择器都使用
-`<provider-id>/<model-id>`。未命中前缀、也无法归属到已登记模型时，必须
+`<provider-id>/<key-id>/<model-id>`。未命中前缀、也无法归属到已登记模型时，必须
 在接触上游之前拒绝，错误信息为
 `未匹配当前选择的[<requested-model>],请选择正确的 供应商/模型ID`。
 

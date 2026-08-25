@@ -56,11 +56,12 @@ func TestProbeUsesCompletionAndModelDiscoveryUsesCustomEndpoint(t *testing.T) {
 
 func TestAvailabilityFiltersModelsAndProvider(t *testing.T) {
 	cfg := config.Defaults()
-	p := cfg.Providers["ollama"]
 	disabled := false
-	p.Models = []config.ProviderModel{{ID: "enabled-model"}, {ID: "disabled-model", Enabled: &disabled}}
-	p.DefaultModel = "enabled-model"
-	cfg.Providers["ollama"] = p
+	setKeyGroupModels(cfg, "ollama", "default", "enabled-model", []config.ProviderModel{
+		{ID: "enabled-model", Endpoint: "/chat/completions"},
+		{ID: "disabled-model", Enabled: &disabled, Endpoint: "/chat/completions"},
+	})
+	setRoute(cfg, "generic", "ollama", "default", "enabled-model")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 	resp, body := chatGet(t, addr, "/v1/models")
 	if resp.StatusCode != http.StatusOK || strings.Contains(string(body), "disabled-model") || !strings.Contains(string(body), "enabled-model") {

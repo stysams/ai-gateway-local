@@ -48,7 +48,7 @@ func (s *Server) localAccessResponse(cfg *config.Config) LocalAccessResponse {
 		APIKey:       localAccessAPIKeyPlaceholder,
 		AuthRequired: false,
 		DefaultModel: route.ReservedModel,
-		DefaultRoute: RouteStatus{Provider: cfg.Routes.Generic.Provider, Model: cfg.Routes.Generic.Model},
+		DefaultRoute: routeStatus(cfg.Routes.Generic),
 		Endpoints: LocalAccessEndpoints{
 			Models:          baseURL + "/models",
 			ChatCompletions: baseURL + "/chat/completions",

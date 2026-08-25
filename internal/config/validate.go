@@ -13,6 +13,8 @@ import (
 // providerIDRe matches docs/v1-scheme.md §5.2: ^[a-z][a-z0-9_-]{0,31}$.
 var providerIDRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 
+var keyIDRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+
 // validSecretRefRe matches the secret_ref charset contract shared with the
 // secret package: a ref must be usable verbatim as a file name inside the
 // secrets directory. The pattern is duplicated deliberately so config never
@@ -108,7 +110,7 @@ func validateProvider(id string, p Provider) []FieldError {
 	if strings.TrimSpace(p.Name) == "" {
 		errs = append(errs, FieldError{Field: "providers." + id + ".name", Reason: "must not be empty"})
 	}
-	if !validAdapters[p.Adapter] {
+	if len(p.KeyGroups) == 0 && !validAdapters[p.Adapter] {
 		errs = append(errs, FieldError{
 			Field:  "providers." + id + ".adapter",
 			Reason: fmt.Sprintf("must be one of openai-chat, openai-responses, anthropic; got %q", p.Adapter),
@@ -148,6 +150,12 @@ func validateProvider(id string, p Provider) []FieldError {
 		} else if strings.ContainsAny(value, "\r\n\x00") {
 			errs = append(errs, FieldError{Field: field, Reason: "value must not contain newlines or NUL bytes"})
 		}
+	}
+	if len(p.KeyGroups) > 0 {
+		return append(errs, validateKeyGroups(id, p.KeyGroups)...)
+	}
+	if !hasLegacyProviderData(p) {
+		return append(errs, FieldError{Field: "providers." + id + ".key_groups", Reason: "must contain at least one key group"})
 	}
 	if strings.TrimSpace(p.DefaultModel) == "" {
 		errs = append(errs, FieldError{Field: "providers." + id + ".default_model", Reason: "must not be empty"})
@@ -209,6 +217,99 @@ func validateProvider(id string, p Provider) []FieldError {
 	return errs
 }
 
+func hasLegacyProviderData(p Provider) bool {
+	return strings.TrimSpace(p.Adapter) != "" || strings.TrimSpace(p.DefaultModel) != "" ||
+		p.Models != nil || strings.TrimSpace(p.SecretRef) != ""
+}
+
+func validateKeyGroups(providerID string, groups map[string]KeyGroup) []FieldError {
+	var errs []FieldError
+	if len(groups) == 0 {
+		return []FieldError{{Field: "providers." + providerID + ".key_groups", Reason: "must contain at least one key group"}}
+	}
+	for keyID, group := range groups {
+		prefix := "providers." + providerID + ".key_groups." + keyID
+		if !keyIDRe.MatchString(keyID) {
+			errs = append(errs, FieldError{Field: prefix, Reason: "id must match ^[a-z][a-z0-9_-]{0,31}$"})
+		}
+		if strings.TrimSpace(group.Name) == "" {
+			errs = append(errs, FieldError{Field: prefix + ".name", Reason: "must not be empty"})
+		}
+		if adapter := strings.TrimSpace(group.Adapter); adapter != "" && !endpoint.IsModelAdapter(adapter) {
+			errs = append(errs, FieldError{Field: prefix + ".adapter", Reason: "must be a supported wire adapter or custom"})
+		}
+		if endpointValue := strings.TrimSpace(group.Endpoint); endpointValue != "" {
+			if err := endpoint.ValidateCustom(endpointValue); err != nil {
+				errs = append(errs, FieldError{Field: prefix + ".endpoint", Reason: err.Error()})
+			}
+		}
+		if strings.TrimSpace(group.DefaultModel) == "" {
+			errs = append(errs, FieldError{Field: prefix + ".default_model", Reason: "must not be empty"})
+		}
+		modelIDs := make(map[string]bool, len(group.Models))
+		for index, model := range group.Models {
+			field := fmt.Sprintf("%s.models.%d", prefix, index)
+			modelID := strings.TrimSpace(model.ID)
+			if modelID == "" {
+				errs = append(errs, FieldError{Field: field + ".id", Reason: "must not be empty"})
+			} else if modelIDs[modelID] {
+				errs = append(errs, FieldError{Field: field + ".id", Reason: fmt.Sprintf("duplicates model %q", modelID)})
+			} else {
+				modelIDs[modelID] = true
+			}
+			if adapter := strings.TrimSpace(model.Adapter); adapter != "" && !endpoint.IsModelAdapter(adapter) {
+				errs = append(errs, FieldError{Field: field + ".adapter", Reason: "must be a supported wire adapter or custom"})
+			}
+			if endpointValue := strings.TrimSpace(model.Endpoint); endpointValue != "" {
+				if err := endpoint.ValidateCustom(endpointValue); err != nil {
+					errs = append(errs, FieldError{Field: field + ".endpoint", Reason: err.Error()})
+				}
+			}
+			if model.ContextWindow < 0 {
+				errs = append(errs, FieldError{Field: field + ".context_window", Reason: "must be zero or greater"})
+			}
+			if model.MaxOutputTokens < 0 {
+				errs = append(errs, FieldError{Field: field + ".max_output_tokens", Reason: "must be zero or greater"})
+			}
+			effectiveEndpoint := strings.TrimSpace(model.Endpoint)
+			if effectiveEndpoint == "" {
+				effectiveEndpoint = strings.TrimSpace(group.Endpoint)
+			}
+			adapter := strings.TrimSpace(model.Adapter)
+			if adapter == "" {
+				adapter = strings.TrimSpace(group.Adapter)
+			}
+			// A known non-custom adapter may omit the endpoint and let the
+			// outbound Join helper insert the preset wire path. Custom still
+			// requires an explicit path ending in a known wire suffix.
+			if effectiveEndpoint == "" {
+				if adapter == "" || adapter == endpoint.Custom || !endpoint.IsModelAdapter(adapter) {
+					errs = append(errs, FieldError{Field: field + ".endpoint", Reason: "must be set on the model or inherited from the key group"})
+				}
+				continue
+			}
+			inferred, inferredOK := endpoint.InferWire(effectiveEndpoint)
+			if adapter != "" && adapter != endpoint.Custom && inferredOK && adapter != inferred {
+				errs = append(errs, FieldError{Field: field + ".adapter", Reason: fmt.Sprintf("conflicts with endpoint protocol %q", inferred)})
+			}
+			if adapter == "" || adapter == endpoint.Custom {
+				if inferredOK {
+					adapter = inferred
+				}
+			}
+			if !endpoint.IsWire(adapter) {
+				errs = append(errs, FieldError{Field: field + ".adapter", Reason: "cannot determine the outbound protocol from adapter or endpoint"})
+			}
+		}
+		if !modelIDs[strings.TrimSpace(group.DefaultModel)] {
+			errs = append(errs, FieldError{Field: prefix + ".default_model", Reason: "must reference an entry in models"})
+		} else if !group.ModelEnabled(strings.TrimSpace(group.DefaultModel)) {
+			errs = append(errs, FieldError{Field: prefix + ".default_model", Reason: "must reference an enabled model"})
+		}
+	}
+	return errs
+}
+
 // Validate performs full validation of the config contract
 // (docs/v1-scheme.md §5.2). It returns nil only when every rule holds.
 func (c *Config) Validate() error {
@@ -264,7 +365,7 @@ func (c *Config) Validate() error {
 		errs = append(errs, validateProvider(id, p)...)
 	}
 
-	for _, name := range []string{"codex", "claude", "grok", "generic"} {
+	for _, name := range []string{"codex", "claude", "claude_desktop", "grok", "generic"} {
 		r := c.Routes.route(name)
 		if r == (Route{}) {
 			errs = append(errs, FieldError{Field: "routes." + name, Reason: "must be present"})
@@ -279,6 +380,23 @@ func (c *Config) Validate() error {
 				Field:  "routes." + name + ".provider",
 				Reason: fmt.Sprintf("references unknown provider %q", r.Provider),
 			})
+		}
+		if provider, ok := c.Providers[r.Provider]; ok && len(provider.KeyGroups) > 0 {
+			if strings.TrimSpace(r.KeyID) == "" {
+				errs = append(errs, FieldError{Field: "routes." + name + ".key_id", Reason: "must reference an existing key group"})
+				continue
+			}
+			group, exists := provider.KeyGroup(r.KeyID)
+			if !exists {
+				errs = append(errs, FieldError{Field: "routes." + name + ".key_id", Reason: fmt.Sprintf("references unknown key group %q", r.KeyID)})
+				continue
+			}
+			if !group.EnabledValue() {
+				errs = append(errs, FieldError{Field: "routes." + name + ".key_id", Reason: fmt.Sprintf("references disabled key group %q", r.KeyID)})
+			}
+			if strings.TrimSpace(r.Model) != "" && !group.ModelEnabled(r.Model) {
+				errs = append(errs, FieldError{Field: "routes." + name + ".model", Reason: fmt.Sprintf("references unknown or disabled model %q", r.Model)})
+			}
 		}
 		if strings.TrimSpace(r.Model) == "" {
 			errs = append(errs, FieldError{Field: "routes." + name + ".model", Reason: "must not be empty"})

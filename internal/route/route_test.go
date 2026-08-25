@@ -15,12 +15,10 @@ import (
 func testConfig() *config.Config {
 	c := config.Defaults()
 	c.Providers["openrouter"] = config.Provider{
-		Name: "OpenRouter", Adapter: "openai-chat",
-		BaseURL: "https://openrouter.ai/api/v1", DefaultModel: "anthropic/claude-sonnet-4",
+		Name: "OpenRouter", BaseURL: "https://openrouter.ai/api/v1", KeyGroups: map[string]config.KeyGroup{"default": {Name: "Default", Endpoint: "/chat/completions", DefaultModel: "anthropic/claude-sonnet-4", Models: []config.ProviderModel{{ID: "anthropic/claude-sonnet-4"}, {ID: "openai/gpt-5"}}}},
 	}
 	c.Providers["ollama"] = config.Provider{
-		Name: "Ollama", Adapter: "openai-chat",
-		BaseURL: "http://127.0.0.1:11434/v1", DefaultModel: "qwen3",
+		Name: "Ollama", BaseURL: "http://127.0.0.1:11434/v1", KeyGroups: map[string]config.KeyGroup{"default": {Name: "Default", Endpoint: "/chat/completions", DefaultModel: "qwen3", Models: []config.ProviderModel{{ID: "qwen3"}}}},
 	}
 	return c
 }
@@ -94,9 +92,9 @@ func TestResolveClaudePickerAlias(t *testing.T) {
 		model     string
 	}{
 		{ClaudePickerDefault, "openrouter", "anthropic/claude-sonnet-4"},
-		{"claude-gw-ollama--qwen3", "ollama", "qwen3"},
-		{"claude-gw2-openrouter--anthropic~sclaude-sonnet-4", "openrouter", "anthropic/claude-sonnet-4"},
-		{"claude-gw2-openrouter--openai~sgpt-5", "openrouter", "openai/gpt-5"},
+		{"claude-gw2-ollama--default~sqwen3", "ollama", "qwen3"},
+		{"claude-gw2-openrouter--default~santhropic~sclaude-sonnet-4", "openrouter", "anthropic/claude-sonnet-4"},
+		{"claude-gw2-openrouter--default~sopenai~sgpt-5", "openrouter", "openai/gpt-5"},
 	}
 	for _, tc := range cases {
 		res, err := Resolve(Claude, tc.requested, cfg)
@@ -112,8 +110,13 @@ func TestResolveClaudePickerAlias(t *testing.T) {
 
 func TestResolveClaudeDesktopFamilyModelsUseDesktopRoute(t *testing.T) {
 	cfg := testConfig()
-	cfg.Routes.Claude = config.Route{Provider: "ollama", Model: "qwen3"}
-	cfg.Routes.ClaudeDesktop = config.Route{Provider: "openrouter", Model: "anthropic/claude-opus-5"}
+	cfg.Routes.Claude = config.Route{Provider: "ollama", KeyID: "default", Model: "qwen3"}
+	openrouter := cfg.Providers["openrouter"]
+	group := openrouter.KeyGroups["default"]
+	group.Models = append(group.Models, config.ProviderModel{ID: "anthropic/claude-opus-5"})
+	openrouter.KeyGroups["default"] = group
+	cfg.Providers["openrouter"] = openrouter
+	cfg.Routes.ClaudeDesktop = config.Route{Provider: "openrouter", KeyID: "default", Model: "anthropic/claude-opus-5"}
 	for _, model := range []string{"claude-sonnet-5", "claude-opus-5", "claude-fable-5", "claude-haiku-4-5"} {
 		res, err := Resolve(ClaudeDesktop, model, cfg)
 		if err != nil {
@@ -145,7 +148,7 @@ func TestResolveProviderPrefixOverride(t *testing.T) {
 	cfg := testConfig()
 	// openrouter/anthropic/claude-sonnet-4 → provider openrouter, model
 	// anthropic/claude-sonnet-4 (prefix stripped once).
-	res, err := Resolve(Generic, "openrouter/anthropic/claude-sonnet-4", cfg)
+	res, err := Resolve(Generic, "openrouter/default/anthropic/claude-sonnet-4", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,11 +159,7 @@ func TestResolveProviderPrefixOverride(t *testing.T) {
 
 func TestResolveGenericUsesUniqueModelOwner(t *testing.T) {
 	cfg := testConfig()
-	cfg.Providers["agentrouter"] = config.Provider{
-		Name: "AgentRouter", Adapter: "anthropic", BaseURL: "https://agentrouter.org",
-		DefaultModel: "claude-opus-5",
-		Models:       []config.ProviderModel{{ID: "claude-opus-5"}},
-	}
+	cfg.Providers["agentrouter"] = config.Provider{Name: "AgentRouter", BaseURL: "https://agentrouter.org", KeyGroups: map[string]config.KeyGroup{"default": {Name: "Default", Endpoint: "/messages", DefaultModel: "claude-opus-5", Models: []config.ProviderModel{{ID: "claude-opus-5"}}}}}
 
 	res, err := Resolve(Generic, "claude-opus-5", cfg)
 	if err != nil {
@@ -191,20 +190,16 @@ func TestResolveUniqueModelOwnerOnlyAppliesToGeneric(t *testing.T) {
 func TestResolveGenericAmbiguousModelOwnership(t *testing.T) {
 	cfg := testConfig()
 	for _, id := range []string{"agent-a", "agent-b"} {
-		cfg.Providers[id] = config.Provider{
-			Name: id, Adapter: "anthropic", BaseURL: "https://example.com",
-			DefaultModel: "shared-model",
-		}
+		cfg.Providers[id] = config.Provider{Name: id, BaseURL: "https://example.com", KeyGroups: map[string]config.KeyGroup{"default": {Name: "Default", Endpoint: "/messages", DefaultModel: "shared-model", Models: []config.ProviderModel{{ID: "shared-model"}}}}}
 	}
 
 	_, err := Resolve(Generic, "shared-model", cfg)
-	if err == nil || !strings.Contains(err.Error(), "multiple providers (agent-a, agent-b)") {
+	if err == nil || !strings.Contains(err.Error(), "multiple provider key groups") {
 		t.Fatalf("ambiguous model error = %v", err)
 	}
 
 	ollama := cfg.Providers["ollama"]
-	ollama.Models = []config.ProviderModel{{ID: "shared-model"}}
-	ollama.DefaultModel = "shared-model"
+	ollama.KeyGroups["default"] = config.KeyGroup{Name: "Default", Endpoint: "/chat/completions", DefaultModel: "shared-model", Models: []config.ProviderModel{{ID: "shared-model"}}}
 	cfg.Providers["ollama"] = ollama
 	res, err := Resolve(Generic, "shared-model", cfg)
 	if err != nil {
@@ -286,7 +281,7 @@ func TestResolveRejectsEmptyRestAfterProviderPrefix(t *testing.T) {
 			t.Errorf("Resolve(%q) succeeded, want a clear field error", m)
 			continue
 		}
-		if !strings.Contains(err.Error(), "model") || !strings.Contains(err.Error(), "prefix") {
+		if !strings.Contains(err.Error(), "model") || !strings.Contains(err.Error(), "<provider-id>/<key-id>/<model-id>") {
 			t.Errorf("Resolve(%q) error unclear: %v", m, err)
 		}
 	}
@@ -300,7 +295,10 @@ func TestResolveRejectsEmptyRestAfterProviderPrefix(t *testing.T) {
 func TestResolveClientRoutesAreIsolated(t *testing.T) {
 	cfg := testConfig()
 	// 修改 codex 的路由不影响其他客户端。
-	cfg.Routes.Codex = config.Route{Provider: "ollama", Model: "llama3"}
+	ollama := cfg.Providers["ollama"]
+	ollama.KeyGroups["default"] = config.KeyGroup{Name: "Default", DefaultModel: "llama3", Models: []config.ProviderModel{{ID: "llama3"}}}
+	cfg.Providers["ollama"] = ollama
+	cfg.Routes.Codex = config.Route{Provider: "ollama", KeyID: "default", Model: "llama3"}
 	res, err := Resolve(Codex, "", cfg)
 	if err != nil {
 		t.Fatal(err)

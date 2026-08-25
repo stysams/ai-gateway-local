@@ -38,6 +38,13 @@ type Config struct {
 	Clients     Clients              `yaml:"clients,omitempty"`
 	Extra       map[string]yaml.Node `yaml:",inline"`
 	modelOwners map[string][]string
+	modelRefs   map[string][]ModelRef
+}
+
+// ModelRef identifies a model without losing its credential-group owner.
+type ModelRef struct {
+	Provider string
+	KeyID    string
 }
 
 // Limits bounds active data-plane requests. Zero disables a limit. A request
@@ -185,17 +192,24 @@ type Autostart struct {
 // default outbound protocol and the protocol used for model discovery
 // (docs/v1-scheme.md §5.2). A model may override it.
 type Provider struct {
-	Name           string            `yaml:"name"`
-	Adapter        string            `yaml:"adapter"`
-	BaseURL        string            `yaml:"base_url"`
-	ModelsURL      string            `yaml:"models_url,omitempty"`
-	ExtraHeaders   map[string]string `yaml:"extra_headers,omitempty"`
-	DisguiseClient string            `yaml:"disguise_client,omitempty"`
-	DefaultModel   string            `yaml:"default_model"`
-	Models         []ProviderModel   `yaml:"models,omitempty"`
-	Enabled        *bool             `yaml:"enabled,omitempty"`
-	SecretRef      string            `yaml:"secret_ref,omitempty"`
-	Capabilities   Capabilities      `yaml:"capabilities,omitempty"`
+	Name string `yaml:"name"`
+	// KeyGroups is the new credential boundary. Each group owns one plain
+	// API key, its model catalog, and its effective endpoint defaults.
+	KeyGroups      map[string]KeyGroup `yaml:"key_groups,omitempty"`
+	BaseURL        string              `yaml:"base_url"`
+	ModelsURL      string              `yaml:"models_url,omitempty"`
+	ExtraHeaders   map[string]string   `yaml:"extra_headers,omitempty"`
+	DisguiseClient string              `yaml:"disguise_client,omitempty"`
+	Enabled        *bool               `yaml:"enabled,omitempty"`
+	Capabilities   Capabilities        `yaml:"capabilities,omitempty"`
+
+	// Legacy fields remain for in-memory compatibility with older fixtures.
+	// New configuration writes use KeyGroups and the management API does not
+	// expose these fields.
+	Adapter      string          `yaml:"-"`
+	DefaultModel string          `yaml:"-"`
+	Models       []ProviderModel `yaml:"-"`
+	SecretRef    string          `yaml:"-"`
 }
 
 func (p Provider) EnabledValue() bool {
@@ -213,6 +227,98 @@ type ProviderModel struct {
 	ContextWindow   int    `yaml:"context_window,omitempty"`
 	MaxOutputTokens int    `yaml:"max_output_tokens,omitempty"`
 	Enabled         *bool  `yaml:"enabled,omitempty"`
+}
+
+// KeyGroup is a provider-scoped credential and model collection. APIKey is
+// intentionally persisted in config.yaml under the approved next-stage
+// security contract.
+type KeyGroup struct {
+	Name         string          `yaml:"name"`
+	Enabled      *bool           `yaml:"enabled,omitempty"`
+	APIKey       string          `yaml:"api_key,omitempty"`
+	Endpoint     string          `yaml:"endpoint,omitempty"`
+	Adapter      string          `yaml:"adapter,omitempty"`
+	DefaultModel string          `yaml:"default_model"`
+	Models       []ProviderModel `yaml:"models,omitempty"`
+}
+
+// KeyGroup returns a provider key group by its stable identifier.
+func (p Provider) KeyGroup(keyID string) (KeyGroup, bool) {
+	group, ok := p.KeyGroups[keyID]
+	if ok && p.hasLegacyRuntimeFields() {
+		if strings.TrimSpace(p.Adapter) != "" {
+			group.Adapter = p.Adapter
+		}
+		if strings.TrimSpace(p.DefaultModel) != "" {
+			group.DefaultModel = p.DefaultModel
+		}
+		if p.Models != nil {
+			group.Models = append([]ProviderModel(nil), p.Models...)
+		}
+	}
+	return group, ok
+}
+
+// hasLegacyRuntimeFields is limited to direct in-memory fixtures. Parsed YAML
+// and management payloads reject these fields before they reach runtime.
+func (p Provider) hasLegacyRuntimeFields() bool {
+	return strings.TrimSpace(p.Adapter) != "" || strings.TrimSpace(p.DefaultModel) != "" || p.Models != nil
+}
+
+// KeyGroupModelAdapter resolves a model protocol inside one key group.
+func (p Provider) KeyGroupModelAdapter(keyID, modelID string) string {
+	group, ok := p.KeyGroup(keyID)
+	if !ok {
+		return ""
+	}
+	return group.ModelAdapter(modelID)
+}
+
+// EnabledValue returns the effective key-group availability.
+func (g KeyGroup) EnabledValue() bool {
+	return g.Enabled == nil || *g.Enabled
+}
+
+// Model returns one model declared by the key group.
+func (g KeyGroup) Model(modelID string) (ProviderModel, bool) {
+	for _, model := range g.Models {
+		if model.ID == modelID {
+			return model, true
+		}
+	}
+	return ProviderModel{}, false
+}
+
+// EffectiveEndpoint returns the model endpoint, falling back to the group
+// endpoint. New configurations require one of these values for every model.
+func (g KeyGroup) EffectiveEndpoint(modelID string) string {
+	if model, ok := g.Model(modelID); ok && strings.TrimSpace(model.Endpoint) != "" {
+		return strings.TrimSpace(model.Endpoint)
+	}
+	return strings.TrimSpace(g.Endpoint)
+}
+
+// ModelAdapter resolves the protocol from an explicit adapter or the
+// effective endpoint suffix. Custom adapters still require a known wire
+// suffix so the gateway never guesses from provider or model names.
+func (g KeyGroup) ModelAdapter(modelID string) string {
+	model, ok := g.Model(modelID)
+	if ok && strings.TrimSpace(model.Adapter) != "" && model.Adapter != endpoint.Custom {
+		return strings.TrimSpace(model.Adapter)
+	}
+	if adapter, ok := endpoint.InferWire(g.EffectiveEndpoint(modelID)); ok {
+		return adapter
+	}
+	if ok && strings.TrimSpace(model.Adapter) == endpoint.Custom {
+		return endpoint.Custom
+	}
+	return strings.TrimSpace(g.Adapter)
+}
+
+// ModelEnabled reports whether a declared model can be selected.
+func (g KeyGroup) ModelEnabled(modelID string) bool {
+	model, ok := g.Model(modelID)
+	return ok && model.EnabledValue()
 }
 
 func (m ProviderModel) EnabledValue() bool {
@@ -275,9 +381,10 @@ type Routes struct {
 	Generic       Route `yaml:"generic"`
 }
 
-// Route points one client at one provider/model pair.
+// Route points one client at one provider/key-group/model triple.
 type Route struct {
 	Provider string `yaml:"provider"`
+	KeyID    string `yaml:"key_id"`
 	Model    string `yaml:"model"`
 }
 
@@ -299,9 +406,8 @@ func (r Routes) route(name string) Route {
 }
 
 // Defaults returns the initial configuration generated when no config file
-// exists. It matches the shape of the full example in docs/v1-scheme.md §5.1
-// but deliberately omits secret_ref: secrets belong to the system key store
-// (task package B), and a default config must not require one to start.
+// exists. The default groups are keyless so the gateway can start before a
+// user configures an authenticated provider.
 func Defaults() *Config {
 	c := &Config{
 		Version:   1,
@@ -312,25 +418,35 @@ func Defaults() *Config {
 		Autostart: Autostart{Enabled: false},
 		Providers: map[string]Provider{
 			"openrouter": {
-				Name:         "OpenRouter",
-				Adapter:      "openai-chat",
-				BaseURL:      "https://openrouter.ai/api/v1",
-				DefaultModel: "anthropic/claude-sonnet-4",
+				Name:    "OpenRouter",
+				BaseURL: "https://openrouter.ai/api/v1",
+				KeyGroups: map[string]KeyGroup{
+					"default": {
+						Name:         "默认密钥",
+						DefaultModel: "anthropic/claude-sonnet-4",
+						Models:       []ProviderModel{{ID: "anthropic/claude-sonnet-4", Endpoint: "/chat/completions"}},
+					},
+				},
 				Capabilities: Capabilities{ImageInput: true, Reasoning: true},
 			},
 			"ollama": {
-				Name:         "Ollama",
-				Adapter:      "openai-chat",
-				BaseURL:      "http://127.0.0.1:11434/v1",
-				DefaultModel: "qwen3",
+				Name:    "Ollama",
+				BaseURL: "http://127.0.0.1:11434/v1",
+				KeyGroups: map[string]KeyGroup{
+					"default": {
+						Name:         "默认密钥",
+						DefaultModel: "qwen3",
+						Models:       []ProviderModel{{ID: "qwen3", Endpoint: "/chat/completions"}},
+					},
+				},
 			},
 		},
 		Routes: Routes{
-			ClaudeDesktop: Route{Provider: "openrouter", Model: "anthropic/claude-sonnet-4"},
-			Codex:         Route{Provider: "openrouter", Model: "anthropic/claude-sonnet-4"},
-			Claude:        Route{Provider: "openrouter", Model: "anthropic/claude-sonnet-4"},
-			Grok:          Route{Provider: "openrouter", Model: "anthropic/claude-sonnet-4"},
-			Generic:       Route{Provider: "ollama", Model: "qwen3"},
+			ClaudeDesktop: Route{Provider: "openrouter", KeyID: "default", Model: "anthropic/claude-sonnet-4"},
+			Codex:         Route{Provider: "openrouter", KeyID: "default", Model: "anthropic/claude-sonnet-4"},
+			Claude:        Route{Provider: "openrouter", KeyID: "default", Model: "anthropic/claude-sonnet-4"},
+			Grok:          Route{Provider: "openrouter", KeyID: "default", Model: "anthropic/claude-sonnet-4"},
+			Generic:       Route{Provider: "ollama", KeyID: "default", Model: "qwen3"},
 		},
 	}
 	return c
@@ -366,6 +482,16 @@ func (c *Config) ModelOwnersView(model string) []string {
 	return c.modelOwnersView(model)
 }
 
+// ModelRefs returns enabled provider/key-group owners for a model.
+func (c *Config) ModelRefs(model string) []ModelRef {
+	return append([]ModelRef(nil), c.modelRefsView(model)...)
+}
+
+// ModelRefsView returns the immutable owner slice published with the config.
+func (c *Config) ModelRefsView(model string) []ModelRef {
+	return c.modelRefsView(model)
+}
+
 func (c *Config) modelOwnersView(model string) []string {
 	if c == nil {
 		return nil
@@ -376,34 +502,119 @@ func (c *Config) modelOwnersView(model string) []string {
 	return c.computeModelOwners(model)
 }
 
+func (c *Config) modelRefsView(model string) []ModelRef {
+	if c == nil {
+		return nil
+	}
+	if c.modelRefs != nil {
+		return c.modelRefs[model]
+	}
+	return c.computeModelRefs(model)
+}
+
 func (c *Config) rebuildModelIndex() {
 	if c == nil {
 		return
 	}
 	index := make(map[string][]string)
+	refs := make(map[string][]ModelRef)
 	for id, provider := range c.Providers {
 		if !provider.EnabledValue() {
 			continue
 		}
+		for keyID := range provider.KeyGroups {
+			group, _ := provider.KeyGroup(keyID)
+			if !group.EnabledValue() {
+				continue
+			}
+			for model := range keyGroupDeclaredModels(group) {
+				index[model] = append(index[model], id)
+				refs[model] = append(refs[model], ModelRef{Provider: id, KeyID: keyID})
+			}
+		}
+		// Keep the legacy in-memory index for tests and callers that assemble
+		// pre-key-group configs directly. Parsed new configs use KeyGroups.
 		for model := range providerDeclaredModels(provider) {
-			index[model] = append(index[model], id)
+			if len(provider.KeyGroups) == 0 {
+				index[model] = append(index[model], id)
+				refs[model] = append(refs[model], ModelRef{Provider: id})
+			}
 		}
 	}
 	for model := range index {
 		sort.Strings(index[model])
+		sort.Slice(refs[model], func(i, j int) bool {
+			if refs[model][i].Provider == refs[model][j].Provider {
+				return refs[model][i].KeyID < refs[model][j].KeyID
+			}
+			return refs[model][i].Provider < refs[model][j].Provider
+		})
 	}
 	c.modelOwners = index
+	c.modelRefs = refs
 }
 
 func (c *Config) computeModelOwners(model string) []string {
 	var owners []string
 	for id, provider := range c.Providers {
-		if provider.EnabledValue() && providerDeclaredModels(provider)[model] {
+		if !provider.EnabledValue() {
+			continue
+		}
+		if len(provider.KeyGroups) > 0 {
+			for keyID := range provider.KeyGroups {
+				group, _ := provider.KeyGroup(keyID)
+				if group.EnabledValue() && keyGroupDeclaredModels(group)[model] {
+					owners = append(owners, id)
+					break
+				}
+			}
+		} else if providerDeclaredModels(provider)[model] {
 			owners = append(owners, id)
 		}
 	}
 	sort.Strings(owners)
 	return owners
+}
+
+func (c *Config) computeModelRefs(model string) []ModelRef {
+	var refs []ModelRef
+	for id, provider := range c.Providers {
+		if !provider.EnabledValue() {
+			continue
+		}
+		if len(provider.KeyGroups) == 0 {
+			if providerDeclaredModels(provider)[model] {
+				refs = append(refs, ModelRef{Provider: id})
+			}
+			continue
+		}
+		for keyID := range provider.KeyGroups {
+			group, _ := provider.KeyGroup(keyID)
+			if group.EnabledValue() && keyGroupDeclaredModels(group)[model] {
+				refs = append(refs, ModelRef{Provider: id, KeyID: keyID})
+			}
+		}
+	}
+	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].Provider == refs[j].Provider {
+			return refs[i].KeyID < refs[j].KeyID
+		}
+		return refs[i].Provider < refs[j].Provider
+	})
+	return refs
+}
+
+func keyGroupDeclaredModels(group KeyGroup) map[string]bool {
+	declared := map[string]bool{}
+	if group.ModelEnabled(group.DefaultModel) {
+		declared[group.DefaultModel] = true
+	}
+	for _, model := range group.Models {
+		if model.ID != "" && model.EnabledValue() {
+			declared[model.ID] = true
+		}
+	}
+	return declared
 }
 
 func providerDeclaredModels(provider Provider) map[string]bool {
@@ -445,6 +656,12 @@ func (c *Config) clone() *Config {
 			out.modelOwners[model] = append([]string(nil), owners...)
 		}
 	}
+	if c.modelRefs != nil {
+		out.modelRefs = make(map[string][]ModelRef, len(c.modelRefs))
+		for model, refs := range c.modelRefs {
+			out.modelRefs[model] = append([]ModelRef(nil), refs...)
+		}
+	}
 	if c.Listen.Port != nil {
 		p := *c.Listen.Port
 		out.Listen.Port = &p
@@ -477,6 +694,25 @@ func (c *Config) clone() *Config {
 						b := *v.Models[i].Enabled
 						v.Models[i].Enabled = &b
 					}
+				}
+			}
+			if v.KeyGroups != nil {
+				v.KeyGroups = make(map[string]KeyGroup, len(v.KeyGroups))
+				for keyID, group := range c.Providers[k].KeyGroups {
+					if group.Models != nil {
+						group.Models = append([]ProviderModel(nil), group.Models...)
+						for i := range group.Models {
+							if group.Models[i].Enabled != nil {
+								b := *group.Models[i].Enabled
+								group.Models[i].Enabled = &b
+							}
+						}
+					}
+					if group.Enabled != nil {
+						b := *group.Enabled
+						group.Enabled = &b
+					}
+					v.KeyGroups[keyID] = group
 				}
 			}
 			if v.Enabled != nil {

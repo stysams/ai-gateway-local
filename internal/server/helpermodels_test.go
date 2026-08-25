@@ -12,8 +12,8 @@ import (
 
 func TestCodexHelperModelClassification(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.Clients.Codex.SubagentModel = "openrouter/anthropic/claude-sonnet-4"
-	cfg.Clients.Codex.TitleModel = "ollama/qwen3"
+	cfg.Clients.Codex.SubagentModel = "openrouter/default/anthropic/claude-sonnet-4"
+	cfg.Clients.Codex.TitleModel = "ollama/default/qwen3"
 
 	tests := []struct {
 		name      string
@@ -71,7 +71,7 @@ func TestCodexHelperModelClassification(t *testing.T) {
 
 func TestConfiguredHelperModelFallsBackWhenDisabled(t *testing.T) {
 	cfg := config.Defaults()
-	configured := "ollama/qwen3"
+	configured := "ollama/default/qwen3"
 	provider := cfg.Providers["ollama"]
 	provider.Enabled = config.BoolPtr(false)
 	cfg.Providers["ollama"] = provider
@@ -90,13 +90,19 @@ func TestCodexHelperModelsReachSelectedUpstreams(t *testing.T) {
 	fast := newFakeUpstream(t, nil)
 	cfg := dataPlaneConfig(primary.URL, fast.URL, false)
 	openrouter := cfg.Providers["openrouter"]
-	openrouter.Adapter = "openai-responses"
+	group := openrouter.KeyGroups["default"]
+	group.Adapter = "openai-responses"
+	group.Endpoint = "/v1/responses"
+	openrouter.KeyGroups["default"] = group
 	cfg.Providers["openrouter"] = openrouter
 	ollama := cfg.Providers["ollama"]
-	ollama.Adapter = "openai-responses"
+	group = ollama.KeyGroups["default"]
+	group.Adapter = "openai-responses"
+	group.Endpoint = "/v1/responses"
+	ollama.KeyGroups["default"] = group
 	cfg.Providers["ollama"] = ollama
-	cfg.Clients.Codex.SubagentModel = "openrouter/anthropic/claude-sonnet-4"
-	cfg.Clients.Codex.TitleModel = "ollama/qwen3"
+	cfg.Clients.Codex.SubagentModel = "openrouter/default/anthropic/claude-sonnet-4"
+	cfg.Clients.Codex.TitleModel = "ollama/default/qwen3"
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 	body := []byte(`{"model":"gpt-5.6-luna","input":[{"role":"user","content":"hi"}],"stream":false}`)
 

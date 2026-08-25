@@ -28,9 +28,9 @@ func TestResolveListedDisabledModelStillReportsDisabled(t *testing.T) {
 	cfg := testConfig()
 	disabled := false
 	p := cfg.Providers["openrouter"]
-	p.Models = []config.ProviderModel{{ID: "anthropic/claude-sonnet-4", Enabled: &disabled}}
+	p.KeyGroups["default"] = config.KeyGroup{Name: "Default", DefaultModel: "anthropic/claude-sonnet-4", Models: []config.ProviderModel{{ID: "anthropic/claude-sonnet-4", Enabled: &disabled}}}
 	cfg.Providers["openrouter"] = p
-	_, err := Resolve(Codex, "anthropic/claude-sonnet-4", cfg)
+	_, err := Resolve(Codex, "openrouter/default/anthropic/claude-sonnet-4", cfg)
 	if err == nil || !strings.Contains(err.Error(), "disabled") {
 		t.Fatalf("listed disabled = %v, want disabled", err)
 	}
@@ -43,18 +43,18 @@ func TestResolvePrefixOverrideIgnoresDisabledRouteProvider(t *testing.T) {
 	routeProvider.Enabled = &disabled
 	cfg.Providers["openrouter"] = routeProvider
 
-	res, err := Resolve(Codex, "ollama/qwen3", cfg)
+	res, err := Resolve(Codex, "ollama/default/qwen3", cfg)
 	if err != nil {
 		t.Fatalf("prefix override against disabled route provider: %v", err)
 	}
-	if res.Provider != "ollama" || res.Model != "qwen3" {
+	if res.Provider != "ollama" || res.KeyID != "default" || res.Model != "qwen3" {
 		t.Fatalf("prefix override = %+v, want ollama/qwen3", res)
 	}
 
 	if _, err := Resolve(Codex, ReservedModel, cfg); err == nil || !strings.Contains(err.Error(), `provider "openrouter" is disabled`) {
 		t.Fatalf("gateway-default = %v, want disabled route provider", err)
 	}
-	if _, err := Resolve(Codex, "openrouter/anthropic/claude-sonnet-4", cfg); err == nil || !strings.Contains(err.Error(), `provider "openrouter" is disabled`) {
+	if _, err := Resolve(Codex, "openrouter/default/anthropic/claude-sonnet-4", cfg); err == nil || !strings.Contains(err.Error(), `provider "openrouter" is disabled`) {
 		t.Fatalf("disabled prefix target = %v, want disabled openrouter", err)
 	}
 

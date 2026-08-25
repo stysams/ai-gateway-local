@@ -123,24 +123,115 @@ func (f *fakeUpstream) last() fakeRequest {
 	return reqs[len(reqs)-1]
 }
 
+
+// setProviderKeyGroup mutates one key group under a provider.
+func setProviderKeyGroup(cfg *config.Config, providerID, keyID string, mutate func(*config.KeyGroup)) {
+	provider := cfg.Providers[providerID]
+	if provider.KeyGroups == nil {
+		provider.KeyGroups = map[string]config.KeyGroup{}
+	}
+	group := provider.KeyGroups[keyID]
+	mutate(&group)
+	provider.KeyGroups[keyID] = group
+	cfg.Providers[providerID] = provider
+}
+
+// setKeyGroupWire configures the key-group adapter and matching default endpoint.
+func setKeyGroupWire(cfg *config.Config, providerID, keyID, adapter string) {
+	setProviderKeyGroup(cfg, providerID, keyID, func(group *config.KeyGroup) {
+		group.Adapter = adapter
+		switch adapter {
+		case "openai-chat":
+			group.Endpoint = "/chat/completions"
+		case "openai-responses":
+			group.Endpoint = "/responses"
+		case "anthropic":
+			group.Endpoint = "/messages"
+		}
+	})
+}
+
+// setKeyGroupAPIKey sets or clears the plaintext key for one key group.
+func setKeyGroupAPIKey(cfg *config.Config, providerID, keyID, apiKey string) {
+	setProviderKeyGroup(cfg, providerID, keyID, func(group *config.KeyGroup) {
+		group.APIKey = apiKey
+	})
+}
+
+// setKeyGroupModels replaces the model catalog and default model of one key group.
+// Routes that still point at this provider/key but no longer name an enabled
+// model are rewritten to the new default so Validate stays green.
+func setKeyGroupModels(cfg *config.Config, providerID, keyID, defaultModel string, models []config.ProviderModel) {
+	setProviderKeyGroup(cfg, providerID, keyID, func(group *config.KeyGroup) {
+		if defaultModel != "" {
+			group.DefaultModel = defaultModel
+		}
+		group.Models = models
+	})
+	group := cfg.Providers[providerID].KeyGroups[keyID]
+	enabled := map[string]bool{}
+	for _, model := range group.Models {
+		if model.EnabledValue() {
+			enabled[model.ID] = true
+		}
+	}
+	repair := func(route *config.Route) {
+		if route.Provider != providerID || route.KeyID != keyID {
+			return
+		}
+		if !enabled[route.Model] {
+			route.Model = group.DefaultModel
+		}
+	}
+	repair(&cfg.Routes.Codex)
+	repair(&cfg.Routes.Claude)
+	repair(&cfg.Routes.ClaudeDesktop)
+	repair(&cfg.Routes.Grok)
+	repair(&cfg.Routes.Generic)
+}
+
+// setRoute sets a client route to a provider/key-group/model triple.
+func setRoute(cfg *config.Config, client, providerID, keyID, model string) {
+	routeValue := config.Route{Provider: providerID, KeyID: keyID, Model: model}
+	switch client {
+	case "codex":
+		cfg.Routes.Codex = routeValue
+	case "claude":
+		cfg.Routes.Claude = routeValue
+	case "claude_desktop", "claude-desktop":
+		cfg.Routes.ClaudeDesktop = routeValue
+	case "grok":
+		cfg.Routes.Grok = routeValue
+	case "generic":
+		cfg.Routes.Generic = routeValue
+	default:
+		panic("unknown client " + client)
+	}
+}
+
 // dataPlaneConfig builds a config with two providers pointing at the fake
-// upstreams: openrouter (route target of codex/claude/grok, optionally keyed)
-// and ollama (generic's route, keyless).
+// upstreams and the current provider/key-group contract.
 func dataPlaneConfig(up1, up2 string, withSecret bool) *config.Config {
 	c := config.Defaults()
-	c.Providers["openrouter"] = config.Provider{
-		Name: "OpenRouter", Adapter: "openai-chat",
-		BaseURL: up1, DefaultModel: "anthropic/claude-sonnet-4",
+	if !strings.HasSuffix(strings.TrimRight(up1, "/"), "/v1") {
+		up1 = strings.TrimRight(up1, "/") + "/v1"
 	}
+	if !strings.HasSuffix(strings.TrimRight(up2, "/"), "/v1") {
+		up2 = strings.TrimRight(up2, "/") + "/v1"
+	}
+	openrouterKey := ""
 	if withSecret {
-		p := c.Providers["openrouter"]
-		p.SecretRef = "provider.openrouter"
-		c.Providers["openrouter"] = p
+		openrouterKey = "sk-openrouter"
 	}
-	c.Providers["ollama"] = config.Provider{
-		Name: "Ollama", Adapter: "openai-chat",
-		BaseURL: up2, DefaultModel: "qwen3",
-	}
+	c.Providers["openrouter"] = config.Provider{Name: "OpenRouter", BaseURL: up1, KeyGroups: map[string]config.KeyGroup{
+		"default": {Name: "Default", Adapter: "openai-chat", Endpoint: "/chat/completions", DefaultModel: "anthropic/claude-sonnet-4", APIKey: openrouterKey, Models: []config.ProviderModel{
+			{ID: "anthropic/claude-sonnet-4"}, {ID: "route-model-codex"}, {ID: "route-model-claude"}, {ID: "route-model-grok"}, {ID: "route-model-generic"}, {ID: "enabled-model"}, {ID: "disabled-model", Enabled: config.BoolPtr(false)},
+		}},
+	}}
+	// ollama stays keyless unless a test explicitly sets an API key.
+	c.Providers["ollama"] = config.Provider{Name: "Ollama", BaseURL: up2, KeyGroups: map[string]config.KeyGroup{
+		"default": {Name: "Default", Adapter: "openai-chat", Endpoint: "/chat/completions", DefaultModel: "qwen3", Models: []config.ProviderModel{{ID: "qwen3"}}},
+	}}
 	return c
 }
 
@@ -235,7 +326,7 @@ func TestChatRoutingPrefixOverrideModelOwnerAndUnmatched(t *testing.T) {
 	// 前缀命中已配置 provider：openrouter/anthropic/claude-sonnet-4 从
 	// generic 路由覆盖到 openrouter，模型剥离前缀一次。
 	resp, data := chatPost(t, addr, "/c/generic/v1/chat/completions",
-		[]byte(`{"model":"openrouter/anthropic/claude-sonnet-4","messages":[]}`), nil)
+		[]byte(`{"model":"openrouter/default/anthropic/claude-sonnet-4","messages":[]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("override: status %d, %s", resp.StatusCode, data)
 	}
@@ -298,12 +389,12 @@ func TestMessagesMergesInboundAnthropicBeta(t *testing.T) {
 	})
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
 	provider := cfg.Providers["ollama"]
-	provider.Adapter = "anthropic"
 	provider.ExtraHeaders = map[string]string{
 		"Anthropic-Beta": "claude-code-20250219,effort-2025-11-24",
 		"User-Agent":     "claude-cli/2.1.228 (external, cli)",
 	}
 	cfg.Providers["ollama"] = provider
+	setKeyGroupWire(cfg, "ollama", "default", "anthropic")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/v1/messages",
@@ -339,9 +430,9 @@ func TestGenericDisguiseAppliesClaudeHeaders(t *testing.T) {
 	})
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
 	provider := cfg.Providers["ollama"]
-	provider.Adapter = "anthropic"
 	provider.DisguiseClient = config.DisguiseClientClaude
 	cfg.Providers["ollama"] = provider
+	setKeyGroupWire(cfg, "ollama", "default", "anthropic")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/v1/messages",
@@ -371,10 +462,10 @@ func TestGenericClaudeDisguiseAppliesThinkingAndSystemCache(t *testing.T) {
 	})
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
 	provider := cfg.Providers["ollama"]
-	provider.Adapter = "anthropic"
 	provider.DisguiseClient = config.DisguiseClientClaude
 	provider.Capabilities = config.Capabilities{Reasoning: true}
 	cfg.Providers["ollama"] = provider
+	setKeyGroupWire(cfg, "ollama", "default", "anthropic")
 	s, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/v1/messages",
@@ -425,10 +516,10 @@ func TestFirstClassClientSkipsDisguise(t *testing.T) {
 	})
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
 	provider := cfg.Providers["openrouter"]
-	provider.Adapter = "anthropic"
 	provider.DisguiseClient = config.DisguiseClientClaude
 	provider.Capabilities = config.Capabilities{Reasoning: true}
 	cfg.Providers["openrouter"] = provider
+	setKeyGroupWire(cfg, "openrouter", "default", "anthropic")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/c/claude/v1/messages",
@@ -692,10 +783,12 @@ func TestMessagesDropsUnsupportedContextManagement(t *testing.T) {
 	})
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
 	p := cfg.Providers["openrouter"]
-	p.Adapter = "anthropic"
-	p.DefaultModel = "claude-opus-4-6"
 	p.Capabilities = config.Capabilities{Reasoning: true}
 	cfg.Providers["openrouter"] = p
+	setKeyGroupWire(cfg, "openrouter", "default", "anthropic")
+	setKeyGroupModels(cfg, "openrouter", "default", "claude-opus-4-6", []config.ProviderModel{
+		{ID: "claude-opus-4-6", Endpoint: "/messages"},
+	})
 	s, addr := startWithStore(t, cfg, secret.NewMemStore())
 	body := []byte(`{"model":"gateway-default","stream":true,"messages":[],"context_management":{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}}`)
 	resp, data := chatPost(t, addr, "/c/claude/v1/messages", body, nil)
@@ -730,10 +823,12 @@ func TestMessagesPreservesSupportedContextManagement(t *testing.T) {
 	})
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
 	p := cfg.Providers["openrouter"]
-	p.Adapter = "anthropic"
-	p.DefaultModel = "claude-opus-4-6"
 	p.Capabilities = config.Capabilities{Reasoning: true, ContextManagement: true}
 	cfg.Providers["openrouter"] = p
+	setKeyGroupWire(cfg, "openrouter", "default", "anthropic")
+	setKeyGroupModels(cfg, "openrouter", "default", "claude-opus-4-6", []config.ProviderModel{
+		{ID: "claude-opus-4-6", Endpoint: "/messages"},
+	})
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 	body := []byte(`{"model":"gateway-default","stream":true,"messages":[],"context_management":{"edits":[]}}`)
 	resp, _ := chatPost(t, addr, "/c/claude/v1/messages", body, nil)
@@ -772,13 +867,11 @@ func TestChatInboundAuthDropped(t *testing.T) {
 
 func TestChatAuthInjectedFromKeyStore(t *testing.T) {
 	up := newFakeUpstream(t, nil)
-	store := secret.NewMemStore()
-	if err := store.Put(context.Background(), "provider.openrouter", []byte("sk-upstream-secret-1")); err != nil {
-		t.Fatal(err)
-	}
-	_, addr := startDataPlane(t, up.URL, up.URL, true, store)
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	setKeyGroupAPIKey(cfg, "openrouter", "default", "sk-upstream-secret-1")
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
-	// 有 secret_ref 的 provider（openrouter，经 codex 路由）：注入 Bearer。
+	// 有 api_key 的密钥组（openrouter，经 codex 路由）：注入 Bearer。
 	resp, data := chatPost(t, addr, "/c/codex/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, %s", resp.StatusCode, data)
@@ -786,7 +879,7 @@ func TestChatAuthInjectedFromKeyStore(t *testing.T) {
 	if auth := up.last().Auth; auth != "Bearer sk-upstream-secret-1" {
 		t.Errorf("Authorization = %q, want Bearer sk-upstream-secret-1", auth)
 	}
-	// 无钥匙的 provider（ollama，generic）：不发认证。
+	// 无钥匙的密钥组（ollama，generic）：不发认证。
 	resp, data = chatPost(t, addr, "/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, %s", resp.StatusCode, data)
@@ -801,18 +894,19 @@ func TestChatAuthInjectedFromKeyStore(t *testing.T) {
 }
 
 func TestChatAuthMissingSecretFails(t *testing.T) {
+	// Current contract: empty api_key is keyless and may still reach upstream.
+	// Missing credentials are a readiness concern, not a hard data-plane 500.
 	up := newFakeUpstream(t, nil)
-	_, addr := startDataPlane(t, up.URL, up.URL, true, secret.NewMemStore()) // 空 store
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	setKeyGroupAPIKey(cfg, "openrouter", "default", "")
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/c/codex/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("status %d, want 500, body %s", resp.StatusCode, data)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, want 200 for keyless key group, body %s", resp.StatusCode, data)
 	}
-	if strings.Contains(string(data), "sk-") {
-		t.Errorf("error leaked key material: %s", data)
-	}
-	if len(up.requests()) != 0 {
-		t.Error("unauthenticated request reached the upstream")
+	if auth := up.last().Auth; auth != "" {
+		t.Errorf("keyless key group got Authorization %q", auth)
 	}
 }
 
@@ -1130,22 +1224,13 @@ func TestDataPlaneStreamIdleTimeoutReleasesSlot(t *testing.T) {
 }
 
 func TestChatConcurrentNoCrossTalk(t *testing.T) {
-	// 两个带各自认证的 provider；并发请求必须不串路由、不串认证。
+	// 两个带各自认证的密钥组；并发请求必须不串路由、不串认证。
 	upA := newFakeUpstream(t, nil)
 	upB := newFakeUpstream(t, nil)
-	store := secret.NewMemStore()
-	if err := store.Put(context.Background(), "provider.openrouter", []byte("sk-secret-A")); err != nil {
-		t.Fatal(err)
-	}
-	// B 用不同 ref。
-	if err := store.Put(context.Background(), "provider.ollama", []byte("sk-secret-B")); err != nil {
-		t.Fatal(err)
-	}
-	cfg := dataPlaneConfig(upA.URL, upB.URL, true)
-	p := cfg.Providers["ollama"]
-	p.SecretRef = "provider.ollama"
-	cfg.Providers["ollama"] = p
-	s, addr := startWithStore(t, cfg, store)
+	cfg := dataPlaneConfig(upA.URL, upB.URL, false)
+	setKeyGroupAPIKey(cfg, "openrouter", "default", "sk-secret-A")
+	setKeyGroupAPIKey(cfg, "ollama", "default", "sk-secret-B")
+	s, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	_ = s
 	const n = 24
@@ -1197,23 +1282,29 @@ func TestModelsList(t *testing.T) {
 		if err := json.Unmarshal(data, &list); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		if list.Object != "list" || len(list.Data) != 3 {
+		if list.Object != "list" || len(list.Data) < 3 {
 			t.Fatalf("%s: %s", path, data)
 		}
 		want := []string{
 			"gateway-default",
-			"ollama/qwen3",
-			"openrouter/anthropic/claude-sonnet-4",
+			"ollama/default/qwen3",
+			"openrouter/default/anthropic/claude-sonnet-4",
 		}
-		for i, w := range want {
-			if list.Data[i].ID != w {
-				t.Errorf("%s: data[%d].id = %q, want %q", path, i, list.Data[i].ID, w)
+		gotIDs := make([]string, 0, len(list.Data))
+		for _, item := range list.Data {
+			gotIDs = append(gotIDs, item.ID)
+			if item.DisplayName != item.ID {
+				t.Errorf("%s: display_name %q != id %q", path, item.DisplayName, item.ID)
 			}
-			// §7.5: display_name equals the selectable id so client pickers
-			// show <provider-id>/<model-id> (or gateway-default).
-			if list.Data[i].DisplayName != w {
-				t.Errorf("%s: data[%d].display_name = %q, want %q", path, i, list.Data[i].DisplayName, w)
+		}
+		joined := strings.Join(gotIDs, ",")
+		for _, w := range want {
+			if !strings.Contains(joined, w) {
+				t.Errorf("%s: missing model %q in %v", path, w, gotIDs)
 			}
+		}
+		if strings.Contains(joined, "disabled-model") {
+			t.Errorf("%s: disabled model leaked: %v", path, gotIDs)
 		}
 	}
 	// 非法客户端前缀 → 404。
@@ -1241,24 +1332,22 @@ func TestClaudeModelsListUsesPickerAliases(t *testing.T) {
 	}
 	want := []struct{ id, display string }{
 		{"claude-gw-default", "gateway-default"},
-		{"claude-gw-ollama--qwen3", "ollama/qwen3"},
-		{"claude-gw2-openrouter--anthropic~sclaude-sonnet-4", "openrouter/anthropic/claude-sonnet-4"},
+		{"claude-gw2-ollama--default~sqwen3", "ollama/default/qwen3"},
+		{"claude-gw2-openrouter--default~santhropic~sclaude-sonnet-4", "openrouter/default/anthropic/claude-sonnet-4"},
 	}
-	if len(list.Data) != len(want) {
-		t.Fatalf("len=%d body=%s", len(list.Data), data)
+	byDisplay := map[string]string{}
+	for _, item := range list.Data {
+		byDisplay[item.DisplayName] = item.ID
 	}
-	for i, w := range want {
-		if list.Data[i].ID != w.id {
-			t.Errorf("data[%d].id = %q, want %q", i, list.Data[i].ID, w.id)
-		}
-		if list.Data[i].DisplayName != w.display {
-			t.Errorf("data[%d].display_name = %q, want %q", i, list.Data[i].DisplayName, w.display)
+	for _, w := range want {
+		if byDisplay[w.display] != w.id {
+			t.Errorf("display %q -> id %q, want %q (body=%s)", w.display, byDisplay[w.display], w.id, data)
 		}
 	}
 	if strings.Contains(string(data), `"id":"gateway-default"`) {
 		t.Fatal("claude catalog leaked the unaliased reserved id")
 	}
-	if strings.Contains(string(data), `"id":"ollama/qwen3"`) {
+	if strings.Contains(string(data), `"id":"ollama/default/qwen3"`) {
 		t.Fatal("claude catalog leaked an unaliased provider/model id")
 	}
 }
@@ -1269,7 +1358,7 @@ func TestClaudePickerAliasRoutesToUpstream(t *testing.T) {
 	_, addr := startDataPlane(t, up1.URL, up2.URL, false, nil)
 
 	resp, data := chatPost(t, addr, "/c/claude/v1/chat/completions",
-		[]byte(`{"model":"claude-gw-ollama--qwen3","messages":[]}`), nil)
+		[]byte(`{"model":"claude-gw2-ollama--default~sqwen3","messages":[]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("ollama alias: status %d, %s", resp.StatusCode, data)
 	}
@@ -1281,7 +1370,7 @@ func TestClaudePickerAliasRoutesToUpstream(t *testing.T) {
 	}
 
 	resp, data = chatPost(t, addr, "/c/claude/v1/chat/completions",
-		[]byte(`{"model":"claude-gw2-openrouter--anthropic~sclaude-sonnet-4","messages":[]}`), nil)
+		[]byte(`{"model":"claude-gw2-openrouter--default~santhropic~sclaude-sonnet-4","messages":[]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("openrouter alias: status %d, %s", resp.StatusCode, data)
 	}
@@ -1300,7 +1389,7 @@ func TestClaudePickerAliasRoutesToUpstream(t *testing.T) {
 
 	// 真实 id 仍然可直接请求，不强制走别名。
 	resp, data = chatPost(t, addr, "/c/claude/v1/chat/completions",
-		[]byte(`{"model":"openrouter/anthropic/claude-sonnet-4","messages":[]}`), nil)
+		[]byte(`{"model":"openrouter/default/anthropic/claude-sonnet-4","messages":[]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("raw id: status %d, %s", resp.StatusCode, data)
 	}
@@ -1312,25 +1401,23 @@ func TestClaudePickerAliasRoutesToUpstream(t *testing.T) {
 func TestModelsListIncludesPersistedProviderCatalog(t *testing.T) {
 	up := newFakeUpstream(t, nil)
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["openrouter"]
-	p.Models = []config.ProviderModel{
-		{ID: p.DefaultModel, Name: "Claude Sonnet", ContextWindow: 200000, MaxOutputTokens: 64000},
-		{ID: "openai/gpt-5", Name: "GPT-5", ContextWindow: 400000, MaxOutputTokens: 128000},
-	}
-	cfg.Providers["openrouter"] = p
+	setKeyGroupModels(cfg, "openrouter", "default", "anthropic/claude-sonnet-4", []config.ProviderModel{
+		{ID: "anthropic/claude-sonnet-4", Name: "Claude Sonnet", ContextWindow: 200000, MaxOutputTokens: 64000, Endpoint: "/chat/completions"},
+		{ID: "openai/gpt-5", Name: "GPT-5", ContextWindow: 400000, MaxOutputTokens: 128000, Endpoint: "/chat/completions"},
+	})
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 	resp, body := chatGet(t, addr, "/v1/models")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("models: %d %s", resp.StatusCode, body)
 	}
-	if !strings.Contains(string(body), `"id":"openrouter/openai/gpt-5"`) {
+	if !strings.Contains(string(body), `"id":"openrouter/default/openai/gpt-5"`) {
 		t.Fatalf("persisted model catalog missing: %s", body)
 	}
-	if strings.Count(string(body), `"id":"openrouter/anthropic/claude-sonnet-4"`) != 1 {
+	if strings.Count(string(body), `"id":"openrouter/default/anthropic/claude-sonnet-4"`) != 1 {
 		t.Fatalf("default model was duplicated: %s", body)
 	}
 	// §7.5: display_name is the selectable id, not the catalog friendly name.
-	if !strings.Contains(string(body), `"display_name":"openrouter/openai/gpt-5"`) {
+	if !strings.Contains(string(body), `"display_name":"openrouter/default/openai/gpt-5"`) {
 		t.Fatalf("selectable id missing from display_name: %s", body)
 	}
 	if strings.Contains(string(body), `"display_name":"GPT-5"`) {
@@ -1365,9 +1452,7 @@ func TestChatToMessagesCrossProtocolDispatch(t *testing.T) {
 		w.Write([]byte(`{"id":"msg_fake","type":"message","role":"assistant","model":"gateway-default","content":[{"type":"text","text":"pong"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}`))
 	})
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["openrouter"]
-	p.Adapter = "anthropic"
-	cfg.Providers["openrouter"] = p
+	setKeyGroupWire(cfg, "openrouter", "default", "anthropic")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/c/codex/v1/chat/completions",
@@ -1402,24 +1487,21 @@ func TestModelAdapterSelectsOutboundProtocol(t *testing.T) {
 		fmt.Fprintf(w, `{"id":"chatcmpl-fake","object":"chat.completion","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"gpt"},"finish_reason":"stop"}]}`)
 	})
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["openrouter"]
-	p.Adapter = "openai-chat"
-	p.DefaultModel = "gpt-4o"
-	p.Models = []config.ProviderModel{
-		{ID: "gpt-4o", Adapter: "openai-chat"},
-		{ID: "claude-opus", Adapter: "anthropic"},
-	}
-	cfg.Providers["openrouter"] = p
-	cfg.Routes.Codex = config.Route{Provider: "openrouter", Model: "gpt-4o"}
+	setKeyGroupWire(cfg, "openrouter", "default", "openai-chat")
+	setKeyGroupModels(cfg, "openrouter", "default", "gpt-4o", []config.ProviderModel{
+		{ID: "gpt-4o", Adapter: "openai-chat", Endpoint: "/chat/completions"},
+		{ID: "claude-opus", Adapter: "anthropic", Endpoint: "/messages"},
+	})
+	setRoute(cfg, "codex", "openrouter", "default", "gpt-4o")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/c/codex/v1/chat/completions",
-		[]byte(`{"model":"openrouter/gpt-4o","messages":[{"role":"user","content":"hi"}]}`), nil)
+		[]byte(`{"model":"openrouter/default/gpt-4o","messages":[{"role":"user","content":"hi"}]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("gpt status = %d, body %s", resp.StatusCode, data)
 	}
 	resp, data = chatPost(t, addr, "/c/codex/v1/chat/completions",
-		[]byte(`{"model":"openrouter/claude-opus","messages":[{"role":"user","content":"hi"}]}`), nil)
+		[]byte(`{"model":"openrouter/default/claude-opus","messages":[{"role":"user","content":"hi"}]}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("claude status = %d, body %s", resp.StatusCode, data)
 	}
@@ -1443,19 +1525,21 @@ func TestModelAdapterSelectsOutboundProtocol(t *testing.T) {
 
 func TestCustomModelEndpointIsUsedAsWritten(t *testing.T) {
 	up := newFakeUpstream(t, nil)
+	// Keep the provider base URL without a trailing /v1 so the custom path is
+	// appended exactly as written (no auto /v1 insertion by endpoint.Join).
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["openrouter"]
-	p.Adapter = "anthropic"
-	p.DefaultModel = "legacy-gpt"
-	p.Models = []config.ProviderModel{
+	provider := cfg.Providers["openrouter"]
+	provider.BaseURL = strings.TrimRight(up.URL, "/")
+	cfg.Providers["openrouter"] = provider
+	setKeyGroupWire(cfg, "openrouter", "default", "anthropic")
+	setKeyGroupModels(cfg, "openrouter", "default", "legacy-gpt", []config.ProviderModel{
 		{ID: "legacy-gpt", Adapter: "custom", Endpoint: "/responses"},
-	}
-	cfg.Providers["openrouter"] = p
-	cfg.Routes.Codex = config.Route{Provider: "openrouter", Model: "legacy-gpt"}
+	})
+	setRoute(cfg, "codex", "openrouter", "default", "legacy-gpt")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/c/codex/v1/responses",
-		[]byte(`{"model":"openrouter/legacy-gpt","input":[{"role":"user","content":"hi"}],"stream":false}`), nil)
+		[]byte(`{"model":"openrouter/default/legacy-gpt","input":[{"role":"user","content":"hi"}],"stream":false}`), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, body %s", resp.StatusCode, data)
 	}
@@ -1493,21 +1577,19 @@ func TestChatContentTypeValidation(t *testing.T) {
 }
 
 func TestChatSecretStoreErrorIsInternal(t *testing.T) {
-	// key store 不可用是内部/配置错误，映射 500 而非 502 upstream
-	// unreachable，且错误不得泄漏密钥。
+	// Key groups no longer consult the system key store on the data plane.
+	// A broken store must not block a keyless or plaintext-key request.
 	up := newFakeUpstream(t, nil)
-	cfg := dataPlaneConfig(up.URL, up.URL, true) // openrouter 声明 secret_ref
+	cfg := dataPlaneConfig(up.URL, up.URL, false)
+	setKeyGroupAPIKey(cfg, "openrouter", "default", "sk-plain")
 	_, addr := startWithStore(t, cfg, brokenStore{})
 
 	resp, data := chatPost(t, addr, "/c/codex/v1/chat/completions", []byte(`{"model":"gateway-default","messages":[]}`), nil)
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500, body %s", resp.StatusCode, data)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body %s", resp.StatusCode, data)
 	}
-	if strings.Contains(string(data), "sk-") || strings.Contains(string(data), "Bearer") {
-		t.Errorf("error leaked key material: %s", data)
-	}
-	if len(up.requests()) != 0 {
-		t.Error("request reached the upstream despite the secret store failure")
+	if auth := up.last().Auth; auth != "Bearer sk-plain" {
+		t.Errorf("Authorization = %q", auth)
 	}
 }
 
@@ -1517,9 +1599,7 @@ func TestResponsesCompactForwardsSameProtocol(t *testing.T) {
 		io.WriteString(w, `{"object":"response.compaction","output":[{"type":"compaction"}]}`)
 	})
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["openrouter"]
-	p.Adapter = "openai-responses"
-	cfg.Providers["openrouter"] = p
+	setKeyGroupWire(cfg, "openrouter", "default", "openai-responses")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/c/codex/v1/responses/compact", []byte(`{"model":"gateway-default","input":[]}`), nil)
@@ -1547,15 +1627,12 @@ func TestResponsesCompactUsesModelAdapter(t *testing.T) {
 		io.WriteString(w, `{"object":"response.compaction","output":[{"type":"compaction"}]}`)
 	})
 	cfg := dataPlaneConfig(up.URL, up.URL, false)
-	p := cfg.Providers["openrouter"]
-	p.Adapter = "openai-chat"
-	p.DefaultModel = "gpt-5"
-	p.Models = []config.ProviderModel{
-		{ID: "gpt-5", Adapter: "openai-responses"},
-		{ID: "claude-opus", Adapter: "anthropic"},
-	}
-	cfg.Providers["openrouter"] = p
-	cfg.Routes.Codex = config.Route{Provider: "openrouter", Model: "gpt-5"}
+	setKeyGroupWire(cfg, "openrouter", "default", "openai-chat")
+	setKeyGroupModels(cfg, "openrouter", "default", "gpt-5", []config.ProviderModel{
+		{ID: "gpt-5", Adapter: "openai-responses", Endpoint: "/responses"},
+		{ID: "claude-opus", Adapter: "anthropic", Endpoint: "/messages"},
+	})
+	setRoute(cfg, "codex", "openrouter", "default", "gpt-5")
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, data := chatPost(t, addr, "/c/codex/v1/responses/compact", []byte(`{"model":"gateway-default","input":[]}`), nil)
@@ -1566,7 +1643,7 @@ func TestResponsesCompactUsesModelAdapter(t *testing.T) {
 		t.Fatalf("upstream path = %q", up.last().Path)
 	}
 
-	resp, data = chatPost(t, addr, "/c/codex/v1/responses/compact", []byte(`{"model":"openrouter/claude-opus","input":[]}`), nil)
+	resp, data = chatPost(t, addr, "/c/codex/v1/responses/compact", []byte(`{"model":"openrouter/default/claude-opus","input":[]}`), nil)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("claude compact status = %d, want 422, body %s", resp.StatusCode, data)
 	}

@@ -23,7 +23,7 @@ func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	dir := t.TempDir()
 	mgr := config.NewManager(filepath.Join(dir, "config.yaml"))
-	if err := mgr.Write(config.Defaults()); err != nil {
+	if err := mgr.Write(configWithRouteKeys()); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	s := New(mgr, secret.NewMemStore(), "test-version", 4242)
@@ -204,11 +204,22 @@ func TestReadyzNotReady(t *testing.T) {
 	}
 }
 
-// configWithSecretRef returns the default config with the openrouter
-// provider declaring a secret_ref (the shape a keyed provider has after
-// task package B's management API writes it).
-func configWithSecretRef() *config.Config {
+func configWithRouteKeys() *config.Config {
 	c := config.Defaults()
+	for providerID, provider := range c.Providers {
+		for keyID, group := range provider.KeyGroups {
+			group.APIKey = "sk-test-" + providerID + "-" + keyID
+			provider.KeyGroups[keyID] = group
+		}
+		c.Providers[providerID] = provider
+	}
+	return c
+}
+
+// Retained only for the doctor unit tests that exercise the historical store
+// report independently from the current routed key-group readiness contract.
+func configWithSecretRef() *config.Config {
+	c := configWithRouteKeys()
 	p := c.Providers["openrouter"]
 	p.SecretRef = "provider.openrouter"
 	c.Providers["openrouter"] = p
@@ -216,9 +227,8 @@ func configWithSecretRef() *config.Config {
 }
 
 func TestReadyzMissingSecret(t *testing.T) {
-	// A provider declares a secret_ref but the store has no secret: not
-	// ready (docs/v1-scheme.md §9.2).
-	cfg := configWithSecretRef()
+	// A key group used by a route has no API key: not ready.
+	cfg := config.Defaults()
 	store := secret.NewMemStore()
 	s := newTestServerWithStore(t, cfg, store)
 	if err := s.Listen("127.0.0.1:0"); err != nil {
@@ -236,17 +246,14 @@ func TestReadyzMissingSecret(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503, body = %s", resp.StatusCode, body)
 	}
-	if !strings.Contains(string(body), "provider.openrouter") {
-		t.Errorf("body should name the missing ref:\n%s", body)
+	if !strings.Contains(string(body), "has no api_key") {
+		t.Errorf("body should name the missing key-group value:\n%s", body)
 	}
 }
 
 func TestReadyzSecretPresent(t *testing.T) {
-	cfg := configWithSecretRef()
+	cfg := configWithRouteKeys()
 	store := secret.NewMemStore()
-	if err := store.Put(context.Background(), "provider.openrouter", []byte("sk-test")); err != nil {
-		t.Fatal(err)
-	}
 	s := newTestServerWithStore(t, cfg, store)
 	if err := s.Listen("127.0.0.1:0"); err != nil {
 		t.Fatal(err)
@@ -265,8 +272,8 @@ func TestReadyzSecretPresent(t *testing.T) {
 	}
 }
 
-func TestReadyzStoreUnavailable(t *testing.T) {
-	cfg := configWithSecretRef()
+func TestReadyzIgnoresLegacyStoreAvailability(t *testing.T) {
+	cfg := configWithRouteKeys()
 	s := newTestServerWithStore(t, cfg, brokenStore{})
 	if err := s.Listen("127.0.0.1:0"); err != nil {
 		t.Fatal(err)
@@ -280,17 +287,14 @@ func TestReadyzStoreUnavailable(t *testing.T) {
 	})
 
 	resp, body := httpGet(t, addr, "/readyz")
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503, body = %s", resp.StatusCode, body)
-	}
-	if !strings.Contains(string(body), "secret store") {
-		t.Errorf("body should mention the secret store:\n%s", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", resp.StatusCode, body)
 	}
 }
 
 func TestReadyzKeylessConfigIgnoresStore(t *testing.T) {
-	// No provider declares a secret_ref, so an unavailable store must not
-	// make the gateway unready (docs/v1-scheme.md §6.2).
+	// Store availability is irrelevant, but a routed key group without a key
+	// still makes the gateway unready.
 	cfg := config.Defaults()
 	s := newTestServerWithStore(t, cfg, brokenStore{})
 	if err := s.Listen("127.0.0.1:0"); err != nil {
@@ -305,8 +309,19 @@ func TestReadyzKeylessConfigIgnoresStore(t *testing.T) {
 	})
 
 	resp, body := httpGet(t, addr, "/readyz")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body = %s", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503, body = %s", resp.StatusCode, body)
+	}
+}
+
+func TestReadyzIgnoresUnusedKeylessGroup(t *testing.T) {
+	cfg := configWithRouteKeys()
+	provider := cfg.Providers["openrouter"]
+	provider.KeyGroups["unused"] = config.KeyGroup{Name: "Unused", Endpoint: "/v1/chat/completions", DefaultModel: "unused", Models: []config.ProviderModel{{ID: "unused"}}}
+	cfg.Providers["openrouter"] = provider
+	s := newTestServerWithStore(t, cfg, brokenStore{})
+	if errs := CheckRequiredKeyGroups(s.cfg.View()); len(errs) != 0 {
+		t.Fatalf("unused keyless group blocked readiness: %v", errs)
 	}
 }
 

@@ -53,9 +53,14 @@ func configuredHelperModel(configured string, cfg *config.Config) string {
 	if configured == "" || configured == route.ReservedModel {
 		return ""
 	}
-	providerID, modelID, ok := strings.Cut(configured, "/")
+	parts := strings.SplitN(configured, "/", 3)
+	if len(parts) != 3 {
+		return ""
+	}
+	providerID, keyID, modelID := parts[0], parts[1], parts[2]
 	provider, exists := cfg.Providers[providerID]
-	if !ok || modelID == "" || !exists || !provider.EnabledValue() || !provider.ModelEnabled(modelID) {
+	group, groupExists := provider.KeyGroups[keyID]
+	if modelID == "" || !exists || !provider.EnabledValue() || !groupExists || !group.EnabledValue() || !group.ModelEnabled(modelID) {
 		return ""
 	}
 	return configured

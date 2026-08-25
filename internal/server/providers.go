@@ -37,30 +37,61 @@ func refFor(id string) string { return providerRefPrefix + id }
 // stored in config or returned by any read endpoint (docs/v1-scheme.md
 // §11.3).
 type ProviderRequest struct {
-	ID             string                 `json:"id"`
+	ID             string                     `json:"id"`
+	Name           string                     `json:"name"`
+	Adapter        string                     `json:"-"`
+	BaseURL        string                     `json:"base_url"`
+	ModelsURL      string                     `json:"models_url"`
+	ExtraHeaders   map[string]string          `json:"extra_headers"`
+	DisguiseClient string                     `json:"disguise_client"`
+	DefaultModel   string                     `json:"-"`
+	Enabled        *bool                      `json:"enabled"`
+	Models         []ProviderModelPayload     `json:"-"`
+	APIKey         *string                    `json:"-"`
+	Capabilities   *CapabilitiesPayload       `json:"capabilities"`
+	KeyGroups      map[string]KeyGroupPayload `json:"key_groups"`
+}
+
+// KeyGroupPayload is the editable key-group resource. A nil APIKey preserves
+// the stored value on update; an explicit empty string clears it.
+type KeyGroupPayload struct {
+	KeyID        string                 `json:"key_id,omitempty"`
+	Name         string                 `json:"name"`
+	Enabled      *bool                  `json:"enabled"`
+	APIKey       *string                `json:"api_key"`
+	Endpoint     string                 `json:"endpoint"`
+	Adapter      string                 `json:"adapter,omitempty"`
+	DefaultModel string                 `json:"default_model"`
+	Models       []ProviderModelPayload `json:"models"`
+}
+
+// KeyGroupSummary is safe for provider list and config responses. It never
+// contains API-key material.
+type KeyGroupSummary struct {
+	KeyID          string                 `json:"key_id"`
 	Name           string                 `json:"name"`
-	Adapter        string                 `json:"adapter"`
-	BaseURL        string                 `json:"base_url"`
-	ModelsURL      string                 `json:"models_url"`
-	ExtraHeaders   map[string]string      `json:"extra_headers"`
-	DisguiseClient string                 `json:"disguise_client"`
+	Enabled        bool                   `json:"enabled"`
+	HasAPIKey      bool                   `json:"has_api_key"`
+	ModelCount     int                    `json:"model_count"`
 	DefaultModel   string                 `json:"default_model"`
-	Enabled        *bool                  `json:"enabled"`
+	Endpoint       string                 `json:"endpoint,omitempty"`
+	Adapter        string                 `json:"adapter,omitempty"`
+	DuplicateCount int                    `json:"duplicate_count,omitempty"`
 	Models         []ProviderModelPayload `json:"models"`
-	APIKey         *string                `json:"api_key"`
-	Capabilities   *CapabilitiesPayload   `json:"capabilities"`
 }
 
 // ProviderModelPayload is the editable, persisted model metadata for one
 // provider. Zero token limits mean the upstream did not publish a value.
 type ProviderModelPayload struct {
-	ID              string `json:"id"`
-	Name            string `json:"name,omitempty"`
-	Adapter         string `json:"adapter,omitempty"`
-	Endpoint        string `json:"endpoint,omitempty"`
-	ContextWindow   int    `json:"context_window"`
-	MaxOutputTokens int    `json:"max_output_tokens"`
-	Enabled         *bool  `json:"enabled,omitempty"`
+	ID                string `json:"id"`
+	Name              string `json:"name,omitempty"`
+	Adapter           string `json:"adapter,omitempty"`
+	Endpoint          string `json:"endpoint,omitempty"`
+	ContextWindow     int    `json:"context_window"`
+	MaxOutputTokens   int    `json:"max_output_tokens"`
+	Enabled           *bool  `json:"enabled,omitempty"`
+	EffectiveEndpoint string `json:"effective_endpoint,omitempty"`
+	EffectiveProtocol string `json:"effective_protocol,omitempty"`
 }
 
 // CapabilitiesPayload is the wire form of provider capability flags.
@@ -75,19 +106,26 @@ type CapabilitiesPayload struct {
 type ProviderResponse struct {
 	ID             string                 `json:"id"`
 	Name           string                 `json:"name"`
-	Adapter        string                 `json:"adapter"`
+	Adapter        string                 `json:"-"`
 	BaseURL        string                 `json:"base_url"`
 	ModelsURL      string                 `json:"models_url,omitempty"`
 	ExtraHeaders   map[string]string      `json:"extra_headers"`
 	DisguiseClient string                 `json:"disguise_client,omitempty"`
-	DefaultModel   string                 `json:"default_model"`
+	DefaultModel   string                 `json:"-"`
 	Enabled        bool                   `json:"enabled"`
-	Models         []ProviderModelPayload `json:"models"`
-	HasSecret      bool                   `json:"has_secret"`
+	Models         []ProviderModelPayload `json:"-"`
+	HasSecret      bool                   `json:"-"`
 	Capabilities   CapabilitiesPayload    `json:"capabilities"`
+	KeyGroups      []KeyGroupSummary      `json:"key_groups"`
 }
 
 type ProviderAvailabilityRequest struct {
+	Enabled   *bool                           `json:"enabled"`
+	Models    map[string]bool                 `json:"models"`
+	KeyGroups map[string]KeyGroupAvailability `json:"key_groups"`
+}
+
+type KeyGroupAvailability struct {
 	Enabled *bool           `json:"enabled"`
 	Models  map[string]bool `json:"models"`
 }
@@ -144,13 +182,10 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 func providerFromRequest(id string, req ProviderRequest) (config.Provider, error) {
 	p := config.Provider{
 		Name:           req.Name,
-		Adapter:        req.Adapter,
 		BaseURL:        req.BaseURL,
 		ModelsURL:      req.ModelsURL,
 		ExtraHeaders:   cloneStringMap(req.ExtraHeaders),
 		DisguiseClient: strings.TrimSpace(req.DisguiseClient),
-		DefaultModel:   req.DefaultModel,
-		Models:         providerModelsFromPayload(req.Models),
 		Enabled:        req.Enabled,
 	}
 	if req.Capabilities != nil {
@@ -160,8 +195,27 @@ func providerFromRequest(id string, req ProviderRequest) (config.Provider, error
 			ContextManagement: req.Capabilities.ContextManagement,
 		}
 	}
-	if err := config.ValidateProvider(id, p); err != nil {
-		return p, err
+	if req.KeyGroups != nil {
+		p.KeyGroups = make(map[string]config.KeyGroup, len(req.KeyGroups))
+		for keyID, payload := range req.KeyGroups {
+			group := config.KeyGroup{
+				Name: payload.Name, Enabled: payload.Enabled, Endpoint: strings.TrimSpace(payload.Endpoint),
+				Adapter: strings.TrimSpace(payload.Adapter), DefaultModel: strings.TrimSpace(payload.DefaultModel),
+				Models: providerModelsFromPayload(payload.Models),
+			}
+			if payload.APIKey != nil {
+				group.APIKey = *payload.APIKey
+			}
+			p.KeyGroups[keyID] = group
+		}
+	}
+	// Callers that already know the final provider shape (create, or update
+	// after merging omitted key_groups) must call ValidateProvider themselves
+	// when this returns without an error and KeyGroups is still empty.
+	if len(p.KeyGroups) > 0 {
+		if err := config.ValidateProvider(id, p); err != nil {
+			return p, err
+		}
 	}
 	return p, nil
 }
@@ -307,7 +361,8 @@ func (s *Server) hasSecret(ctx context.Context, ref string) bool {
 }
 
 // providerResponse renders a provider without any secret material.
-func (s *Server) providerResponse(ctx context.Context, id string, p config.Provider) ProviderResponse {
+func (s *Server) providerResponse(_ context.Context, id string, p config.Provider) ProviderResponse {
+	groups := keyGroupSummaries(p)
 	return ProviderResponse{
 		ID:             id,
 		Name:           p.Name,
@@ -319,12 +374,13 @@ func (s *Server) providerResponse(ctx context.Context, id string, p config.Provi
 		DefaultModel:   p.DefaultModel,
 		Enabled:        p.EnabledValue(),
 		Models:         providerModelsPayload(p.Models),
-		HasSecret:      s.hasSecret(ctx, p.SecretRef),
+		HasSecret:      false,
 		Capabilities: CapabilitiesPayload{
 			ImageInput:        p.Capabilities.ImageInput,
 			Reasoning:         p.Capabilities.Reasoning,
 			ContextManagement: p.Capabilities.ContextManagement,
 		},
+		KeyGroups: groups,
 	}
 }
 
@@ -332,7 +388,7 @@ func (s *Server) providerResponse(ctx context.Context, id string, p config.Provi
 // Deleting a referenced provider must fail instead of cascading into the
 // routes (docs/v1-scheme.md §5.2).
 func routesReference(cfg *config.Config, id string) bool {
-	for _, r := range []config.Route{cfg.Routes.Codex, cfg.Routes.Claude, cfg.Routes.Grok, cfg.Routes.Generic} {
+	for _, r := range []config.Route{cfg.Routes.Codex, cfg.Routes.Claude, cfg.Routes.ClaudeDesktop, cfg.Routes.Grok, cfg.Routes.Generic} {
 		if r.Provider == id {
 			return true
 		}
@@ -394,6 +450,12 @@ func (s *Server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "config_invalid", err.Error(), map[string]string{"field": validationField(err)})
 		return
 	}
+	// Create never merges existing groups, so validate even when the payload
+	// omitted key_groups and providerFromRequest skipped the check.
+	if err := config.ValidateProvider(id, p); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "config_invalid", err.Error(), map[string]string{"field": validationField(err)})
+		return
+	}
 
 	// The whole snapshot → key store → config write sequence must be
 	// serialized: two writers based on the same stale snapshot would
@@ -414,10 +476,7 @@ func (s *Server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
 		p.Enabled = config.BoolPtr(true)
 	}
 
-	if req.APIKey != nil && *req.APIKey != "" {
-		p.SecretRef = refFor(id)
-	}
-	resp, err := s.upsertProvider(r.Context(), id, p, keyBytes(req.APIKey))
+	resp, err := s.upsertProvider(r.Context(), id, p, nil)
 	if err != nil {
 		s.writeTxError(w, err)
 		return
@@ -453,17 +512,19 @@ func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.APIKey != nil && *req.APIKey != "" {
-		// A new key normalizes the ref to the canonical namespace.
-		p.SecretRef = refFor(id)
-	} else {
-		// No new key: keep the previous ref so the existing secret survives.
-		p.SecretRef = old.SecretRef
-	}
 	if req.Enabled == nil {
 		p.Enabled = old.Enabled
 	}
-	resp, err := s.upsertProvider(r.Context(), id, p, keyBytes(req.APIKey))
+	if req.KeyGroups == nil {
+		p.KeyGroups = old.KeyGroups
+	}
+	// providerFromRequest skips validation when key_groups are omitted so the
+	// merge above can restore them first.
+	if err := config.ValidateProvider(id, p); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "config_invalid", err.Error(), map[string]string{"field": validationField(err)})
+		return
+	}
+	resp, err := s.upsertProvider(r.Context(), id, p, nil)
 	if err != nil {
 		s.writeTxError(w, err)
 		return
@@ -555,6 +616,25 @@ func (s *Server) handleUpdateProviderAvailability(w http.ResponseWriter, r *http
 	}
 	if req.Enabled != nil {
 		p.Enabled = req.Enabled
+	}
+	if len(p.KeyGroups) > 0 {
+		for keyID, availability := range req.KeyGroups {
+			group, exists := p.KeyGroups[keyID]
+			if !exists {
+				continue
+			}
+			if availability.Enabled != nil {
+				group.Enabled = availability.Enabled
+			}
+			for modelID, enabled := range availability.Models {
+				for index := range group.Models {
+					if group.Models[index].ID == modelID {
+						group.Models[index].Enabled = config.BoolPtr(enabled)
+					}
+				}
+			}
+			p.KeyGroups[keyID] = group
+		}
 	}
 	for i := range p.Models {
 		if enabled, exists := req.Models[p.Models[i].ID]; exists {

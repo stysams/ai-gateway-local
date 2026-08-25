@@ -11,10 +11,10 @@ import {
 import { ClientsIcon, GatewayMark, LogsIcon, OverviewIcon, ProvidersIcon, RoutesIcon, SettingsIcon, UsageIcon, type AppIcon } from "./icons";
 import { api } from "./api";
 import { catalogId, enabledCatalog, isCatalogRoute, reconcileClientRoutes } from "./catalog";
-import { inferWire, isModelAdapter, joinCompletionURL, modelAdapters, presetPath } from "./endpoint";
+import { inferWire, joinCompletionURL, presetPath } from "./endpoint";
 import { CLAUDE_CODE_HEADERS, CODEX_HEADERS, PI_HEADERS, mergeHeaderPreset } from "./headerPresets";
 import { translator, type Language, type MessageKey } from "./i18n";
-import type { ClientID, Config, LocalAccess, LogSummary, PointClient, PointStatus, Provider, ProviderModel, Route, Status, TokenUsage, UsageGroup, UsageReport } from "./types";
+import type { ClientID, Config, KeyGroup, LocalAccess, LogSummary, PointClient, PointStatus, Provider, ProviderModel, Route, Status, TokenUsage, UsageGroup, UsageReport } from "./types";
 import { validateProvider, type DisguiseClient, type ProviderFormValue } from "./validation";
 import { SettingsPage, type Theme } from "./pages/SettingsPage";
 
@@ -41,7 +41,13 @@ const pageDescriptions: Record<Page, MessageKey> = {
   clients: "clientsTopDescription", logs: "logsTopDescription", usage: "usageTopDescription", settings: "settingsTopDescription",
 };
 
-const emptyProvider: ProviderFormValue = { id: "", name: "", adapter: "openai-chat", base_url: "", models_url: "", extra_headers: [], disguise_client: "", default_model: "", models: [], api_key: "" };
+const emptyKeyGroup = (keyID = "default"): KeyGroup => ({ key_id: keyID, name: keyID, enabled: true, has_api_key: false, api_key: "", model_count: 0, default_model: "", endpoint: "/v1/chat/completions", adapter: "openai-chat", models: [] });
+const emptyProvider: ProviderFormValue = { id: "", name: "", base_url: "", models_url: "", extra_headers: [], disguise_client: "", key_groups: {} };
+
+function newProviderForm(): ProviderFormValue {
+  const group = emptyKeyGroup();
+  return { ...emptyProvider, key_groups: { [group.key_id]: group } };
+}
 
 function useDialogFocus<T extends HTMLElement>(open: boolean, onClose?: () => void) {
   const dialogRef = useRef<T | null>(null);
@@ -89,25 +95,6 @@ function useDialogFocus<T extends HTMLElement>(open: boolean, onClose?: () => vo
   return dialogRef;
 }
 
-function emptyModel(adapter: string): ProviderModel {
-  return { id: "", name: "", adapter };
-}
-
-function modelAdapter(model: Pick<ProviderModel, "adapter"> | undefined, fallback: string): string {
-  return model?.adapter && isModelAdapter(model.adapter) ? model.adapter : fallback;
-}
-
-function wireAdapter(model: Pick<ProviderModel, "adapter" | "endpoint"> | undefined, fallback: string): string {
-  const adapter = modelAdapter(model, fallback);
-  if (adapter === "custom") return inferWire(model?.endpoint) || (fallback === "custom" ? "openai-chat" : fallback);
-  return adapter;
-}
-
-function discoveryAdapter(form: Pick<ProviderFormValue, "adapter" | "default_model" | "models">): string {
-  const selected = form.models.find((model) => model.id && model.id === form.default_model);
-  return wireAdapter(selected, wireAdapter(form.models[0], form.adapter || "openai-chat"));
-}
-
 function protocolLabel(adapter: string, t: (key: MessageKey) => string): string {
   return adapter === "custom" ? t("customProtocol") : adapter;
 }
@@ -123,18 +110,9 @@ function clientDisplayName(client: ClientID, t: (key: MessageKey) => string): st
   return t(labels[client]);
 }
 
-function displayedEndpoint(model: ProviderModel, fallback: string): string {
-  return modelAdapter(model, fallback) === "custom" ? (model.endpoint || "") : presetPath(wireAdapter(model, fallback));
-}
-
-function requestURLPreview(baseURL: string, model: ProviderModel, fallback: string): string {
-  const adapter = modelAdapter(model, fallback);
-  return joinCompletionURL(baseURL, adapter === "custom" ? (inferWire(model.endpoint) || adapter) : adapter, adapter === "custom" ? model.endpoint : undefined);
-}
-
 function providerAdapters(provider: Provider): string {
-  const models = provider.models?.length ? provider.models : [{ adapter: provider.adapter }];
-  return [...new Set(models.map((model) => modelAdapter(model, provider.adapter)))].join(" / ");
+  const adapters = Object.values(provider.key_groups || {}).flatMap((group) => group.models.map((model) => model.effective_protocol || group.adapter || inferWire(model.endpoint || group.endpoint) || ""));
+  return [...new Set(adapters.filter(Boolean))].join(" / ");
 }
 
 function headerRecord(headers: ProviderFormValue["extra_headers"]): Record<string, string> {
@@ -372,6 +350,102 @@ function Metric({ label, value, note, icon: Icon }: { label: string; value: stri
 }
 
 function Providers({ providers, t, run, notify }: { providers: Provider[]; t: (key: MessageKey) => string; run: RunOperation; notify: (kind: ToastKind, message: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<string>();
+  const [form, setForm] = useState<ProviderFormValue>(emptyProvider);
+  const [selectedKey, setSelectedKey] = useState("default");
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [fetching, setFetching] = useState(false);
+  const [probePicker, setProbePicker] = useState<{ provider: Provider; keyID: string } | null>(null);
+  const [probe, setProbe] = useState<{ provider: string; keyID: string; result: { ok: boolean; status: number; latency_ms: number; models?: number; error?: string; response?: string } } | null>(null);
+  const closeProbe = useCallback(() => { setProbe(null); setProbePicker(null); }, []);
+  const probeDialogRef = useDialogFocus<HTMLDivElement>(Boolean(probe || probePicker), closeProbe);
+  const groups = Object.values(form.key_groups);
+  const group = form.key_groups[selectedKey] || groups[0];
+
+  const edit = async (provider: Provider) => {
+    try {
+      const details = await api.keyGroups(provider.id);
+      const key_groups = Object.fromEntries(details.map((item) => [item.key_id, item]));
+      setEditing(provider.id);
+      setForm({ id: provider.id, name: provider.name, base_url: provider.base_url, models_url: provider.models_url || "", extra_headers: Object.entries(provider.extra_headers || {}).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => ({ name, value })), disguise_client: provider.disguise_client || "", key_groups });
+      setSelectedKey(details[0]?.key_id || "default"); setErrors({}); setOpen(true);
+    } catch (reason) { notify("error", reason instanceof Error ? reason.message : String(reason)); }
+  };
+  const updateHeader = (index: number, patch: Partial<ProviderFormValue["extra_headers"][number]>) => setForm((current) => ({ ...current, extra_headers: current.extra_headers.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item) }));
+  const updateGroup = (keyID: string, patch: Partial<KeyGroup>) => setForm((current) => ({ ...current, key_groups: { ...current.key_groups, [keyID]: { ...current.key_groups[keyID], ...patch } } }));
+  const renameGroup = (oldID: string, nextID: string) => setForm((current) => {
+    const groups = { ...current.key_groups }; const value = groups[oldID]; delete groups[oldID]; groups[nextID] = { ...value, key_id: nextID };
+    return { ...current, key_groups: groups };
+  });
+  const addGroup = () => setForm((current) => {
+    let index = Object.keys(current.key_groups).length + 1; let keyID = `key-${index}`;
+    while (current.key_groups[keyID]) { index += 1; keyID = `key-${index}`; }
+    const next = emptyKeyGroup(keyID); setSelectedKey(keyID); return { ...current, key_groups: { ...current.key_groups, [keyID]: next } };
+  });
+  const removeGroup = async (keyID: string) => {
+    if (Object.keys(form.key_groups).length === 1) return;
+    if (editing && !window.confirm(t("confirmDeleteKeyGroup"))) return;
+    if (editing) await run(() => api.deleteKeyGroup(editing, keyID), undefined, ["providers", "status", "config"]);
+    setForm((current) => { const key_groups = { ...current.key_groups }; delete key_groups[keyID]; return { ...current, key_groups }; });
+    setSelectedKey(Object.keys(form.key_groups).find((id) => id !== keyID) || "");
+  };
+  const updateModel = (keyID: string, index: number, patch: Partial<ProviderModel>) => setForm((current) => {
+    const currentGroup = current.key_groups[keyID]; const models = currentGroup.models.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item);
+    return { ...current, key_groups: { ...current.key_groups, [keyID]: { ...currentGroup, models, model_count: models.length } } };
+  });
+  const addModel = (keyID: string) => updateGroup(keyID, { models: [...(form.key_groups[keyID]?.models || []), { id: "", name: "", enabled: true }], model_count: (form.key_groups[keyID]?.models.length || 0) + 1 });
+  const removeModel = (keyID: string, index: number) => setForm((current) => {
+    const currentGroup = current.key_groups[keyID]; const models = currentGroup.models.filter((_, itemIndex) => itemIndex !== index); const default_model = models.some((item) => item.id === currentGroup.default_model) ? currentGroup.default_model : (models[0]?.id || "");
+    return { ...current, key_groups: { ...current.key_groups, [keyID]: { ...currentGroup, models, default_model, model_count: models.length } } };
+  });
+  const fetchModels = async () => {
+    if (!group) return;
+    setFetching(true);
+    try {
+      const result = await api.discoverProviderModels({ provider_id: form.id, key_id: group.key_id, adapter: group.adapter || undefined, endpoint: group.endpoint || undefined, default_model: group.default_model || undefined, base_url: form.base_url, models_url: form.models_url || undefined, extra_headers: headerRecord(form.extra_headers), api_key: group.api_key || undefined });
+      const current = form.key_groups[group.key_id];
+      const saved = new Map(current.models.map((item) => [item.id, item]));
+      const models = result.data.map((item) => { const previous = saved.get(item.raw_id); return { id: item.raw_id, name: previous?.name || item.display_name || "", adapter: previous?.adapter, endpoint: previous?.adapter === "custom" ? previous.endpoint : undefined, enabled: previous?.enabled }; });
+      updateGroup(group.key_id, { models, model_count: models.length, default_model: current.default_model || models[0]?.id || "" });
+      notify("success", `${result.data.length}${t("modelsFound")}`);
+    } catch (reason) { notify("error", reason instanceof Error ? reason.message : String(reason)); }
+    finally { setFetching(false); }
+  };
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault(); const nextErrors = validateProvider(form, Boolean(editing)); setErrors(nextErrors); if (Object.keys(nextErrors).length) return;
+    const key_groups = Object.fromEntries(Object.entries(form.key_groups).map(([keyID, item]) => [keyID, { key_id: keyID, name: item.name.trim(), enabled: item.enabled, ...(item.api_key ? { api_key: item.api_key } : {}), endpoint: item.endpoint?.trim() || undefined, adapter: item.adapter || undefined, default_model: item.default_model.trim(), models: item.models.map((model) => ({ id: model.id.trim(), name: model.name?.trim() || undefined, adapter: model.adapter || undefined, endpoint: model.adapter === "custom" ? model.endpoint?.trim() || undefined : undefined, enabled: model.enabled })) }]));
+    await run(() => api.saveProvider({ ...(editing ? {} : { id: form.id }), name: form.name.trim(), base_url: form.base_url.trim(), models_url: form.models_url?.trim() || undefined, extra_headers: headerRecord(form.extra_headers), disguise_client: form.disguise_client, key_groups, capabilities: { image_input: true, reasoning: true, context_management: false } }, editing), t("success"), ["providers", "status", "config"]);
+    setOpen(false); setEditing(undefined); setForm(emptyProvider); setSelectedKey("default");
+  };
+  const executeProbe = async (provider: Provider, keyID: string) => {
+    setProbePicker(null);
+    try { const result = await api.probeKeyGroup(provider.id, keyID); setProbe({ provider: provider.name, keyID, result }); if (!result.ok) notify("error", result.error || t("probeFailed")); }
+    catch (reason) { notify("error", reason instanceof Error ? reason.message : String(reason)); }
+  };
+  const probeProvider = (provider: Provider) => { const keyIDs = Object.keys(provider.key_groups || {}); if (keyIDs.length === 1) void executeProbe(provider, keyIDs[0]); else if (keyIDs.length) setProbePicker({ provider, keyID: keyIDs[0] }); };
+  if (open) return <section className="provider-editor-page">
+    <SectionHeader title={`${editing ? t("edit") : t("addProvider")}${editing ? ` · ${editing}` : ""}`} description={t("providerEditorDescription")} />
+    <form id="provider-form" className="form-panel provider-form" onSubmit={submit} noValidate>
+      <div className="form-actions editor-actions"><button type="button" className="secondary" onClick={() => setOpen(false)}>{t("cancel")}</button><button className="primary" type="submit"><Save size={16} />{t("save")}</button></div>
+      <div className="form-grid"><Field label={t("identifier")} error={errors.id} className="field-id"><input value={form.id} disabled={Boolean(editing)} onChange={(event) => setForm({ ...form, id: event.target.value })} /></Field><Field label={t("name")} error={errors.name} className="field-name"><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field><Field label={t("baseURL")} error={errors.base_url} className="field-base-url"><input type="url" value={form.base_url} onChange={(event) => setForm({ ...form, base_url: event.target.value })} /></Field><Field label={t("modelsURL")} error={errors.models_url} className="field-models-url"><input type="url" value={form.models_url} placeholder={t("modelsURLPlaceholder")} onChange={(event) => setForm({ ...form, models_url: event.target.value })} /></Field></div>
+      <div className="header-editor disguise-editor"><div className="header-editor-title"><div><h3>{t("disguiseClient")}</h3><p>{t("disguiseClientDescription")}</p></div><label className="field disguise-select"><span>{t("disguiseClient")}</span><select value={form.disguise_client} onChange={(event) => setForm({ ...form, disguise_client: event.target.value as DisguiseClient })}><option value="">{t("disguiseClientOff")}</option><option value="claude">{t("disguiseClientClaude")}</option><option value="codex">{t("disguiseClientCodex")}</option><option value="pi">{t("disguiseClientPi")}</option></select></label></div></div>
+      <div className="header-editor"><div className="header-editor-title"><div><h3>{t("customHeaders")}</h3><p>{t("customHeadersDescription")}</p></div><div className="header-editor-actions"><button type="button" className="secondary" onClick={() => setForm((current) => ({ ...current, extra_headers: mergeHeaderPreset(current.extra_headers, CLAUDE_CODE_HEADERS) }))}><Plus size={15} />{t("applyPreset")} Claude Code</button><button type="button" className="secondary" onClick={() => setForm((current) => ({ ...current, extra_headers: mergeHeaderPreset(current.extra_headers, CODEX_HEADERS) }))}><Plus size={15} />{t("applyPreset")} Codex</button><button type="button" className="secondary" onClick={() => setForm((current) => ({ ...current, extra_headers: mergeHeaderPreset(current.extra_headers, PI_HEADERS) }))}><Plus size={15} />{t("applyPreset")} Pi</button><button type="button" className="secondary" onClick={() => setForm((current) => ({ ...current, extra_headers: [...current.extra_headers, { name: "", value: "" }] }))}><Plus size={15} />{t("addHeader")}</button></div></div>{form.extra_headers.length === 0 ? <div className="header-empty">{t("noCustomHeaders")}</div> : <div className="header-rows" role="table" aria-label={t("customHeaders")}><div className="header-row header-row-head" role="row"><span>{t("headerName")}</span><span>{t("headerValue")}</span><span /></div>{form.extra_headers.map((header, index) => <div className="header-row" role="row" key={`header-row-${index}`}><label><span>{t("headerName")}</span><input className="mono" value={header.name} onChange={(event) => updateHeader(index, { name: event.target.value })} /></label><label><span>{t("headerValue")}</span><input className="mono" value={header.value} onChange={(event) => updateHeader(index, { value: event.target.value })} /></label><button type="button" className="icon-button compact danger" onClick={() => setForm((current) => ({ ...current, extra_headers: current.extra_headers.filter((_, itemIndex) => itemIndex !== index) }))} title={t("removeHeader")} aria-label={t("removeHeader")}><Trash2 size={15} /></button></div>)}</div>}</div>
+      <div className="model-catalog"><div className="model-catalog-header"><div><h3>{t("keyGroups")}</h3><p>{t("keyGroupsDescription")}</p></div><button type="button" className="secondary" onClick={addGroup}><Plus size={15} />{t("addKeyGroup")}</button></div>
+        <div className="key-group-tabs" role="tablist">{groups.map((item) => <button key={item.key_id} type="button" className={item.key_id === group?.key_id ? "active" : ""} onClick={() => setSelectedKey(item.key_id)}>{item.name || item.key_id}</button>)}</div>
+        {!group ? <div className="model-empty">{t("noKeyGroups")}</div> : <div className="header-editor key-group-editor"><div className="form-grid"><Field label={t("keyID")} error={errors[`key_groups.${group.key_id}`]}><input className="mono" value={group.key_id} disabled={Boolean(editing)} onChange={(event) => { const next = event.target.value.trim(); if (next && next !== group.key_id) renameGroup(group.key_id, next); }} /></Field><Field label={t("keyGroupName")} error={errors[`key_groups.${group.key_id}.name`]}><input value={group.name} onChange={(event) => updateGroup(group.key_id, { name: event.target.value })} /></Field><Field label={t("apiKey")} error={errors[`key_groups.${group.key_id}.api_key`]}><input type="password" autoComplete="new-password" value={group.api_key} onChange={(event) => updateGroup(group.key_id, { api_key: event.target.value, has_api_key: Boolean(event.target.value) })} placeholder={group.has_api_key ? t("keepKey") : "sk-…"} /></Field><Field label={t("endpoint")} error={errors[`key_groups.${group.key_id}.endpoint`]}><input className="mono" value={group.endpoint || ""} placeholder="/v1/chat/completions" onChange={(event) => updateGroup(group.key_id, { endpoint: event.target.value })} /></Field><Field label={t("adapter")}><select value={group.adapter || ""} onChange={(event) => { const adapter = event.target.value; updateGroup(group.key_id, { adapter, endpoint: adapter ? presetPath(adapter) : group.endpoint }); }}><option value="">{t("endpointInheritance")}</option>{["openai-chat", "openai-responses", "anthropic"].map((adapter) => <option key={adapter} value={adapter}>{protocolLabel(adapter, t)}</option>)}</select></Field><label className="switch field"><span>{t("enabled")}</span><input type="checkbox" checked={group.enabled !== false} onChange={(event) => updateGroup(group.key_id, { enabled: event.target.checked })} /><span /><b>{group.enabled === false ? t("disabled") : t("enabled")}</b></label></div><div className="model-catalog-header"><div><h3>{t("modelCatalog")}</h3><p>{group.models.length} {t("models")}</p></div><div className="header-editor-actions"><button type="button" className="secondary" onClick={() => void fetchModels()} disabled={fetching}><RefreshCw size={15} className={fetching ? "spin" : ""} />{fetching ? t("fetchingModels") : t("fetchModels")}</button><button type="button" className="secondary" onClick={() => addModel(group.key_id)}><Plus size={15} />{t("addModel")}</button><button type="button" className="icon-button compact danger" disabled={groups.length === 1} onClick={() => void removeGroup(group.key_id)} title={t("removeKeyGroup")} aria-label={t("removeKeyGroup")}><Trash2 size={15} /></button></div></div><div className="model-editor" role="table" aria-label={t("modelCatalog")}><div className="model-editor-head" role="row"><span>{t("defaultModel")}</span><span>{t("modelID")}</span><span>{t("modelProtocol")}</span><span>{t("requestEndpoint")}</span><span>{t("displayName")}</span><span /></div>{group.models.map((model, index) => { const adapter = model.adapter || group.adapter || inferWire(model.endpoint || group.endpoint) || ""; const endpoint = model.adapter === "custom" ? model.endpoint || "" : (adapter ? presetPath(adapter) : group.endpoint || ""); return <div className="model-editor-row" role="row" key={`${group.key_id}-${index}`}><label className="default-radio" title={t("defaultModel")}><input type="radio" name={`default-model-${group.key_id}`} checked={group.default_model === model.id} onChange={() => updateGroup(group.key_id, { default_model: model.id })} /><span>{t("defaultModel")}</span></label><label><span>{t("modelID")}</span><input className="mono" value={model.id} onChange={(event) => updateModel(group.key_id, index, { id: event.target.value })} /></label><label><span>{t("modelProtocol")}</span><select className="mono" aria-label={`${t("modelProtocol")} ${model.id || index + 1}`} value={adapter} onChange={(event) => { const next = event.target.value; updateModel(group.key_id, index, { adapter: next || undefined, endpoint: next === "custom" ? endpoint : undefined }); }}><option value="">{t("endpointInheritance")}</option>{["openai-chat", "openai-responses", "anthropic", "custom"].map((value) => <option key={value} value={value}>{protocolLabel(value, t)}</option>)}</select></label><label className="endpoint-field"><span>{t("requestEndpoint")}</span><input className="mono" aria-label={`${t("requestEndpoint")} ${model.id || index + 1}`} value={endpoint} readOnly={adapter !== "custom"} placeholder={group.endpoint || "/v1/chat/completions"} onChange={(event) => updateModel(group.key_id, index, { endpoint: event.target.value })} /><small className="endpoint-preview">{joinCompletionURL(form.base_url, adapter || "openai-chat", model.adapter === "custom" ? endpoint : undefined) || t("requestURLPending")}</small></label><label><span>{t("displayName")}</span><input value={model.name || ""} onChange={(event) => updateModel(group.key_id, index, { name: event.target.value })} /></label><button type="button" className="icon-button compact danger" onClick={() => removeModel(group.key_id, index)} title={t("removeModel")} aria-label={t("removeModel")}><Trash2 size={15} /></button></div>; })}</div></div>}
+      </div>
+    </form>
+  </section>;
+  return <section><SectionHeader title={t("providers")} hideTitle description={`${providers.length}${t("configured")}`} action={<button className="primary" onClick={() => { setOpen(true); setEditing(undefined); setForm(newProviderForm()); setSelectedKey("default"); setErrors({}); }}><Plus size={16} />{t("addProvider")}</button>} />{providers.length === 0 ? <Empty text={t("noProviders")} /> : <div className="table-wrap providers-table-wrap"><table className="providers-table"><thead><tr><th>{t("provider")}</th><th>{t("keyGroups")}</th><th>{t("modelCount")}</th><th>{t("status")}</th><th className="actions">{t("actions")}</th></tr></thead><tbody>{providers.map((provider) => { const groups = Object.values(provider.key_groups || {}); const count = groups.reduce((total, item) => total + item.model_count, 0); const ready = groups.filter((item) => item.has_api_key).length; return <tr key={provider.id}><td><strong>{provider.name}</strong><small>{provider.id} · {provider.base_url}</small></td><td data-label={t("keyGroups")}>{groups.length}</td><td className="mono" data-label={t("modelCount")}>{count}</td><td><State value={provider.enabled === false ? "disabled" : ready ? "key ready" : "keyless"} /></td><td className="actions"><div className="action-cluster"><button className="text-button" onClick={() => probeProvider(provider)} disabled={!groups.length}>{t("probe")}</button><button className="icon-button compact" onClick={() => void edit(provider)} title={t("edit")} aria-label={`${t("edit")} ${provider.name}`}><Settings size={15} /></button><button className="icon-button compact danger" onClick={() => { if (confirm(t("confirmDelete"))) void run(() => api.deleteProvider(provider.id), undefined, ["providers", "status", "config"]); }} title={t("remove")} aria-label={`${t("remove")} ${provider.name}`}><Trash2 size={15} /></button></div></td></tr>; })}</tbody></table></div>}
+    {probePicker && <div className="modal-backdrop"><div ref={probeDialogRef} className="modal probe-modal" role="dialog" aria-modal="true"><div className="drawer-title"><div><p className="eyebrow">{t("probe")}</p><h2>{t("selectProbeKey")}</h2></div><button className="icon-button" onClick={closeProbe} aria-label={t("close")}><X size={17} /></button></div><label className="field"><span>{probePicker.provider.name}</span><select value={probePicker.keyID} onChange={(event) => setProbePicker({ ...probePicker, keyID: event.target.value })}>{Object.values(probePicker.provider.key_groups).map((item) => <option key={item.key_id} value={item.key_id}>{item.name || item.key_id}</option>)}</select></label><button className="primary" onClick={() => void executeProbe(probePicker.provider, probePicker.keyID)}><Check size={16} />{t("probe")}</button></div></div>}
+    {probe && <div className="modal-backdrop"><div ref={probeDialogRef} className="modal probe-modal" role="dialog" aria-modal="true"><div className="drawer-title"><div><p className="eyebrow">{t("probeResponse")}</p><h2>{probe.provider} / {probe.keyID}</h2></div><button className="icon-button" onClick={closeProbe} aria-label={t("close")}><X size={17} /></button></div><div className="probe-meta"><State value={probe.result.ok ? "ok" : "failed"} /><span>{probe.result.status || "-"} · {probe.result.latency_ms} ms · {probe.result.models || 0} {t("models")}</span></div>{probe.result.error && <p className="field-error">{probe.result.error}</p>}<pre>{formatProbeResponse(probe.result.response) || t("noProbeResponse")}</pre></div></div>}
+  </section>;
+}
+
+/* The old single-provider editor is kept in source only while the surrounding
+   desktop tests are migrated; it is not reachable from the application. */
+/*
   const [open, setOpen] = useState(false); const [editing, setEditing] = useState<string>(); const [form, setForm] = useState(emptyProvider); const [errors, setErrors] = useState<Record<string, string>>({}); const [fetching, setFetching] = useState(false);
   const [probe, setProbe] = useState<{ provider: string; result: { ok: boolean; status: number; latency_ms: number; models?: number; error?: string; response?: string } } | null>(null);
   const closeProbe = useCallback(() => setProbe(null), []);
@@ -476,8 +550,14 @@ function formatProbeResponse(value?: string): string {
     return value.trim();
   }
 }
+*/
 
 function Field({ label, error, wide, className, children }: { label: string; error?: string; wide?: boolean; className?: string; children: React.ReactNode }) { return <label className={["field", wide ? "wide" : "", className || ""].filter(Boolean).join(" ")}><span>{label}</span>{children}{error && <small className="field-error">{error.replaceAll("_", " ")}</small>}</label>; }
+
+function formatProbeResponse(value?: string): string {
+  if (!value) return "";
+  try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value.trim(); }
+}
 
 function Routes({ status, providers, t, run }: { status: Status; providers: Provider[]; t: (key: MessageKey) => string; run: RunOperation }) {
   const catalog = useMemo(() => enabledCatalog(providers), [providers]);
@@ -485,7 +565,8 @@ function Routes({ status, providers, t, run }: { status: Status; providers: Prov
   const draft = useMemo(() => reconcileClientRoutes(override, status.routes, catalog), [override, status.routes, catalog]);
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(() => new Set());
   const toggleProvider = (provider: Provider, enabled: boolean) => run(() => api.updateProviderAvailability(provider.id, { enabled }), t("success"), ["providers", "status"]);
-  const toggleModel = (provider: Provider, model: ProviderModel, enabled: boolean) => run(() => api.updateProviderAvailability(provider.id, { models: { [model.id]: enabled } }), t("success"), ["providers", "status"]);
+  const toggleGroup = (provider: Provider, keyID: string, enabled: boolean) => run(() => api.updateProviderAvailability(provider.id, { key_groups: { [keyID]: { enabled } } }), t("success"), ["providers", "status"]);
+  const toggleModel = (provider: Provider, keyID: string, model: ProviderModel, enabled: boolean) => run(() => api.updateProviderAvailability(provider.id, { key_groups: { [keyID]: { models: { [model.id]: enabled } } } }), t("success"), ["providers", "status"]);
   const toggleExpanded = (id: string) => setExpandedProviders((current) => {
     const next = new Set(current);
     if (next.has(id)) next.delete(id); else next.add(id);
@@ -494,7 +575,7 @@ function Routes({ status, providers, t, run }: { status: Status; providers: Prov
   const selectRoute = (client: ClientID, catalogIdValue: string) => {
     const next = catalog.find((item) => item.id === catalogIdValue);
     if (!next) return;
-    setOverride((current) => ({ ...current, [client]: { provider: next.provider, model: next.model } }));
+    setOverride((current) => ({ ...current, [client]: { provider: next.provider, key_id: next.key_id, model: next.model } }));
   };
   const applyRoute = (client: ClientID) => {
     const next = draft[client];
@@ -510,7 +591,7 @@ function Routes({ status, providers, t, run }: { status: Status; providers: Prov
       return <div className="route-row" key={client}><div><strong className="mono">{clientDisplayName(client, t)}</strong><small>/c/{client}/v1</small></div><label><span>{t("defaultSelectedModel")}</span><select className="mono" required aria-required="true" aria-invalid={!currentKnown} aria-label={`${client} ${t("defaultSelectedModel")}`} title={currentId} value={currentId} onChange={(event) => selectRoute(client, event.target.value)}><option value="" disabled>{t("selectDefaultModel")}</option>{catalog.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select>{currentId && <small className="route-selected-value mono">{t("fullValue")}: {currentId}</small>}{!currentKnown && <small className="field-error">{t("routeUnavailable")}</small>}</label><button className="secondary" disabled={!canApply} onClick={() => applyRoute(client)}><Check size={16} />{t("apply")}</button></div>;
     })}</div></div>
     <div className="route-catalog-header"><div><h3>{t("routeCatalog")}</h3><p className="muted">{t("availabilityDescription")}</p></div><span className="mono muted">{providers.length} {t("providers")}</span></div>
-    <div className="route-tree" aria-label={t("routeCatalog")}>{providers.map((provider) => { const treeModels = provider.models?.length ? provider.models : [{ id: provider.default_model, name: "" }]; const expanded = expandedProviders.has(provider.id); const enabledCount = treeModels.filter((model) => model.enabled !== false).length; return <div className="tree-provider" key={provider.id}><div className="tree-provider-row"><button className="tree-provider-toggle" onClick={() => toggleExpanded(provider.id)} aria-expanded={expanded} aria-label={`${provider.name} ${expanded ? t("hideModels") : t("showModels")}`}><ChevronRight className={expanded ? "expanded" : ""} size={15} /><span><b>{provider.name}</b><small>{enabledCount}/{treeModels.length} {t("models")}</small></span></button><span className="mono muted">{provider.id}</span><label className="switch"><input type="checkbox" checked={provider.enabled !== false} onChange={(event) => toggleProvider(provider, event.target.checked)} aria-label={`${t("provider")} ${provider.name}`} /><span /><b>{provider.enabled === false ? t("disabled") : t("enabled")}</b></label></div>{expanded && <div className="tree-models">{treeModels.map((model) => <div className="tree-model-row" key={model.id}><span className="tree-branch" aria-hidden="true"><ChevronRight size={14} /></span><span className="mono">{`${provider.id}/${model.id}`}</span><label className="switch"><input type="checkbox" checked={provider.enabled !== false && model.enabled !== false} disabled={provider.enabled === false} onChange={(event) => toggleModel(provider, model, event.target.checked)} aria-label={`${provider.id}/${model.id} ${t("enabled")}`} /><span /><b>{model.enabled === false ? t("disabled") : t("enabled")}</b></label></div>)}</div>}</div>; })}</div>
+    <div className="route-tree" aria-label={t("routeCatalog")}>{providers.map((provider) => { const groups = Object.values(provider.key_groups || {}); const expanded = expandedProviders.has(provider.id); const enabledCount = groups.reduce((total, item) => total + item.models.filter((model) => model.enabled !== false).length, 0); const totalCount = groups.reduce((total, item) => total + item.models.length, 0); return <div className="tree-provider" key={provider.id}><div className="tree-provider-row"><button className="tree-provider-toggle" onClick={() => toggleExpanded(provider.id)} aria-expanded={expanded} aria-label={`${provider.name} ${expanded ? t("hideModels") : t("showModels")}`}><ChevronRight className={expanded ? "expanded" : ""} size={15} /><span><b>{provider.name}</b><small>{enabledCount}/{totalCount} {t("models")}</small></span></button><span className="mono muted">{provider.id}</span><label className="switch"><input type="checkbox" checked={provider.enabled !== false} onChange={(event) => toggleProvider(provider, event.target.checked)} aria-label={`${t("provider")} ${provider.name}`} /><span /><b>{provider.enabled === false ? t("disabled") : t("enabled")}</b></label></div>{expanded && <div className="tree-models">{groups.map((group) => <div key={group.key_id}><div className="tree-model-row"><span className="tree-branch" aria-hidden="true"><ChevronRight size={14} /></span><strong>{group.name || group.key_id}</strong><label className="switch"><input type="checkbox" checked={provider.enabled !== false && group.enabled !== false} disabled={provider.enabled === false} onChange={(event) => toggleGroup(provider, group.key_id, event.target.checked)} aria-label={`${group.key_id} ${t("enabled")}`} /><span /><b>{group.enabled === false ? t("disabled") : t("enabled")}</b></label></div>{group.models.map((model) => <div className="tree-model-row" key={`${group.key_id}/${model.id}`}><span className="tree-branch" aria-hidden="true"><ChevronRight size={14} /></span><span className="mono">{`${provider.id}/${group.key_id}/${model.id}`}</span><label className="switch"><input type="checkbox" checked={provider.enabled !== false && group.enabled !== false && model.enabled !== false} disabled={provider.enabled === false || group.enabled === false} onChange={(event) => toggleModel(provider, group.key_id, model, event.target.checked)} aria-label={`${provider.id}/${group.key_id}/${model.id} ${t("enabled")}`} /><span /><b>{model.enabled === false ? t("disabled") : t("enabled")}</b></label></div>)}</div>)}</div>}</div>; })}</div>
   </section>;
 }
 
@@ -623,7 +704,7 @@ function Usage({ usage, providers, t, onQuery }: { usage: UsageReport | null; pr
   const [model, setModel] = useState("");
   const [client, setClient] = useState("");
   const [status, setStatus] = useState("");
-  const models = useMemo(() => [...new Set(providers.flatMap((item) => item.models?.map((entry) => entry.id) || [item.default_model]).filter(Boolean))].sort(), [providers]);
+  const models = useMemo(() => [...new Set(providers.flatMap((item) => Object.values(item.key_groups || {}).flatMap((group) => group.models.map((entry) => entry.id))).filter(Boolean))].sort(), [providers]);
   const active = Boolean(provider || model || client || status || range !== "all");
   const apply = (next: { range?: typeof range; provider?: string; model?: string; client?: string; status?: string }) => {
     const nextRange = next.range ?? range;

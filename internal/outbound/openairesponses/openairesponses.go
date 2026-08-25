@@ -54,6 +54,7 @@ type Client struct {
 	baseURL   string
 	endpoint  string
 	secretRef string
+	apiKey    string
 	secrets   secret.Store
 	http      *http.Client
 }
@@ -66,6 +67,11 @@ func (p *Pool) Client(baseURL, secretRef string) *Client {
 		secrets:   p.secrets,
 		http:      p.httpClient,
 	}
+}
+
+// ClientWithKey returns a handle authenticated with a key-group API key.
+func (p *Pool) ClientWithKey(baseURL, apiKey string) *Client {
+	return &Client{baseURL: baseURL, apiKey: apiKey, http: p.httpClient}
 }
 
 // CompletionURL builds the openai-responses completion URL. A base URL that
@@ -127,7 +133,11 @@ func (c *Client) do(ctx context.Context, url string, body []byte, stream bool, e
 	}
 	req.Header.Set("User-Agent", "ai-gateway")
 	upstream.ApplyExtraHeaders(req.Header, extraHeaders)
-	if c.secretRef != "" && c.secrets != nil {
+	if c.apiKey != "" {
+		cred := upstream.BearerValue(c.apiKey)
+		defer cred.Zero()
+		req.Header.Set(cred.Header, cred.Value)
+	} else if c.secretRef != "" && c.secrets != nil {
 		cred, err := upstream.Bearer(ctx, c.secrets, c.secretRef)
 		if err != nil {
 			return nil, err

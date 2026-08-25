@@ -67,6 +67,7 @@ func RouteFor(cfg *config.Config, client ClientID) config.Route {
 // and the model name to send upstream.
 type Resolution struct {
 	Provider string
+	KeyID    string
 	Model    string
 }
 
@@ -102,9 +103,15 @@ func Resolve(client ClientID, requestedModel string, cfg *config.Config) (Resolu
 	}
 
 	if requestedModel == "" || requestedModel == ReservedModel {
-		routeProvider, err := loadEnabledRouteProvider(cfg, client, r)
+		routeProvider, group, err := loadEnabledRouteTarget(cfg, client, r)
 		if err != nil {
 			return Resolution{}, err
+		}
+		if group != nil {
+			if !group.ModelEnabled(r.Model) {
+				return Resolution{}, fmt.Errorf("model %q is disabled", r.Model)
+			}
+			return Resolution{Provider: r.Provider, KeyID: r.KeyID, Model: r.Model}, nil
 		}
 		if !modelEnabled(routeProvider, r.Model) {
 			return Resolution{}, fmt.Errorf("model %q is disabled", r.Model)
@@ -116,6 +123,23 @@ func Resolve(client ClientID, requestedModel string, cfg *config.Config) (Resolu
 			if !provider.EnabledValue() {
 				return Resolution{}, fmt.Errorf("provider %q is disabled", prefix)
 			}
+			if len(provider.KeyGroups) > 0 {
+				keyID, modelID, ok := strings.Cut(rest, "/")
+				if !ok || keyID == "" || modelID == "" {
+					return Resolution{}, fmt.Errorf("model %q must use <provider-id>/<key-id>/<model-id>", requestedModel)
+				}
+				group, exists := provider.KeyGroup(keyID)
+				if !exists {
+					return Resolution{}, fmt.Errorf("key group %q does not exist for provider %q", keyID, prefix)
+				}
+				if !group.EnabledValue() {
+					return Resolution{}, fmt.Errorf("key group %q is disabled for provider %q", keyID, prefix)
+				}
+				if !group.ModelEnabled(modelID) {
+					return Resolution{}, fmt.Errorf("model %q is disabled for provider %q key group %q", modelID, prefix, keyID)
+				}
+				return Resolution{Provider: prefix, KeyID: keyID, Model: modelID}, nil
+			}
 			if rest == "" {
 				return Resolution{}, fmt.Errorf("model %q: provider prefix %q must be followed by a model name", requestedModel, prefix)
 			}
@@ -126,27 +150,51 @@ func Resolve(client ClientID, requestedModel string, cfg *config.Config) (Resolu
 		}
 	}
 	if client == Generic {
-		owners := modelOwners(cfg, requestedModel)
+		owners := cfg.ModelRefsView(requestedModel)
 		if len(owners) == 1 {
-			return Resolution{Provider: owners[0], Model: requestedModel}, nil
+			return Resolution{Provider: owners[0].Provider, KeyID: owners[0].KeyID, Model: requestedModel}, nil
 		}
 		if len(owners) > 1 {
 			if routeProvider, ok := cfg.Providers[r.Provider]; ok && routeProvider.EnabledValue() {
 				for _, owner := range owners {
-					if owner == r.Provider {
-						return Resolution{Provider: r.Provider, Model: requestedModel}, nil
+					if owner.Provider == r.Provider && (r.KeyID == "" || owner.KeyID == r.KeyID) {
+						return Resolution{Provider: owner.Provider, KeyID: owner.KeyID, Model: requestedModel}, nil
 					}
 				}
 			}
-			return Resolution{}, fmt.Errorf(
-				"model %q is provided by multiple providers (%s); use <provider-id>/%s",
-				requestedModel, strings.Join(owners, ", "), requestedModel,
-			)
+			legacyOnly := true
+			legacyProviders := make([]string, 0, len(owners))
+			for _, owner := range owners {
+				legacyProviders = append(legacyProviders, owner.Provider)
+				if owner.KeyID != "" {
+					legacyOnly = false
+				}
+			}
+			if legacyOnly {
+				return Resolution{}, fmt.Errorf("model %q is provided by multiple providers (%s); use <provider-id>/%s", requestedModel, strings.Join(legacyProviders, ", "), requestedModel)
+			}
+			return Resolution{}, fmt.Errorf("model %q is provided by multiple provider key groups; use <provider-id>/<key-id>/%s", requestedModel, requestedModel)
 		}
 	}
 	routeProvider, ok := cfg.Providers[r.Provider]
 	if !ok {
 		return Resolution{}, fmt.Errorf("route for client %q references unknown provider %q", client, r.Provider)
+	}
+	if len(routeProvider.KeyGroups) > 0 {
+		if r.KeyID == "" {
+			return Resolution{}, fmt.Errorf("route for client %q has no key group", client)
+		}
+		group, exists := routeProvider.KeyGroup(r.KeyID)
+		if !exists {
+			return Resolution{}, fmt.Errorf("route for client %q references unknown key group %q", client, r.KeyID)
+		}
+		if !group.ModelEnabled(requestedModel) {
+			return Resolution{}, unmatchedModelError(requestedModel)
+		}
+		if !group.EnabledValue() {
+			return Resolution{}, fmt.Errorf("key group %q is disabled for provider %q", r.KeyID, r.Provider)
+		}
+		return Resolution{Provider: r.Provider, KeyID: r.KeyID, Model: requestedModel}, nil
 	}
 	if !modelListed(routeProvider, requestedModel) {
 		return Resolution{}, unmatchedModelError(requestedModel)
@@ -169,15 +217,28 @@ func isClaudeDesktopFamilyModel(model string) bool {
 	}
 }
 
-func loadEnabledRouteProvider(cfg *config.Config, client ClientID, r config.Route) (config.Provider, error) {
+func loadEnabledRouteTarget(cfg *config.Config, client ClientID, r config.Route) (config.Provider, *config.KeyGroup, error) {
 	provider, ok := cfg.Providers[r.Provider]
 	if !ok {
-		return config.Provider{}, fmt.Errorf("route for client %q references unknown provider %q", client, r.Provider)
+		return config.Provider{}, nil, fmt.Errorf("route for client %q references unknown provider %q", client, r.Provider)
 	}
 	if !provider.EnabledValue() {
-		return config.Provider{}, fmt.Errorf("provider %q is disabled", r.Provider)
+		return config.Provider{}, nil, fmt.Errorf("provider %q is disabled", r.Provider)
 	}
-	return provider, nil
+	if len(provider.KeyGroups) == 0 {
+		return provider, nil, nil
+	}
+	if r.KeyID == "" {
+		return config.Provider{}, nil, fmt.Errorf("route for client %q has no key group", client)
+	}
+	group, ok := provider.KeyGroup(r.KeyID)
+	if !ok {
+		return config.Provider{}, nil, fmt.Errorf("route for client %q references unknown key group %q", client, r.KeyID)
+	}
+	if !group.EnabledValue() {
+		return config.Provider{}, nil, fmt.Errorf("key group %q is disabled for provider %q", r.KeyID, r.Provider)
+	}
+	return provider, &group, nil
 }
 
 // UnmatchedModelMessage is the data-plane error when a requested model

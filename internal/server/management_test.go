@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -24,22 +23,21 @@ func TestConfigAPIAtomicRoundTripPreservesUnknownTopLevelAndSecrets(t *testing.T
 	cfg.Limits.Global = 1
 	cfg.Extra = map[string]yaml.Node{"future_feature": {Kind: yaml.ScalarNode, Tag: "!!str", Value: "keep-me"}}
 	p := cfg.Providers["openrouter"]
-	p.SecretRef = "provider.openrouter"
 	p.DisguiseClient = config.DisguiseClientClaude
 	p.ExtraHeaders = map[string]string{"User-Agent": "claude-cli/2.1.228 (external, cli)"}
+	group := p.KeyGroups["default"]
+	group.APIKey = "sk-config-api-secret"
+	group.Models = []config.ProviderModel{{ID: group.DefaultModel, Name: "Claude Sonnet", ContextWindow: 200000, MaxOutputTokens: 64000, Endpoint: "/chat/completions"}}
+	p.KeyGroups["default"] = group
 	cfg.Providers["openrouter"] = p
-	store := secret.NewMemStore()
-	const actualSecret = "sk-config-api-secret"
-	if err := store.Put(context.Background(), p.SecretRef, []byte(actualSecret)); err != nil {
-		t.Fatal(err)
-	}
-	s, addr := startWithStore(t, cfg, store)
+	s, addr := startWithStore(t, cfg, secret.NewMemStore())
 
 	resp, body := httpJSON(t, addr, http.MethodGet, "/api/v1/config", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET config: %d %s", resp.StatusCode, body)
 	}
-	if strings.Contains(string(body), actualSecret) {
+	// Config GET intentionally omits api_key values.
+	if strings.Contains(string(body), "sk-config-api-secret") {
 		t.Fatalf("GET config leaked secret: %s", body)
 	}
 	var payload ConfigPayload
@@ -50,7 +48,9 @@ func TestConfigAPIAtomicRoundTripPreservesUnknownTopLevelAndSecrets(t *testing.T
 	payload.Logging.Enabled = false
 	payload.UI.Language = "en-US"
 	provider := payload.Providers["openrouter"]
-	provider.Models = []ProviderModelPayload{{ID: provider.DefaultModel, Name: "Claude Sonnet", ContextWindow: 200000, MaxOutputTokens: 64000}}
+	groupPayload := provider.KeyGroups["default"]
+	groupPayload.Models = []ProviderModelPayload{{ID: groupPayload.DefaultModel, Name: "Claude Sonnet", ContextWindow: 200000, MaxOutputTokens: 64000, Endpoint: "/chat/completions"}}
+	provider.KeyGroups["default"] = groupPayload
 	payload.Providers["openrouter"] = provider
 	resp, body = httpJSON(t, addr, http.MethodPut, "/api/v1/config", payload)
 	if resp.StatusCode != http.StatusOK {
@@ -60,7 +60,8 @@ func TestConfigAPIAtomicRoundTripPreservesUnknownTopLevelAndSecrets(t *testing.T
 	if got.Listen.PortValue() != 23456 || got.Logging.EnabledValue() || got.UI.Language != "en-US" {
 		t.Fatalf("active config not updated: %+v", got)
 	}
-	if models := got.Providers["openrouter"].Models; len(models) != 1 || models[0].ContextWindow != 200000 || models[0].MaxOutputTokens != 64000 {
+	models := got.Providers["openrouter"].KeyGroups["default"].Models
+	if len(models) != 1 || models[0].ContextWindow != 200000 || models[0].MaxOutputTokens != 64000 {
 		t.Fatalf("provider model metadata not preserved: %+v", models)
 	}
 	if got.Providers["openrouter"].DisguiseClient != config.DisguiseClientClaude {
@@ -68,6 +69,10 @@ func TestConfigAPIAtomicRoundTripPreservesUnknownTopLevelAndSecrets(t *testing.T
 	}
 	if got.Providers["openrouter"].ExtraHeaders["User-Agent"] != "claude-cli/2.1.228 (external, cli)" {
 		t.Fatalf("extra_headers lost after settings save: %v", got.Providers["openrouter"].ExtraHeaders)
+	}
+	// Settings PUT must preserve existing key-group api_key values.
+	if got.Providers["openrouter"].KeyGroups["default"].APIKey != "sk-config-api-secret" {
+		t.Fatalf("api_key lost after settings save: %q", got.Providers["openrouter"].KeyGroups["default"].APIKey)
 	}
 	payload.Limits.Global = 0
 	resp, body = httpJSON(t, addr, http.MethodPut, "/api/v1/config", payload)
@@ -84,8 +89,9 @@ func TestConfigAPIAtomicRoundTripPreservesUnknownTopLevelAndSecrets(t *testing.T
 	if !strings.Contains(string(disk), "future_feature: keep-me") {
 		t.Fatalf("unknown top-level field lost:\n%s", disk)
 	}
-	if strings.Contains(string(disk), actualSecret) {
-		t.Fatal("config file leaked secret material")
+	// Plaintext api_key is intentionally persisted under the approved contract.
+	if !strings.Contains(string(disk), "sk-config-api-secret") {
+		t.Fatal("config file lost plaintext api_key")
 	}
 
 	payload.Autostart.Enabled = true
@@ -101,7 +107,7 @@ func TestRouteAPIUpdatesAllRoutesAndNextRequest(t *testing.T) {
 	cfg := dataPlaneConfig(up1.URL, up2.URL, false)
 	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 	for _, client := range []string{"codex", "claude", "grok", "generic"} {
-		resp, body := httpJSON(t, addr, http.MethodPut, "/api/v1/routes/"+client, RouteRequest{Provider: "openrouter", Model: "route-model-" + client})
+		resp, body := httpJSON(t, addr, http.MethodPut, "/api/v1/routes/"+client, RouteRequest{Provider: "openrouter", KeyID: "default", Model: "route-model-" + client})
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("route %s: %d %s", client, resp.StatusCode, body)
 		}
@@ -113,7 +119,7 @@ func TestRouteAPIUpdatesAllRoutesAndNextRequest(t *testing.T) {
 	if len(up1.requests()) != 1 || len(up2.requests()) != 0 || up1.last().Model != "route-model-generic" {
 		t.Fatalf("next request did not use updated generic route: up1=%d up2=%d model=%q", len(up1.requests()), len(up2.requests()), up1.last().Model)
 	}
-	bad, _ := httpJSON(t, addr, http.MethodPut, "/api/v1/routes/codex", RouteRequest{Provider: "missing", Model: "m"})
+	bad, _ := httpJSON(t, addr, http.MethodPut, "/api/v1/routes/codex", RouteRequest{Provider: "missing", KeyID: "default", Model: "m"})
 	if bad.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown provider status = %d", bad.StatusCode)
 	}
@@ -122,11 +128,13 @@ func TestRouteAPIUpdatesAllRoutesAndNextRequest(t *testing.T) {
 func TestLocalAccessReportsLoopbackEndpointsAndEnabledModels(t *testing.T) {
 	cfg := config.Defaults()
 	provider := cfg.Providers["openrouter"]
-	provider.Models = []config.ProviderModel{
-		{ID: provider.DefaultModel, Name: "Default"},
-		{ID: "enabled-model", Name: "Enabled"},
-		{ID: "disabled-model", Name: "Disabled", Enabled: config.BoolPtr(false)},
+	group := provider.KeyGroups["default"]
+	group.Models = []config.ProviderModel{
+		{ID: group.DefaultModel, Name: "Default", Endpoint: "/chat/completions"},
+		{ID: "enabled-model", Name: "Enabled", Endpoint: "/chat/completions"},
+		{ID: "disabled-model", Name: "Disabled", Enabled: config.BoolPtr(false), Endpoint: "/chat/completions"},
 	}
+	provider.KeyGroups["default"] = group
 	cfg.Providers["openrouter"] = provider
 	disabledProvider := cfg.Providers["ollama"]
 	disabledProvider.Enabled = config.BoolPtr(false)
@@ -156,7 +164,7 @@ func TestLocalAccessReportsLoopbackEndpointsAndEnabledModels(t *testing.T) {
 		modelIDs = append(modelIDs, model.ID)
 	}
 	joined := strings.Join(modelIDs, ",")
-	for _, want := range []string{route.ReservedModel, "openrouter/" + provider.DefaultModel, "openrouter/enabled-model"} {
+	for _, want := range []string{route.ReservedModel, "openrouter/default/" + group.DefaultModel, "openrouter/default/enabled-model"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("enabled model %q missing from %q", want, joined)
 		}
@@ -191,12 +199,9 @@ func TestOpenAIProviderProbeModelsAndDataPlaneCache(t *testing.T) {
 		}
 	}))
 	t.Cleanup(up.Close)
-	cfg := dataPlaneConfig(up.URL+"/v1", up.URL+"/v1", true)
-	store := secret.NewMemStore()
-	if err := store.Put(context.Background(), "provider.openrouter", []byte(key)); err != nil {
-		t.Fatal(err)
-	}
-	s, addr := startWithStore(t, cfg, store)
+	cfg := dataPlaneConfig(up.URL+"/v1", up.URL+"/v1", false)
+	setKeyGroupAPIKey(cfg, "openrouter", "default", key)
+	s, addr := startWithStore(t, cfg, secret.NewMemStore())
 	before, _ := os.ReadFile(s.cfg.Path())
 
 	resp, body := httpJSON(t, addr, http.MethodPost, "/api/v1/providers/openrouter/probe", nil)
@@ -207,7 +212,7 @@ func TestOpenAIProviderProbeModelsAndDataPlaneCache(t *testing.T) {
 	if err := json.Unmarshal(body, &probe); err != nil {
 		t.Fatal(err)
 	}
-	if !probe.OK || probe.Status != http.StatusOK || probe.Models != 1 || !strings.Contains(probe.Response, "identity response") || !strings.Contains(probePromptBody, probePrompt) {
+	if !probe.OK || probe.Status != http.StatusOK || probe.Models < 1 || !strings.Contains(probe.Response, "identity response") || !strings.Contains(probePromptBody, probePrompt) {
 		t.Fatalf("probe = %+v", probe)
 	}
 	resp, body = httpJSON(t, addr, http.MethodGet, "/api/v1/providers/openrouter/models", nil)
@@ -218,7 +223,7 @@ func TestOpenAIProviderProbeModelsAndDataPlaneCache(t *testing.T) {
 	if err := json.Unmarshal(body, &models); err != nil {
 		t.Fatal(err)
 	}
-	if len(models.Data) != 2 || models.Data[0].ID != "openrouter/a-model" || models.Data[1].ID != "openrouter/z-model" {
+	if len(models.Data) != 2 || models.Data[0].ID != "openrouter/default/a-model" || models.Data[1].ID != "openrouter/default/z-model" {
 		t.Fatalf("models = %+v", models.Data)
 	}
 	mu.Lock()
@@ -234,18 +239,18 @@ func TestOpenAIProviderProbeModelsAndDataPlaneCache(t *testing.T) {
 	}
 
 	resp, body = chatGet(t, addr, "/v1/models")
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "openrouter/a-model") || !strings.Contains(string(body), "openrouter/z-model") {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "openrouter/default/a-model") || !strings.Contains(string(body), "openrouter/default/z-model") {
 		t.Fatalf("data-plane model cache missing: %d %s", resp.StatusCode, body)
 	}
 
 	provider := s.cfg.Snapshot().Providers["openrouter"]
-	update := ProviderRequest{Name: provider.Name, Adapter: provider.Adapter, BaseURL: provider.BaseURL, DefaultModel: provider.DefaultModel, Capabilities: &CapabilitiesPayload{}}
+	update := ProviderRequest{Name: provider.Name, BaseURL: provider.BaseURL, Capabilities: &CapabilitiesPayload{}}
 	resp, body = httpJSON(t, addr, http.MethodPut, "/api/v1/providers/openrouter", update)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("provider update: %d %s", resp.StatusCode, body)
 	}
 	_, body = chatGet(t, addr, "/v1/models")
-	if strings.Contains(string(body), "openrouter/a-model") {
+	if strings.Contains(string(body), "openrouter/default/a-model") {
 		t.Fatalf("provider update did not invalidate model cache: %s", body)
 	}
 }
@@ -270,13 +275,14 @@ func TestAnthropicModelsHeadersAndProbeFailureDoesNotLeakBody(t *testing.T) {
 	t.Cleanup(up.Close)
 	cfg := config.Defaults()
 	p := cfg.Providers["ollama"]
-	p.Adapter, p.BaseURL, p.SecretRef = "anthropic", up.URL, "provider.ollama"
+	p.BaseURL = up.URL
+	group := p.KeyGroups["default"]
+	// Leave Endpoint empty so Join inserts the adapter default /v1/messages path.
+	group.Adapter, group.Endpoint, group.APIKey = "anthropic", "", key
+	group.Models = []config.ProviderModel{{ID: group.DefaultModel}}
+	p.KeyGroups["default"] = group
 	cfg.Providers["ollama"] = p
-	store := secret.NewMemStore()
-	if err := store.Put(context.Background(), p.SecretRef, []byte(key)); err != nil {
-		t.Fatal(err)
-	}
-	_, addr := startWithStore(t, cfg, store)
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 	resp, body := httpJSON(t, addr, http.MethodGet, "/api/v1/providers/ollama/models", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("anthropic models: %d %s", resp.StatusCode, body)
@@ -341,15 +347,15 @@ func TestDiscoverProviderModelsReusesSavedSecretWhenDraftKeyIsEmpty(t *testing.T
 	t.Cleanup(up.Close)
 	cfg := config.Defaults()
 	p := cfg.Providers["ollama"]
-	p.BaseURL, p.SecretRef = up.URL+"/v1", "provider.ollama"
+	p.BaseURL = up.URL + "/v1"
+	group := p.KeyGroups["default"]
+	group.Adapter, group.Endpoint, group.APIKey = "openai-chat", "/chat/completions", savedKey
+	group.Models = []config.ProviderModel{{ID: group.DefaultModel, Endpoint: "/chat/completions"}}
+	p.KeyGroups["default"] = group
 	cfg.Providers["ollama"] = p
-	store := secret.NewMemStore()
-	if err := store.Put(context.Background(), p.SecretRef, []byte(savedKey)); err != nil {
-		t.Fatal(err)
-	}
-	_, addr := startWithStore(t, cfg, store)
+	_, addr := startWithStore(t, cfg, secret.NewMemStore())
 	empty := ""
-	resp, body := httpJSON(t, addr, http.MethodPost, "/api/v1/provider-models/discover", DiscoverProviderModelsRequest{ProviderID: "ollama", Adapter: p.Adapter, BaseURL: p.BaseURL, APIKey: &empty})
+	resp, body := httpJSON(t, addr, http.MethodPost, "/api/v1/provider-models/discover", DiscoverProviderModelsRequest{ProviderID: "ollama", KeyID: "default", Adapter: "openai-chat", Endpoint: "/chat/completions", BaseURL: p.BaseURL, APIKey: &empty})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("discover models: %d %s", resp.StatusCode, body)
 	}

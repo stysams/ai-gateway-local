@@ -1,7 +1,7 @@
 export type ClientID = "codex" | "claude" | "claude-desktop" | "grok" | "generic";
 export type PointClient = Exclude<ClientID, "generic">;
 
-export interface Route { provider: string; model: string }
+export interface Route { provider: string; key_id: string; model: string }
 export interface Status {
   version: string;
   pid: number;
@@ -37,16 +37,30 @@ export interface LocalAccess {
 export interface Provider {
   id: string;
   name: string;
-  adapter: string;
   base_url: string;
   models_url?: string;
   extra_headers?: Record<string, string>;
   disguise_client?: "" | "claude" | "codex" | "pi";
-  default_model: string;
   enabled?: boolean;
-  models: ProviderModel[];
-  has_secret: boolean;
   capabilities: { image_input: boolean; reasoning: boolean; context_management: boolean };
+  key_groups: Record<string, KeyGroupSummary>;
+}
+export interface KeyGroupSummary {
+  key_id: string;
+  name: string;
+  enabled: boolean;
+  has_api_key: boolean;
+  model_count: number;
+  default_model: string;
+  endpoint?: string;
+  adapter?: string;
+  duplicate_count?: number;
+  models: ProviderModel[];
+}
+export interface KeyGroup extends KeyGroupSummary {
+  api_key: string;
+  adapter?: string;
+  models: ProviderModel[];
 }
 export interface ProviderModel {
   id: string;
@@ -54,6 +68,8 @@ export interface ProviderModel {
   adapter?: string;
   endpoint?: string;
   enabled?: boolean;
+  effective_endpoint?: string;
+  effective_protocol?: string;
 }
 export interface DiscoveredProviderModel {
   id: string;
@@ -79,7 +95,7 @@ export interface Config {
   };
   ui: { language: string; logging_notice_accepted: boolean };
   autostart: { enabled: boolean };
-  providers: Record<string, Omit<Provider, "id" | "has_secret"> & { secret_ref?: string }>;
+  providers: Record<string, Omit<Provider, "id">>;
   routes: Record<ClientID, Route>;
 }
 export interface PointStatus {

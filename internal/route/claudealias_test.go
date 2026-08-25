@@ -11,7 +11,7 @@ func TestClaudePickerRoundTrip(t *testing.T) {
 		alias      string
 	}{
 		{ReservedModel, ClaudePickerDefault},
-		{"ollama/qwen3", "claude-gw-ollama--qwen3"},
+		{"ollama/default/qwen3", "claude-gw2-ollama--default~sqwen3"},
 		{"zhipu/glm-5", "claude-gw-zhipu--glm-5"},
 		{"openrouter/anthropic/claude-sonnet-4", "claude-gw2-openrouter--anthropic~sclaude-sonnet-4"},
 		{"openrouter/openai/gpt-5", "claude-gw2-openrouter--openai~sgpt-5"},
@@ -59,7 +59,7 @@ func TestClaudePickerV1DoesNotExpandEscapes(t *testing.T) {
 func TestClaudePickerIDsPassClaudeDiscoveryFilter(t *testing.T) {
 	for _, selectable := range []string{
 		ReservedModel,
-		"ollama/qwen3",
+		"ollama/default/qwen3",
 		"deepseek/deepseek-chat",
 		"openrouter/openai/gpt-5",
 		"ab--cd/weird",

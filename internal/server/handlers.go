@@ -30,6 +30,7 @@ type ClientStatus struct {
 // RouteStatus reports the current route of one first-class client.
 type RouteStatus struct {
 	Provider string `json:"provider"`
+	KeyID    string `json:"key_id"`
 	Model    string `json:"model"`
 }
 
@@ -61,6 +62,13 @@ func (s *Server) routes() *http.ServeMux {
 	management.HandleFunc("PUT /api/v1/providers/{id}/availability", s.handleUpdateProviderAvailability)
 	management.HandleFunc("POST /api/v1/providers/{id}/probe", s.handleProbeProvider)
 	management.HandleFunc("GET /api/v1/providers/{id}/models", s.handleProviderModels)
+	management.HandleFunc("GET /api/v1/providers/{id}/keys", s.handleListKeyGroups)
+	management.HandleFunc("POST /api/v1/providers/{id}/keys", s.handleCreateKeyGroup)
+	management.HandleFunc("GET /api/v1/providers/{id}/keys/{key_id}", s.handleGetKeyGroup)
+	management.HandleFunc("PUT /api/v1/providers/{id}/keys/{key_id}", s.handleUpdateKeyGroup)
+	management.HandleFunc("DELETE /api/v1/providers/{id}/keys/{key_id}", s.handleDeleteKeyGroup)
+	management.HandleFunc("POST /api/v1/providers/{id}/keys/{key_id}/probe", s.handleProbeKeyGroup)
+	management.HandleFunc("GET /api/v1/providers/{id}/keys/{key_id}/models", s.handleKeyGroupModels)
 	management.HandleFunc("POST /api/v1/provider-models/discover", s.handleDiscoverProviderModels)
 	management.HandleFunc("PUT /api/v1/routes/{client}", s.handlePutRoute)
 	management.HandleFunc("GET /api/v1/clients/{client}", s.handleGetClient)
@@ -94,11 +102,11 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// handleReadyz checks the things the gateway needs before serving traffic
-// (docs/v1-scheme.md §9.2): a valid config, a usable system key store and a
-// readable secret for every provider that declares a secret_ref. A gateway
-// whose providers are all keyless does not depend on the key store.
+// handleReadyz checks the valid config and only the key groups used by the
+// current routes. The new key-group contract does not depend on the system key
+// store for serving traffic.
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	_ = r
 	var errs []string
 	cfg := s.cfg.View()
 	if cfg == nil {
@@ -106,11 +114,8 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	} else if err := cfg.Validate(); err != nil {
 		errs = append(errs, "config: "+err.Error())
 	}
-	if cfg != nil && HasRequiredSecrets(cfg) {
-		if err := CheckSecretStore(r.Context(), s.secrets); err != nil {
-			errs = append(errs, "secret store: "+err.Error())
-		}
-		errs = append(errs, CheckRequiredSecrets(r.Context(), s.secrets, cfg)...)
+	if cfg != nil {
+		errs = append(errs, CheckRequiredKeyGroups(cfg)...)
 	}
 	if len(errs) > 0 {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
@@ -151,11 +156,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 			"generic":        {PointState: "unknown"},
 		},
 		Routes: map[string]RouteStatus{
-			"codex":          {Provider: cfg.Routes.Codex.Provider, Model: cfg.Routes.Codex.Model},
-			"claude":         {Provider: cfg.Routes.Claude.Provider, Model: cfg.Routes.Claude.Model},
-			"claude-desktop": {Provider: cfg.Routes.ClaudeDesktop.Provider, Model: cfg.Routes.ClaudeDesktop.Model},
-			"grok":           {Provider: cfg.Routes.Grok.Provider, Model: cfg.Routes.Grok.Model},
-			"generic":        {Provider: cfg.Routes.Generic.Provider, Model: cfg.Routes.Generic.Model},
+			"codex":          routeStatus(cfg.Routes.Codex),
+			"claude":         routeStatus(cfg.Routes.Claude),
+			"claude-desktop": routeStatus(cfg.Routes.ClaudeDesktop),
+			"grok":           routeStatus(cfg.Routes.Grok),
+			"generic":        routeStatus(cfg.Routes.Generic),
 		},
 	}
 	writeJSON(w, http.StatusOK, st)

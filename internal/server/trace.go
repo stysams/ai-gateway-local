@@ -69,12 +69,12 @@ func (t *requestTrace) sessionRequestID() string {
 	return t.session.RequestID()
 }
 
-func (t *requestTrace) route(provider, model, adapter string, inbound, outbound ir.Protocol) error {
+func (t *requestTrace) route(provider, keyID, model, adapter string, inbound, outbound ir.Protocol) error {
 	if t == nil {
 		return nil
 	}
 	return t.session.Append("route", map[string]any{
-		"provider": provider, "model": model, "adapter": adapter,
+		"provider": provider, "key_id": keyID, "model": model, "adapter": adapter,
 		"inbound_protocol": inbound, "outbound_protocol": outbound,
 		"converted": inbound != outbound,
 	})
@@ -104,10 +104,13 @@ func (t *requestTrace) upstreamRequest(proto ir.Protocol, p providerInfo, body [
 	} else {
 		fields["body_omitted"] = true
 	}
-	if p.secretRef != "" || omittedHeaders > 0 {
+	if p.secretRef != "" || p.apiKey != "" || omittedHeaders > 0 {
 		fields["omitted_sensitive_header_count"] = omittedHeaders
 		if p.secretRef != "" {
 			fields["omitted_sensitive_header_count"] = omittedHeaders + 1
+		}
+		if p.apiKey != "" {
+			fields["omitted_sensitive_header_count"] = fields["omitted_sensitive_header_count"].(int) + 1
 		}
 	}
 	return t.session.Append("upstream_request", fields)

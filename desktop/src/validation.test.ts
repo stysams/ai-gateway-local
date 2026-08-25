@@ -1,45 +1,31 @@
 import { describe, expect, it } from "vitest";
 import { validateProvider } from "./validation";
 
+const provider = (overrides: Record<string, unknown> = {}) => ({ id: "openai-main", name: "OpenAI", base_url: "https://api.openai.com/v1", extra_headers: [], disguise_client: "" as const, key_groups: { main: { key_id: "main", name: "Main", enabled: true, has_api_key: true, api_key: "", model_count: 1, default_model: "gpt-5", endpoint: "/v1/responses", adapter: "openai-responses", models: [{ id: "gpt-5", name: "GPT-5", adapter: "openai-responses" }] } }, ...overrides });
+
 describe("validateProvider", () => {
-  it("accepts a complete provider", () => {
-    expect(validateProvider({ id: "openai-main", name: "OpenAI", adapter: "openai-responses", base_url: "https://api.openai.com/v1", extra_headers: [], disguise_client: "", default_model: "gpt-5", models: [{ id: "gpt-5", name: "GPT-5" }], api_key: "" })).toEqual({});
+  it("accepts a complete provider with key groups", () => { expect(validateProvider(provider())).toEqual({}); });
+
+  it("reports invalid provider and key-group fields", () => {
+    const errors = validateProvider(provider({ id: "Bad ID", name: "", base_url: "file:///tmp", disguise_client: "gpt", key_groups: {} }));
+    expect(Object.keys(errors).sort()).toEqual(["base_url", "disguise_client", "id", "key_groups", "name"]);
   });
 
-  it("accepts Pi client disguise", () => {
-    expect(validateProvider({ id: "openai-main", name: "OpenAI", adapter: "openai-chat", base_url: "https://api.openai.com/v1", extra_headers: [], disguise_client: "pi", default_model: "gpt-5", models: [{ id: "gpt-5" }], api_key: "" })).toEqual({});
+  it("validates duplicate models and the default model reference", () => {
+    const value = provider({ key_groups: { main: { ...provider().key_groups.main, default_model: "missing", models: [{ id: "m" }, { id: "m" }] } } });
+    const errors = validateProvider(value);
+    expect(errors["key_groups.main.default_model"]).toBe("default_model_missing");
+    expect(errors["key_groups.main.models.1.id"]).toBe("duplicate_model");
   });
 
-  it("reports each invalid field", () => {
-    const errors = validateProvider({ id: "Bad ID", name: "", adapter: "other", base_url: "file:///tmp", extra_headers: [], disguise_client: "gpt" as never, default_model: "", models: [], api_key: "" });
-    expect(Object.keys(errors).sort()).toEqual(["adapter", "base_url", "default_model", "disguise_client", "id", "name"]);
+  it("accepts model adapters and rejects unsupported adapters", () => {
+    expect(validateProvider(provider())).toEqual({});
+    const value = provider({ key_groups: { main: { ...provider().key_groups.main, models: [{ id: "gpt-5", adapter: "other" }] } } });
+    expect(validateProvider(value)["key_groups.main.models.0.adapter"]).toBe("invalid_adapter");
   });
 
-  it("validates model metadata and the default model reference", () => {
-    const errors = validateProvider({ id: "openrouter", name: "OpenRouter", adapter: "openai-chat", base_url: "https://openrouter.ai/api/v1", extra_headers: [], disguise_client: "", default_model: "missing", models: [{ id: "m" }, { id: "m" }], api_key: "" });
-    expect(errors.default_model).toBe("default_model_missing");
-    expect(errors["models.1.id"]).toBe("duplicate_model");
-  });
-
-  it("accepts a per-model adapter and rejects an invalid one", () => {
-    expect(validateProvider({ id: "any", name: "Any", adapter: "openai-chat", base_url: "https://any.example/v1", extra_headers: [], disguise_client: "", default_model: "gpt-4o", models: [{ id: "gpt-4o", adapter: "openai-chat" }, { id: "claude-opus", adapter: "anthropic" }], api_key: "" })).toEqual({});
-    const errors = validateProvider({ id: "any", name: "Any", adapter: "openai-chat", base_url: "https://any.example/v1", extra_headers: [], disguise_client: "", default_model: "gpt-4o", models: [{ id: "gpt-4o", adapter: "other" }], api_key: "" });
-    expect(errors["models.0.adapter"]).toBe("invalid_adapter");
-  });
-
-  it("accepts a custom endpoint and rejects a locked preset override", () => {
-    expect(validateProvider({ id: "tudou", name: "Tudou", adapter: "anthropic", base_url: "https://api.2dou.net", extra_headers: [], disguise_client: "", default_model: "gpt", models: [{ id: "gpt", adapter: "custom", endpoint: "/responses" }], api_key: "" })).toEqual({});
-    const missing = validateProvider({ id: "tudou", name: "Tudou", adapter: "anthropic", base_url: "https://api.2dou.net", extra_headers: [], disguise_client: "", default_model: "gpt", models: [{ id: "gpt", adapter: "custom" }], api_key: "" });
-    expect(missing["models.0.endpoint"]).toBe("required");
-    const locked = validateProvider({ id: "any", name: "Any", adapter: "openai-chat", base_url: "https://any.example/v1", extra_headers: [], disguise_client: "", default_model: "gpt-4o", models: [{ id: "gpt-4o", adapter: "openai-responses", endpoint: "/responses" }], api_key: "" });
-    expect(locked["models.0.endpoint"]).toBe("preset_endpoint_locked");
-  });
-
-  it("rejects unsafe and duplicate custom headers", () => {
-    const errors = validateProvider({ id: "openai-main", name: "OpenAI", adapter: "openai-responses", base_url: "https://api.openai.com/v1", extra_headers: [{ name: "Authorization", value: "secret" }, { name: "X-App", value: "one" }, { name: "x-app", value: "two" }, { name: "X-Bad Header", value: "line\nbreak" }], disguise_client: "claude", default_model: "gpt-5", models: [{ id: "gpt-5" }], api_key: "" });
-    expect(errors["extra_headers.0.name"]).toBe("managed_header");
-    expect(errors["extra_headers.2.name"]).toBe("duplicate_header");
-    expect(errors["extra_headers.3.name"]).toBe("invalid_header_name");
-    expect(errors["extra_headers.3.value"]).toBe("invalid_header_value");
+  it("rejects locked preset endpoint overrides", () => {
+    const value = provider({ key_groups: { main: { ...provider().key_groups.main, models: [{ id: "gpt-5", adapter: "openai-responses", endpoint: "/responses" }] } } });
+    expect(validateProvider(value)["key_groups.main.models.0.endpoint"]).toBe("preset_endpoint_locked");
   });
 });

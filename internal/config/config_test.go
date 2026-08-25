@@ -103,10 +103,10 @@ func TestModelOwnersPublishedOnWriteAndSnapshot(t *testing.T) {
 	m := NewManager(filepath.Join(t.TempDir(), "config.yaml"))
 	cfg := Defaults()
 	p := cfg.Providers["ollama"]
-	p.Models = []ProviderModel{{ID: "qwen3"}, {ID: "shared"}}
+	p.KeyGroups["default"] = KeyGroup{Name: "Default", Endpoint: "/chat/completions", DefaultModel: "qwen3", Models: []ProviderModel{{ID: "qwen3"}, {ID: "shared"}}}
 	cfg.Providers["ollama"] = p
 	other := cfg.Providers["openrouter"]
-	other.Models = []ProviderModel{{ID: other.DefaultModel}, {ID: "shared"}}
+	other.KeyGroups["default"] = KeyGroup{Name: "Default", Endpoint: "/chat/completions", DefaultModel: "anthropic/claude-sonnet-4", Models: []ProviderModel{{ID: "anthropic/claude-sonnet-4"}, {ID: "shared"}}}
 	cfg.Providers["openrouter"] = other
 	if err := m.Write(cfg); err != nil {
 		t.Fatal(err)
@@ -273,10 +273,7 @@ func TestValidateProviderID(t *testing.T) {
 		p := c.Providers["ollama"]
 		c.Providers = map[string]Provider{tc.id: p}
 		c.Routes = Routes{
-			Codex:   Route{Provider: tc.id, Model: "m"},
-			Claude:  Route{Provider: tc.id, Model: "m"},
-			Grok:    Route{Provider: tc.id, Model: "m"},
-			Generic: Route{Provider: tc.id, Model: "m"},
+			Codex: Route{Provider: tc.id, KeyID: "default", Model: "qwen3"}, Claude: Route{Provider: tc.id, KeyID: "default", Model: "qwen3"}, ClaudeDesktop: Route{Provider: tc.id, KeyID: "default", Model: "qwen3"}, Grok: Route{Provider: tc.id, KeyID: "default", Model: "qwen3"}, Generic: Route{Provider: tc.id, KeyID: "default", Model: "qwen3"},
 		}
 		err := c.Validate()
 		if (err == nil) != tc.wantOK {
@@ -345,11 +342,8 @@ func TestValidateAdapter(t *testing.T) {
 		{"", false},
 		{"openai", false},
 	} {
-		c := Defaults()
-		p := c.Providers["ollama"]
-		p.Adapter = ok.adapter
-		c.Providers["ollama"] = p
-		err := c.Validate()
+		p := Provider{Name: "Ollama", Adapter: ok.adapter, BaseURL: "http://127.0.0.1:11434/v1", DefaultModel: "qwen3", Models: []ProviderModel{{ID: "qwen3"}}}
+		err := ValidateProvider("ollama", p)
 		if (err == nil) != ok.wantOK {
 			t.Errorf("adapter %q accepted=%v, want %v (err=%v)", ok.adapter, err == nil, ok.wantOK, err)
 		}
@@ -389,7 +383,7 @@ func TestValidateRoutes(t *testing.T) {
 	})
 	t.Run("empty model", func(t *testing.T) {
 		c := Defaults()
-		c.Routes.Claude = Route{Provider: "ollama", Model: "  "}
+		c.Routes.Claude = Route{Provider: "ollama", KeyID: "default", Model: "  "}
 		err := c.Validate()
 		if err == nil || !strings.Contains(err.Error(), "routes.claude.model") {
 			t.Fatalf("want model error, got %v", err)
@@ -465,11 +459,9 @@ func TestValidateSecretRef(t *testing.T) {
 		{"provider\t", false},
 	}
 	for _, tc := range cases {
-		c := Defaults()
-		p := c.Providers["ollama"]
+		p := Provider{Name: "Ollama", Adapter: "openai-chat", BaseURL: "http://127.0.0.1:11434/v1", DefaultModel: "qwen3", Models: []ProviderModel{{ID: "qwen3"}}}
 		p.SecretRef = tc.ref
-		c.Providers["ollama"] = p
-		err := c.Validate()
+		err := ValidateProvider("ollama", p)
 		if (err == nil) != tc.wantOK {
 			t.Errorf("secret_ref %q: accepted=%v, want %v (err=%v)", tc.ref, err == nil, tc.wantOK, err)
 		}
@@ -486,12 +478,13 @@ another_field: hello
 listen:
   port: 13000
 providers:
-  ollama: {name: Ollama, adapter: openai-chat, base_url: http://127.0.0.1:11434/v1, default_model: qwen3}
+  ollama: {name: Ollama, base_url: http://127.0.0.1:11434/v1, key_groups: {default: {name: Default, adapter: openai-chat, endpoint: /v1/chat/completions, default_model: qwen3, models: [{id: qwen3}]}}}
 routes:
-  codex: {provider: ollama, model: qwen3}
-  claude: {provider: ollama, model: qwen3}
-  grok: {provider: ollama, model: qwen3}
-  generic: {provider: ollama, model: qwen3}
+  codex: {provider: ollama, key_id: default, model: qwen3}
+  claude: {provider: ollama, key_id: default, model: qwen3}
+  claude_desktop: {provider: ollama, key_id: default, model: qwen3}
+  grok: {provider: ollama, key_id: default, model: qwen3}
+  generic: {provider: ollama, key_id: default, model: qwen3}
 `
 	writeConfig(t, path, input)
 
@@ -754,12 +747,13 @@ func BenchmarkSnapshot(b *testing.B) {
 func TestParseAndNormalize(t *testing.T) {
 	cfg, err := Parse([]byte(`version: 1
 providers:
-  ollama: {name: Ollama, adapter: openai-chat, base_url: http://127.0.0.1:11434/v1, default_model: qwen3}
+  ollama: {name: Ollama, base_url: http://127.0.0.1:11434/v1, key_groups: {default: {name: Default, endpoint: /chat/completions, default_model: qwen3, models: [{id: qwen3}]}}}
 routes:
-  codex: {provider: ollama, model: qwen3}
-  claude: {provider: ollama, model: qwen3}
-  grok: {provider: ollama, model: qwen3}
-  generic: {provider: ollama, model: qwen3}
+  codex: {provider: ollama, key_id: default, model: qwen3}
+  claude: {provider: ollama, key_id: default, model: qwen3}
+  claude_desktop: {provider: ollama, key_id: default, model: qwen3}
+  grok: {provider: ollama, key_id: default, model: qwen3}
+  generic: {provider: ollama, key_id: default, model: qwen3}
 `))
 	if err != nil {
 		t.Fatalf("Parse minimal config: %v", err)

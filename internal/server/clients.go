@@ -30,7 +30,7 @@ func (s *Server) pointContext(w http.ResponseWriter, r *http.Request) (point.Cli
 // The preferred startup model stays the provider-neutral reserved name so that
 // switching a route never rewrites a pointed client's file (§1.2, §7.3): the
 // gateway resolves gateway-default against the current route per request. The
-// catalog carries every enabled `<provider-id>/<model-id>` so a user can pick
+// catalog carries every enabled `<provider-id>/<key-id>/<model-id>` so a user can pick
 // any of them inside the agent. Grok writes it into config.toml; Codex writes
 // it into ai-gateway-catalog.json; Claude writes cache/gateway-models.json
 // and still enables gateway discovery.
@@ -51,7 +51,7 @@ func (s *Server) clientSettings(cfg *config.Config, client point.Client) point.S
 		settings.TitleModel = configuredHelperModel(cfg.Clients.Claude.TitleModel, cfg)
 	} else if client == point.ClientClaudeDesktop {
 		if r := cfg.Routes.ClaudeDesktop; r.Provider != "" && r.Model != "" {
-			settings.RouteDisplayName = r.Provider + "/" + r.Model
+			settings.RouteDisplayName = r.Provider + "/" + r.KeyID + "/" + r.Model
 		}
 	}
 	return settings

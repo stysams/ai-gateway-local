@@ -277,6 +277,18 @@ func (s *Server) serveDataPlaneWith(w http.ResponseWriter, r *http.Request, clie
 	}
 	defer release()
 	adapter := cfgProvider.ModelAdapter(res.Model)
+	endpointPath := cfgProvider.ModelEndpoint(res.Model)
+	apiKey := ""
+	if len(cfgProvider.KeyGroups) > 0 {
+		group, exists := cfgProvider.KeyGroup(res.KeyID)
+		if !exists {
+			writeInboundError(w, http.StatusBadRequest, inProto, fmt.Sprintf("key group %q does not exist for provider %q", res.KeyID, res.Provider), "")
+			return
+		}
+		adapter = group.ModelAdapter(res.Model)
+		endpointPath = group.EffectiveEndpoint(res.Model)
+		apiKey = group.APIKey
+	}
 	outProto := adapterProtocol(adapter)
 	if outProto == "" {
 		writeInboundError(w, http.StatusUnprocessableEntity, inProto,
@@ -296,7 +308,7 @@ func (s *Server) serveDataPlaneWith(w http.ResponseWriter, r *http.Request, clie
 		}
 		stream = false
 	}
-	if err := trace.route(res.Provider, res.Model, adapter, inProto, outProto); err != nil {
+	if err := trace.route(res.Provider, res.KeyID, res.Model, adapter, inProto, outProto); err != nil {
 		trace.setError(err)
 		writeInboundError(w, http.StatusInternalServerError, inProto, err.Error(), "request_log_failed")
 		return
@@ -308,8 +320,8 @@ func (s *Server) serveDataPlaneWith(w http.ResponseWriter, r *http.Request, clie
 		return
 	}
 	provider := providerInfo{
-		id: res.Provider, baseURL: cfgProvider.BaseURL, secretRef: cfgProvider.SecretRef,
-		endpoint:     cfgProvider.ModelEndpoint(res.Model),
+		id: res.Provider, keyID: res.KeyID, baseURL: cfgProvider.BaseURL, secretRef: cfgProvider.SecretRef, apiKey: apiKey,
+		endpoint:     endpointPath,
 		extraHeaders: outboundExtraHeaders(cfgProvider, client, r.Header),
 		imageInput:   cfgProvider.Capabilities.ImageInput, reasoning: cfgProvider.Capabilities.Reasoning,
 		contextManagement: cfgProvider.Capabilities.ContextManagement,
@@ -629,9 +641,11 @@ func upstreamErrorMessage(r io.Reader) string {
 // providerInfo is the subset of config.Provider the data plane needs.
 type providerInfo struct {
 	id                string
+	keyID             string
 	baseURL           string
 	endpoint          string
 	secretRef         string
+	apiKey            string
 	extraHeaders      map[string]string
 	imageInput        bool
 	reasoning         bool
@@ -665,16 +679,27 @@ func (s *Server) upstreamDo(ctx context.Context, proto ir.Protocol, p providerIn
 	)
 	switch proto {
 	case ir.ProtocolChat:
-		resp, err = s.upstreamsChat.Client(p.baseURL, p.secretRef).WithEndpoint(p.endpoint).DoWithHeaders(ctx, body, stream, p.extraHeaders)
+		if p.apiKey != "" {
+			resp, err = s.upstreamsChat.ClientWithKey(p.baseURL, p.apiKey).WithEndpoint(p.endpoint).DoWithHeaders(ctx, body, stream, p.extraHeaders)
+		} else {
+			resp, err = s.upstreamsChat.Client(p.baseURL, p.secretRef).WithEndpoint(p.endpoint).DoWithHeaders(ctx, body, stream, p.extraHeaders)
+		}
 	case ir.ProtocolResponses:
 		client := s.upstreamsResponses.Client(p.baseURL, p.secretRef).WithEndpoint(p.endpoint)
+		if p.apiKey != "" {
+			client = s.upstreamsResponses.ClientWithKey(p.baseURL, p.apiKey).WithEndpoint(p.endpoint)
+		}
 		if compact {
 			resp, err = client.DoCompactWithHeaders(ctx, body, p.extraHeaders)
 		} else {
 			resp, err = client.DoWithHeaders(ctx, body, stream, p.extraHeaders)
 		}
 	case ir.ProtocolMessages:
-		resp, err = s.upstreamsAnthropic.Client(p.baseURL, p.secretRef).WithEndpoint(p.endpoint).DoWithHeaders(ctx, body, stream, p.extraHeaders)
+		if p.apiKey != "" {
+			resp, err = s.upstreamsAnthropic.ClientWithKey(p.baseURL, p.apiKey).WithEndpoint(p.endpoint).DoWithHeaders(ctx, body, stream, p.extraHeaders)
+		} else {
+			resp, err = s.upstreamsAnthropic.Client(p.baseURL, p.secretRef).WithEndpoint(p.endpoint).DoWithHeaders(ctx, body, stream, p.extraHeaders)
+		}
 	default:
 		return nil, fmt.Errorf("unknown upstream protocol %q", proto)
 	}
@@ -1058,7 +1083,7 @@ func encodeNonStream(proto ir.Protocol, w io.Writer, model string, resp *ir.Resp
 // modelItem is one entry of GET /v1/models.
 //
 // display_name is the selectable id (gateway-default or
-// <provider-id>/<model-id>) so client pickers show that form. On
+// <provider-id>/<key-id>/<model-id>) so client pickers show that form. On
 // /c/claude/v1/models the wire id is a picker alias that passes Claude
 // Code's discovery filter; display_name stays the real selectable id
 // (docs/v1-scheme.md §7.5). Everywhere else id equals display_name.
@@ -1110,7 +1135,7 @@ func claudePickerCatalog(items []modelItem) []modelItem {
 }
 
 // modelCatalog is the single source of the enabled model list: the reserved
-// model first, then every enabled `<provider-id>/<model-id>` (§7.5). Both
+// model first, then every enabled `<provider-id>/<key-id>/<model-id>` (§7.5). Both
 // GET /v1/models and the catalog written into client configurations by
 // internal/point are built from it, so a client picker and the data plane can
 // never disagree about which models exist.
@@ -1135,14 +1160,35 @@ func (s *Server) modelCatalog(cfg *config.Config) []modelItem {
 		if !p.EnabledValue() {
 			continue
 		}
+		if len(p.KeyGroups) > 0 {
+			keyIDs := make([]string, 0, len(p.KeyGroups))
+			for keyID := range p.KeyGroups {
+				keyIDs = append(keyIDs, keyID)
+			}
+			sort.Strings(keyIDs)
+			for _, keyID := range keyIDs {
+				group, _ := p.KeyGroup(keyID)
+				if !group.EnabledValue() {
+					continue
+				}
+				if group.ModelEnabled(group.DefaultModel) {
+					add(id+"/"+keyID+"/"+group.DefaultModel, id+"/"+keyID)
+				}
+				for _, model := range group.Models {
+					if model.EnabledValue() {
+						add(id+"/"+keyID+"/"+model.ID, id+"/"+keyID)
+					}
+				}
+			}
+			continue
+		}
 		if providerModelEnabled(p, p.DefaultModel) {
 			add(id+"/"+p.DefaultModel, id)
 		}
 		for _, model := range p.Models {
-			if !model.EnabledValue() {
-				continue
+			if model.EnabledValue() {
+				add(id+"/"+model.ID, id)
 			}
-			add(id+"/"+model.ID, id)
 		}
 	}
 	cache := s.cachedModels()
@@ -1150,11 +1196,26 @@ func (s *Server) modelCatalog(cfg *config.Config) []modelItem {
 		if !cfg.Providers[id].EnabledValue() {
 			continue
 		}
-		for _, model := range cache[id] {
-			if !providerModelEnabled(cfg.Providers[id], model.RawID) {
-				continue
+		if len(cfg.Providers[id].KeyGroups) > 0 {
+			for keyID, group := range cfg.Providers[id].KeyGroups {
+				if !group.EnabledValue() {
+					continue
+				}
+				for _, model := range cache[modelCacheKey(id, keyID)] {
+					// Discovered models that are not yet in the key-group catalog
+					// stay selectable; only an explicit disabled catalog entry hides them.
+					if declared, ok := group.Model(model.RawID); ok && !declared.EnabledValue() {
+						continue
+					}
+					add(model.ID, id+"/"+keyID)
+				}
 			}
-			add(model.ID, id)
+			continue
+		}
+		for _, model := range cache[id] {
+			if providerModelEnabled(cfg.Providers[id], model.RawID) {
+				add(model.ID, id)
+			}
 		}
 	}
 	return data

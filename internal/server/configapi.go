@@ -48,17 +48,30 @@ type ConfigAutostartPayload struct {
 	Enabled bool `json:"enabled"`
 }
 type ConfigProviderPayload struct {
-	Name           string                 `json:"name"`
-	Adapter        string                 `json:"adapter"`
-	BaseURL        string                 `json:"base_url"`
-	ModelsURL      string                 `json:"models_url,omitempty"`
-	ExtraHeaders   map[string]string      `json:"extra_headers,omitempty"`
-	DisguiseClient string                 `json:"disguise_client,omitempty"`
-	DefaultModel   string                 `json:"default_model"`
-	Enabled        *bool                  `json:"enabled,omitempty"`
-	Models         []ProviderModelPayload `json:"models"`
-	SecretRef      string                 `json:"secret_ref,omitempty"`
-	Capabilities   CapabilitiesPayload    `json:"capabilities"`
+	Name           string                           `json:"name"`
+	BaseURL        string                           `json:"base_url"`
+	ModelsURL      string                           `json:"models_url,omitempty"`
+	ExtraHeaders   map[string]string                `json:"extra_headers,omitempty"`
+	DisguiseClient string                           `json:"disguise_client,omitempty"`
+	Enabled        *bool                            `json:"enabled,omitempty"`
+	Capabilities   CapabilitiesPayload              `json:"capabilities"`
+	KeyGroups      map[string]ConfigKeyGroupPayload `json:"key_groups"`
+
+	// Legacy fields stay source-compatible for old internal fixtures but are
+	// never serialized or accepted as a new config payload.
+	Adapter      string                 `json:"-"`
+	DefaultModel string                 `json:"-"`
+	Models       []ProviderModelPayload `json:"-"`
+	SecretRef    string                 `json:"-"`
+}
+
+type ConfigKeyGroupPayload struct {
+	Name         string                 `json:"name"`
+	Enabled      bool                   `json:"enabled"`
+	Endpoint     string                 `json:"endpoint,omitempty"`
+	Adapter      string                 `json:"adapter,omitempty"`
+	DefaultModel string                 `json:"default_model"`
+	Models       []ProviderModelPayload `json:"models"`
 }
 type ConfigRoutesPayload struct {
 	Codex         RouteStatus `json:"codex"`
@@ -85,12 +98,11 @@ func configPayload(cfg *config.Config) ConfigPayload {
 	}
 	for id, p := range cfg.Providers {
 		out.Providers[id] = ConfigProviderPayload{
-			Name: p.Name, Adapter: p.Adapter, BaseURL: p.BaseURL, ModelsURL: p.ModelsURL,
+			Name: p.Name, BaseURL: p.BaseURL, ModelsURL: p.ModelsURL,
 			ExtraHeaders: cloneStringMap(p.ExtraHeaders), DisguiseClient: p.DisguiseClient,
-			DefaultModel: p.DefaultModel, SecretRef: p.SecretRef,
 			Enabled:      config.BoolPtr(p.EnabledValue()),
-			Models:       providerModelsPayload(p.Models),
 			Capabilities: CapabilitiesPayload{ImageInput: p.Capabilities.ImageInput, Reasoning: p.Capabilities.Reasoning},
+			KeyGroups:    configKeyGroupsPayload(p.KeyGroups),
 		}
 	}
 	out.Listen.Host = cfg.Listen.HostValue()
@@ -98,7 +110,7 @@ func configPayload(cfg *config.Config) ConfigPayload {
 }
 
 func routeStatus(r config.Route) RouteStatus {
-	return RouteStatus{Provider: r.Provider, Model: r.Model}
+	return RouteStatus{Provider: r.Provider, KeyID: r.KeyID, Model: r.Model}
 }
 
 func (p ConfigPayload) toConfig() *config.Config {
@@ -113,12 +125,11 @@ func (p ConfigPayload) toConfig() *config.Config {
 	providers := make(map[string]config.Provider, len(p.Providers))
 	for id, provider := range p.Providers {
 		providers[id] = config.Provider{
-			Name: provider.Name, Adapter: provider.Adapter, BaseURL: provider.BaseURL, ModelsURL: provider.ModelsURL,
+			Name: provider.Name, BaseURL: provider.BaseURL, ModelsURL: provider.ModelsURL,
 			ExtraHeaders: cloneStringMap(provider.ExtraHeaders), DisguiseClient: strings.TrimSpace(provider.DisguiseClient),
-			DefaultModel: provider.DefaultModel, SecretRef: provider.SecretRef,
 			Enabled:      provider.Enabled,
-			Models:       providerModelsFromPayload(provider.Models),
 			Capabilities: config.Capabilities{ImageInput: provider.Capabilities.ImageInput, Reasoning: provider.Capabilities.Reasoning},
+			KeyGroups:    configKeyGroupsFromPayload(provider.KeyGroups),
 		}
 	}
 	return &config.Config{
@@ -130,12 +141,58 @@ func (p ConfigPayload) toConfig() *config.Config {
 		Autostart: config.Autostart{Enabled: p.Autostart.Enabled},
 		Providers: providers,
 		Routes: config.Routes{
-			Codex:         config.Route{Provider: p.Routes.Codex.Provider, Model: p.Routes.Codex.Model},
-			Claude:        config.Route{Provider: p.Routes.Claude.Provider, Model: p.Routes.Claude.Model},
-			ClaudeDesktop: config.Route{Provider: p.Routes.ClaudeDesktop.Provider, Model: p.Routes.ClaudeDesktop.Model},
-			Grok:          config.Route{Provider: p.Routes.Grok.Provider, Model: p.Routes.Grok.Model},
-			Generic:       config.Route{Provider: p.Routes.Generic.Provider, Model: p.Routes.Generic.Model},
+			Codex:         config.Route{Provider: p.Routes.Codex.Provider, KeyID: p.Routes.Codex.KeyID, Model: p.Routes.Codex.Model},
+			Claude:        config.Route{Provider: p.Routes.Claude.Provider, KeyID: p.Routes.Claude.KeyID, Model: p.Routes.Claude.Model},
+			ClaudeDesktop: config.Route{Provider: p.Routes.ClaudeDesktop.Provider, KeyID: p.Routes.ClaudeDesktop.KeyID, Model: p.Routes.ClaudeDesktop.Model},
+			Grok:          config.Route{Provider: p.Routes.Grok.Provider, KeyID: p.Routes.Grok.KeyID, Model: p.Routes.Grok.Model},
+			Generic:       config.Route{Provider: p.Routes.Generic.Provider, KeyID: p.Routes.Generic.KeyID, Model: p.Routes.Generic.Model},
 		},
+	}
+}
+
+func configKeyGroupsPayload(groups map[string]config.KeyGroup) map[string]ConfigKeyGroupPayload {
+	out := make(map[string]ConfigKeyGroupPayload, len(groups))
+	for id, group := range groups {
+		out[id] = ConfigKeyGroupPayload{
+			Name: group.Name, Enabled: group.EnabledValue(), Endpoint: group.Endpoint, Adapter: group.Adapter,
+			DefaultModel: group.DefaultModel, Models: providerModelsPayload(group.Models),
+		}
+	}
+	return out
+}
+
+func configKeyGroupsFromPayload(groups map[string]ConfigKeyGroupPayload) map[string]config.KeyGroup {
+	out := make(map[string]config.KeyGroup, len(groups))
+	for id, group := range groups {
+		out[id] = config.KeyGroup{
+			Name: group.Name, Enabled: config.BoolPtr(group.Enabled), Endpoint: strings.TrimSpace(group.Endpoint),
+			Adapter: strings.TrimSpace(group.Adapter), DefaultModel: strings.TrimSpace(group.DefaultModel), Models: providerModelsFromPayload(group.Models),
+		}
+	}
+	return out
+}
+
+// preserveKeyGroupAPIKeys copies plaintext keys from current into next for
+// every key group that still exists after a settings save. New key groups
+// keep an empty key until a dedicated key-group write supplies one.
+func preserveKeyGroupAPIKeys(current, next *config.Config) {
+	if current == nil || next == nil {
+		return
+	}
+	for providerID, provider := range next.Providers {
+		prevProvider, ok := current.Providers[providerID]
+		if !ok {
+			continue
+		}
+		for keyID, group := range provider.KeyGroups {
+			prevGroup, ok := prevProvider.KeyGroups[keyID]
+			if !ok {
+				continue
+			}
+			group.APIKey = prevGroup.APIKey
+			provider.KeyGroups[keyID] = group
+		}
+		next.Providers[providerID] = provider
 	}
 }
 
@@ -185,6 +242,10 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		enabled := *current.Clients.Codex.RemoteCompaction
 		next.Clients.Codex.RemoteCompaction = &enabled
 	}
+	// Settings GET omits api_key values. A settings save must keep the
+	// currently stored plaintext keys unless a dedicated key-group write
+	// changes them.
+	preserveKeyGroupAPIKeys(current, next)
 	if err := next.Validate(); err != nil {
 		writeAPIError(w, http.StatusBadRequest, "config_invalid", err.Error(), map[string]string{"field": validationField(err)})
 		return

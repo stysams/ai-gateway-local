@@ -80,7 +80,7 @@ func TestClientPointAndRestoreAPI(t *testing.T) {
 			if !strings.Contains(string(pointedConfig), "gateway-default") {
 				t.Fatalf("%s config lost the provider-neutral preferred model:\n%s", tt.client, pointedConfig)
 			}
-			if got := strings.Contains(string(pointedConfig), "openrouter/anthropic/claude-sonnet-4"); got != tt.catalogInFile {
+			if got := strings.Contains(string(pointedConfig), "openrouter/default/anthropic/claude-sonnet-4"); got != tt.catalogInFile {
 				t.Fatalf("%s catalog in config = %v, want %v:\n%s", tt.client, got, tt.catalogInFile, pointedConfig)
 			}
 			if tt.client == point.ClientCodex {
@@ -88,7 +88,7 @@ func TestClientPointAndRestoreAPI(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !strings.Contains(string(sidecar), "openrouter/anthropic/claude-sonnet-4") {
+				if !strings.Contains(string(sidecar), "openrouter/default/anthropic/claude-sonnet-4") {
 					t.Fatalf("Codex sidecar missing catalog id:\n%s", sidecar)
 				}
 			}
@@ -104,7 +104,7 @@ func TestClientPointAndRestoreAPI(t *testing.T) {
 				t.Fatal("second point unexpectedly changed client config")
 			}
 
-			resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPut, "/api/v1/routes/"+string(tt.client), RouteRequest{Provider: "ollama", Model: "qwen3"})
+			resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPut, "/api/v1/routes/"+string(tt.client), RouteRequest{Provider: "ollama", KeyID: "default", Model: "qwen3"})
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("route update = %d, body = %s", resp.StatusCode, body)
 			}
@@ -218,7 +218,7 @@ func TestClaudeDesktopPointRouteAndRestoreLeavesMCPUntouched(t *testing.T) {
 		t.Fatalf("MCP configuration was included in the backup manifest: %s", manifest)
 	}
 
-	resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPut, "/api/v1/routes/claude-desktop", RouteRequest{Provider: "ollama", Model: "qwen3"})
+	resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPut, "/api/v1/routes/claude-desktop", RouteRequest{Provider: "ollama", KeyID: "default", Model: "qwen3"})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("Claude Desktop route update = %d, body = %s", resp.StatusCode, body)
 	}
@@ -226,7 +226,7 @@ func TestClaudeDesktopPointRouteAndRestoreLeavesMCPUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(updatedProfile), `"labelOverride":"ollama/qwen3"`) {
+	if !strings.Contains(string(updatedProfile), `"labelOverride":"ollama/default/qwen3"`) {
 		t.Fatalf("route update did not sync profile: %s", updatedProfile)
 	}
 	backupsAfter, _ := filepath.Glob(filepath.Join(dataRoot, "backups", string(point.ClientClaudeDesktop), "*", "manifest.json"))
@@ -320,7 +320,7 @@ func TestConfigAPIRouteUpdateKeepsPointedClientProviderNeutral(t *testing.T) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatal(err)
 	}
-	payload.Routes.Codex = RouteStatus{Provider: "ollama", Model: "qwen3"}
+	payload.Routes.Codex = RouteStatus{Provider: "ollama", KeyID: "default", Model: "qwen3"}
 	resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPut, "/api/v1/config", payload)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("PUT config = %d, body = %s", resp.StatusCode, body)
@@ -358,13 +358,13 @@ func TestAvailabilityUpdateRewritesCodexCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(sidecar), "openrouter/anthropic/claude-sonnet-4") {
+	if !strings.Contains(string(sidecar), "openrouter/default/anthropic/claude-sonnet-4") {
 		t.Fatalf("sidecar missing enabled model:\n%s", sidecar)
 	}
 	backupsBefore, _ := filepath.Glob(filepath.Join(dataRoot, "backups", "codex", "*", "manifest.json"))
 
 	resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPut, "/api/v1/providers/openrouter/availability",
-		map[string]any{"models": map[string]bool{"anthropic/claude-sonnet-4": false}})
+		map[string]any{"key_groups": map[string]any{"default": map[string]any{"models": map[string]bool{"enabled-model": false}}}})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("availability = %d %s", resp.StatusCode, body)
 	}
@@ -372,7 +372,7 @@ func TestAvailabilityUpdateRewritesCodexCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(sidecar), "openrouter/anthropic/claude-sonnet-4") {
+	if strings.Contains(string(sidecar), "openrouter/default/enabled-model") {
 		t.Fatalf("disabled model still in Codex sidecar:\n%s", sidecar)
 	}
 	if !strings.Contains(string(sidecar), "gateway-default") {
@@ -456,10 +456,10 @@ func TestClientHelperModelsAPI(t *testing.T) {
 	ts := httptest.NewServer(s.routes())
 	defer ts.Close()
 
-	selected := "openrouter/anthropic/claude-sonnet-4"
+	selected := "openrouter/default/anthropic/claude-sonnet-4"
 	resp, body := httpJSON(t, ts.Listener.Addr().String(), http.MethodPut, "/api/v1/clients/codex/helper-models", map[string]any{
 		"subagent_model": selected,
-		"title_model":    "ollama/qwen3",
+		"title_model":    "ollama/default/qwen3",
 	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("set Codex helper models = %d %s", resp.StatusCode, body)
@@ -468,11 +468,11 @@ func TestClientHelperModelsAPI(t *testing.T) {
 	if err := json.Unmarshal(body, &status); err != nil {
 		t.Fatal(err)
 	}
-	if status.SubagentModel != selected || status.TitleModel != "ollama/qwen3" {
+	if status.SubagentModel != selected || status.TitleModel != "ollama/default/qwen3" {
 		t.Fatalf("Codex helper models = %+v", status)
 	}
 	cfg := s.cfg.View()
-	if cfg.Clients.Codex.SubagentModel != selected || cfg.Clients.Codex.TitleModel != "ollama/qwen3" {
+	if cfg.Clients.Codex.SubagentModel != selected || cfg.Clients.Codex.TitleModel != "ollama/default/qwen3" {
 		t.Fatalf("persisted Codex settings = %+v", cfg.Clients.Codex)
 	}
 
@@ -489,7 +489,7 @@ func TestClientHelperModelsAPI(t *testing.T) {
 
 	resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPut, "/api/v1/clients/codex/helper-models", map[string]any{
 		"subagent_model": "missing/model",
-		"title_model":    "ollama/qwen3",
+		"title_model":    "ollama/default/qwen3",
 	})
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid helper model = %d %s", resp.StatusCode, body)

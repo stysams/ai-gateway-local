@@ -11,8 +11,8 @@ describe("management API client", () => {
 
   it("sends route updates as JSON", async () => {
     const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ client: "codex", provider: "p", model: "m" }), { status: 200, headers: { "Content-Type": "application/json" } }));
-    await api.updateRoute("codex", { provider: "p", model: "m" });
-    expect(fetcher).toHaveBeenCalledWith("http://127.0.0.1:12600/api/v1/routes/codex", expect.objectContaining({ method: "PUT", body: JSON.stringify({ provider: "p", model: "m" }) }));
+    await api.updateRoute("codex", { provider: "p", key_id: "default", model: "m" });
+    expect(fetcher).toHaveBeenCalledWith("http://127.0.0.1:12600/api/v1/routes/codex", expect.objectContaining({ method: "PUT", body: JSON.stringify({ provider: "p", key_id: "default", model: "m" }) }));
   });
 
   it("loads local access connection data", async () => {
@@ -24,7 +24,7 @@ describe("management API client", () => {
 
   it("normalizes API errors", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ error: { code: "config_invalid", message: "bad route" } }), { status: 400 }));
-    await expect(api.updateRoute("codex", { provider: "", model: "" })).rejects.toEqual(expect.objectContaining<Partial<APIError>>({ status: 400, code: "config_invalid", message: "bad route" }));
+    await expect(api.updateRoute("codex", { provider: "", key_id: "", model: "" })).rejects.toEqual(expect.objectContaining<Partial<APIError>>({ status: 400, code: "config_invalid", message: "bad route" }));
   });
 
   it("updates Codex remote compaction through its dedicated endpoint", async () => {
@@ -54,7 +54,7 @@ describe("management API client", () => {
 
   it("discovers models from an unsaved provider draft", async () => {
     const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ object: "list", provider: "openrouter", data: [] }));
-    await api.discoverProviderModels({ provider_id: "openrouter", adapter: "openai-chat", base_url: "https://openrouter.ai/api/v1", api_key: "secret" });
-    expect(fetcher).toHaveBeenCalledWith("http://127.0.0.1:12600/api/v1/provider-models/discover", expect.objectContaining({ method: "POST", body: JSON.stringify({ provider_id: "openrouter", adapter: "openai-chat", base_url: "https://openrouter.ai/api/v1", api_key: "secret" }) }));
+    await api.discoverProviderModels({ provider_id: "openrouter", key_id: "default", adapter: "openai-chat", base_url: "https://openrouter.ai/api/v1", api_key: "secret" });
+    expect(fetcher).toHaveBeenCalledWith("http://127.0.0.1:12600/api/v1/provider-models/discover", expect.objectContaining({ method: "POST", body: JSON.stringify({ provider_id: "openrouter", key_id: "default", adapter: "openai-chat", base_url: "https://openrouter.ai/api/v1", api_key: "secret" }) }));
   });
 });
