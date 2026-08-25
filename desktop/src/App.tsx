@@ -518,18 +518,14 @@ function Clients({ clients, providers, t, run }: { clients: Record<string, Point
   const catalog = useMemo(() => enabledCatalog(providers), [providers]);
   return <section><SectionHeader title={t("clients")} hideTitle description={t("clientsDescription")} /><div className="client-list">{pointClients.map((client) => {
     const value = clients[client];
-    const isClaudeDesktop = client === "claude-desktop";
-    const profilePointed = value?.point_state === "pointed";
-    const mcpPointed = value?.mcp_point_state === "pointed";
-    const fullyPointed = profilePointed && (!isClaudeDesktop || mcpPointed);
+    const fullyPointed = value?.point_state === "pointed";
     return <article className="client-item" key={client}>
       <div className="client-main">
-        <div className="client-title"><div className="client-icon"><ClientsIcon size={18} /></div><div><h3>{clientDisplayName(client, t)}</h3><div className="client-state-list"><State value={value?.point_state || "unknown"} />{isClaudeDesktop && <State value={value?.mcp_point_state || "unknown"} />}</div></div></div>
-        <div className="client-targets"><dl><dt>{t("target")}</dt><dd className="mono">{value?.target || "—"}</dd></dl>{isClaudeDesktop && <dl><dt>{t("mcpTarget")}</dt><dd className="mono">{value?.mcp_target || "—"}</dd></dl>}</div>
-        <div className="client-actions"><button className="primary" disabled={fullyPointed || value?.point_state === "client_not_installed"} onClick={() => { if (confirm(t("confirmPoint"))) void run(() => api.point(client), t("success"), ["clients", "status"]); }}><Cable size={16} />{t("point")}</button>{isClaudeDesktop ? <><button className="secondary" disabled={!value?.backup_available} onClick={() => { if (confirm(t("confirmRestore"))) void run(() => api.restore(client, false), t("success"), ["clients", "status"]); }}><RotateCcw size={16} />{t("restoreInference")}</button><button className="secondary" disabled={!value?.mcp_backup_available} onClick={() => { if (confirm(t("confirmRestoreMcp"))) void run(() => api.restore(client, true), t("success"), ["clients", "status"]); }}><RotateCcw size={16} />{t("restoreMcp")}</button></> : <button className="secondary" disabled={!value?.backup_available} onClick={() => { if (confirm(t("confirmRestore"))) void run(() => api.restore(client), t("success"), ["clients", "status"]); }}><RotateCcw size={16} />{t("restore")}</button>}</div>
+        <div className="client-title"><div className="client-icon"><ClientsIcon size={18} /></div><div><h3>{clientDisplayName(client, t)}</h3><div className="client-state-list"><State value={value?.point_state || "unknown"} /></div></div></div>
+        <div className="client-targets"><dl><dt>{t("target")}</dt><dd className="mono">{value?.target || "—"}</dd></dl></div>
+        <div className="client-actions"><button className="primary" disabled={fullyPointed || value?.point_state === "client_not_installed"} onClick={() => { if (confirm(t("confirmPoint"))) void run(() => api.point(client), t("success"), ["clients", "status"]); }}><Cable size={16} />{t("point")}</button><button className="secondary" disabled={!value?.backup_available} onClick={() => { if (confirm(t("confirmRestore"))) void run(() => api.restore(client), t("success"), ["clients", "status"]); }}><RotateCcw size={16} />{t("restore")}</button></div>
       </div>
       {value?.message && <p className="client-message muted">{value.message}</p>}
-      {isClaudeDesktop && value?.mcp_message && <p className="client-message muted">{value.mcp_message}</p>}
       {(client === "codex" || client === "claude") && <ClientAdvancedSettings key={`${client}:${value?.subagent_model || ""}:${value?.title_model || ""}`} client={client} value={value} catalog={catalog} t={t} run={run} />}
     </article>;
   })}</div></section>;

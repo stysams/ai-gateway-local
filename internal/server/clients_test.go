@@ -139,7 +139,7 @@ func TestClientPointAndRestoreAPI(t *testing.T) {
 	}
 }
 
-func TestClaudeDesktopPointRouteAndSeparateRestoreAPI(t *testing.T) {
+func TestClaudeDesktopPointRouteAndRestoreLeavesMCPUntouched(t *testing.T) {
 	dataRoot := t.TempDir()
 	localAppData := filepath.Join(dataRoot, "localappdata")
 	desktopRoot := filepath.Join(localAppData, "Claude")
@@ -183,17 +183,13 @@ func TestClaudeDesktopPointRouteAndSeparateRestoreAPI(t *testing.T) {
 	if err := json.Unmarshal(body, &initial); err != nil {
 		t.Fatal(err)
 	}
-	if initial.MCPPointState != point.StateDrifted {
-		t.Fatalf("initial MCP state = %q, want drifted for an existing non-3p control file", initial.MCPPointState)
-	}
-
 	resp, body = clientJSON(t, ts, http.MethodPost, clientPath+"/point")
 	assertPointState(t, resp, body, http.StatusOK, point.StatePointed)
 	var pointed point.Result
 	if err := json.Unmarshal(body, &pointed); err != nil {
 		t.Fatal(err)
 	}
-	if pointed.MCPPointState != point.StatePointed || !pointed.Changed || pointed.BackupDir == "" {
+	if !pointed.Changed || pointed.BackupDir == "" {
 		t.Fatalf("point result = %+v", pointed)
 	}
 	pointedProfile, err := os.ReadFile(pointed.Target)
@@ -207,10 +203,20 @@ func TestClaudeDesktopPointRouteAndSeparateRestoreAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(pointedControl), `"deploymentMode": "3p"`) {
-		t.Fatalf("control file was not transformed: %s", pointedControl)
+	if !bytes.Equal(pointedControl, controlOriginal) {
+		t.Fatalf("MCP configuration changed during point: %q, want %q", pointedControl, controlOriginal)
 	}
 	backupsBefore, _ := filepath.Glob(filepath.Join(dataRoot, "backups", string(point.ClientClaudeDesktop), "*", "manifest.json"))
+	if len(backupsBefore) != 1 {
+		t.Fatalf("backup count after point = %d, want 1", len(backupsBefore))
+	}
+	manifest, err := os.ReadFile(backupsBefore[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(manifest), "claude_desktop_config.json") {
+		t.Fatalf("MCP configuration was included in the backup manifest: %s", manifest)
+	}
 
 	resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPut, "/api/v1/routes/claude-desktop", RouteRequest{Provider: "ollama", Model: "qwen3"})
 	if resp.StatusCode != http.StatusOK {
@@ -231,36 +237,17 @@ func TestClaudeDesktopPointRouteAndSeparateRestoreAPI(t *testing.T) {
 		t.Fatalf("persisted Claude Desktop route = %+v", got)
 	}
 
-	resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPost, clientPath+"/restore", map[string]any{"restore_mcp": true})
-	assertPointState(t, resp, body, http.StatusOK, point.StatePointed)
-	var mcpRestored point.Result
-	if err := json.Unmarshal(body, &mcpRestored); err != nil {
-		t.Fatal(err)
-	}
-	if mcpRestored.MCPPointState == point.StatePointed {
-		t.Fatalf("MCP state after explicit MCP restore = %q, want not pointed or drifted", mcpRestored.MCPPointState)
-	}
-	restoredControl, err := os.ReadFile(controlPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(restoredControl, controlOriginal) {
-		t.Fatalf("MCP restore bytes = %q, want %q", restoredControl, controlOriginal)
-	}
-
-	resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPost, clientPath+"/restore", map[string]any{"restore_mcp": false})
+	resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPost, clientPath+"/restore", nil)
 	assertPointState(t, resp, body, http.StatusOK, point.StateNotPointed)
-	var profileRestored point.Result
-	if err := json.Unmarshal(body, &profileRestored); err != nil {
-		t.Fatal(err)
-	}
-	if profileRestored.MCPPointState == point.StatePointed {
-		t.Fatalf("MCP state after full inference restore = %q", profileRestored.MCPPointState)
-	}
 	if restored, err := os.ReadFile(profilePath); err != nil {
 		t.Fatal(err)
 	} else if !bytes.Equal(restored, profileOriginal) {
 		t.Fatalf("original Claude Desktop profile bytes = %q, want %q", restored, profileOriginal)
+	}
+	if restored, err := os.ReadFile(controlPath); err != nil {
+		t.Fatal(err)
+	} else if !bytes.Equal(restored, controlOriginal) {
+		t.Fatalf("MCP configuration changed during restore: %q, want %q", restored, controlOriginal)
 	}
 }
 

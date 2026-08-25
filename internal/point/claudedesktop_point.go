@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"ai-gateway/internal/point/claudedesktop"
 )
@@ -30,30 +29,23 @@ func (m *Manager) checkClaudeDesktop(baseURL string, settings Settings) Status {
 	status := Status{
 		Client:          ClientClaudeDesktop,
 		PointState:      StateUnknown,
-		MCPPointState:   StateUnknown,
-		BackupAvailable: m.latestDesktopManifest(false) != "",
-		MCPBackup:       m.latestDesktopManifest(true) != "",
+		BackupAvailable: m.latestDesktopManifest() != "",
 	}
 	if err != nil {
 		status.Message = err.Error()
-		status.MCPMessage = err.Error()
 		return status
 	}
 	if !installed {
 		status.PointState = StateClientNotInstalled
-		status.MCPPointState = StateClientNotInstalled
 		status.Message = ErrClientNotInstalled.Error()
-		status.MCPMessage = ErrClientNotInstalled.Error()
 		return status
 	}
 	status.Target = desktopTarget(root)
-	status.MCPTarget = root.ControlPath
-	manifestPath := m.latestDesktopManifestAny()
+	manifestPath := m.latestDesktopManifest()
 	if manifestPath != "" {
 		manifest, manifestErr := readManifest(manifestPath)
 		if manifestErr == nil {
 			status.RestoredAt = manifest.RestoredAt
-			status.MCPRestoredAt = manifest.MCPRestoredAt
 		}
 	}
 
@@ -87,57 +79,6 @@ func (m *Manager) checkClaudeDesktop(baseURL string, settings Settings) Status {
 			}
 		}
 	}
-
-	control, exists, _, readErr := readFile(root.ControlPath)
-	if readErr != nil {
-		status.MCPPointState = StateUnknown
-		status.MCPMessage = readErr.Error()
-		return status
-	}
-	if !exists {
-		status.MCPPointState = StateNotPointed
-		return status
-	}
-	controlPointed, controlErr := claudedesktop.CheckControl(control, true)
-	if controlErr != nil {
-		status.MCPPointState = StateDrifted
-		status.MCPMessage = controlErr.Error()
-		return status
-	}
-	status.MCPPointState = StatePointed
-	if !controlPointed {
-		status.MCPPointState = StateDrifted
-		status.MCPMessage = "Claude Desktop deployment mode is not 3p"
-	}
-	if manifestPath == "" {
-		return status
-	}
-	manifest, manifestErr := readManifest(manifestPath)
-	if manifestErr != nil {
-		status.MCPPointState = StateUnknown
-		status.MCPMessage = manifestErr.Error()
-		return status
-	}
-	controlFile := manifestFileAt(manifest, root.ControlPath)
-	if controlFile == nil {
-		status.MCPPointState = StateUnknown
-		status.MCPMessage = "Claude Desktop backup does not contain the control file"
-		return status
-	}
-	original, loadErr := loadOriginal(filepath.Dir(manifestPath), *controlFile)
-	if loadErr != nil {
-		status.MCPPointState = StateUnknown
-		status.MCPMessage = loadErr.Error()
-		return status
-	}
-	matches, matchErr := claudedesktop.MCPMatches(control, true, original, controlFile.OriginalExists)
-	if matchErr != nil {
-		status.MCPPointState = StateDrifted
-		status.MCPMessage = matchErr.Error()
-	} else if !matches {
-		status.MCPPointState = StateDrifted
-		status.MCPMessage = "Claude Desktop MCP configuration has drifted"
-	}
 	return status
 }
 
@@ -161,7 +102,7 @@ func (m *Manager) pointClaudeDesktop(baseURL string, settings Settings) (Result,
 		return Result{Status: Status{Client: ClientClaudeDesktop, PointState: StateUnknown, Message: err.Error()}}, err
 	}
 	if !installed {
-		status := Status{Client: ClientClaudeDesktop, PointState: StateClientNotInstalled, MCPPointState: StateClientNotInstalled, Message: ErrClientNotInstalled.Error()}
+		status := Status{Client: ClientClaudeDesktop, PointState: StateClientNotInstalled, Message: ErrClientNotInstalled.Error()}
 		return Result{Status: status}, ErrClientNotInstalled
 	}
 	if root.ProfilePath != "" && root.ProfileExists {
@@ -191,10 +132,6 @@ func (m *Manager) pointClaudeDesktop(baseURL string, settings Settings) (Result,
 	if err != nil {
 		return Result{Status: Status{Client: ClientClaudeDesktop, Target: profilePath}}, err
 	}
-	controlOriginal, controlExists, controlMode, err := readFile(root.ControlPath)
-	if err != nil {
-		return Result{Status: Status{Client: ClientClaudeDesktop, Target: profilePath}}, err
-	}
 	profileNext, err := claudedesktop.TransformProfile(profileOriginal, baseURL, settings)
 	if err != nil {
 		return Result{Status: Status{Client: ClientClaudeDesktop, Target: profilePath}}, err
@@ -203,14 +140,9 @@ func (m *Manager) pointClaudeDesktop(baseURL string, settings Settings) (Result,
 	if err != nil {
 		return Result{Status: Status{Client: ClientClaudeDesktop, Target: profilePath}}, err
 	}
-	controlNext, err := claudedesktop.TransformControl(controlOriginal)
-	if err != nil {
-		return Result{Status: Status{Client: ClientClaudeDesktop, Target: profilePath}}, err
-	}
 	plan := clientWrite{configPath: profilePath, configBytes: profileNext, configMode: profileMode, originals: map[string][]byte{}}
 	plan.addFile(profilePath, profileOriginal, profileExists, profileMode, profileNext)
 	plan.addFile(root.MetaPath, metaOriginal, metaExists, metaMode, metaNext)
-	plan.addFile(root.ControlPath, controlOriginal, controlExists, controlMode, controlNext)
 	manifest := Manifest{Version: 1, Client: ClientClaudeDesktop, CreatedAt: m.now().UTC(), Files: plan.files}
 	backupDir, err := m.createBackup(manifest, plan.originals)
 	if err != nil {
@@ -231,19 +163,14 @@ func (m *Manager) pointClaudeDesktop(baseURL string, settings Settings) (Result,
 		}
 	}
 	verified := m.checkClaudeDesktop(baseURL, settings)
-	if verified.PointState != StatePointed || verified.MCPPointState != StatePointed {
-		message := verified.Message
-		if message == "" {
-			message = verified.MCPMessage
-		}
-		return rollback(fmt.Errorf("Claude Desktop point verification failed: %s", message))
+	if verified.PointState != StatePointed {
+		return rollback(fmt.Errorf("Claude Desktop point verification failed: %s", verified.Message))
 	}
 	manifest.Completed = true
 	if err := writeManifest(filepath.Join(backupDir, "manifest.json"), manifest); err != nil {
 		return rollback(err)
 	}
 	verified.BackupAvailable = true
-	verified.MCPBackup = true
 	return Result{Status: verified, BackupDir: backupDir, Changed: true}, nil
 }
 
@@ -270,10 +197,6 @@ func (m *Manager) syncClaudeDesktop(baseURL string, settings Settings) (bool, er
 	if err != nil {
 		return false, err
 	}
-	controlOriginal, controlExists, controlMode, err := readFile(root.ControlPath)
-	if err != nil {
-		return false, err
-	}
 	profileNext, err := claudedesktop.TransformProfile(profileOriginal, baseURL, settings)
 	if err != nil {
 		return false, err
@@ -282,14 +205,9 @@ func (m *Manager) syncClaudeDesktop(baseURL string, settings Settings) (bool, er
 	if err != nil {
 		return false, err
 	}
-	controlNext, err := claudedesktop.TransformControl(controlOriginal)
-	if err != nil {
-		return false, err
-	}
 	plan := clientWrite{configPath: root.ProfilePath, configBytes: profileNext, configMode: profileMode, originals: map[string][]byte{}}
 	addChangedFile(&plan, root.ProfilePath, profileOriginal, profileExists, profileMode, profileNext)
 	addChangedFile(&plan, root.MetaPath, metaOriginal, metaExists, metaMode, metaNext)
-	addChangedFile(&plan, root.ControlPath, controlOriginal, controlExists, controlMode, controlNext)
 	if len(plan.writes) == 0 {
 		return false, nil
 	}
@@ -297,8 +215,8 @@ func (m *Manager) syncClaudeDesktop(baseURL string, settings Settings) (bool, er
 		return false, err
 	}
 	verified := m.checkClaudeDesktop(baseURL, settings)
-	if verified.PointState != StatePointed || verified.MCPPointState != StatePointed {
-		verifyErr := fmt.Errorf("Claude Desktop sync verification failed: %s", firstNonEmpty(verified.Message, verified.MCPMessage))
+	if verified.PointState != StatePointed {
+		verifyErr := fmt.Errorf("Claude Desktop sync verification failed: %s", verified.Message)
 		if rollbackErr := plan.restore(); rollbackErr != nil {
 			return false, &PartialFailureError{Operation: "sync Claude Desktop", Cause: verifyErr, Rollback: rollbackErr}
 		}
@@ -347,8 +265,8 @@ func (m *Manager) newDesktopProfile(root claudedesktop.Root, baseURL string) (st
 	}
 }
 
-func (m *Manager) restoreClaudeDesktop(baseURL string, settings Settings, restoreMCP bool) (Result, error) {
-	manifestPath := m.latestDesktopManifest(restoreMCP)
+func (m *Manager) restoreClaudeDesktop(baseURL string, settings Settings) (Result, error) {
+	manifestPath := m.latestDesktopManifest()
 	if manifestPath == "" {
 		return Result{Status: m.checkClaudeDesktop(baseURL, settings)}, ErrNoRestore
 	}
@@ -363,52 +281,30 @@ func (m *Manager) restoreClaudeDesktop(baseURL string, settings Settings, restor
 	if !installed {
 		return Result{BackupDir: filepath.Dir(manifestPath)}, ErrClientNotInstalled
 	}
-	controlFile := manifestFileAt(manifest, root.ControlPath)
-	if controlFile == nil {
-		return Result{BackupDir: filepath.Dir(manifestPath)}, errors.New("backup manifest does not match Claude Desktop control target")
-	}
-	controlOriginal, err := loadOriginal(filepath.Dir(manifestPath), *controlFile)
-	if err != nil {
-		return Result{BackupDir: filepath.Dir(manifestPath)}, err
-	}
-	currentControl, currentControlExists, controlMode, err := readFile(root.ControlPath)
-	if err != nil {
-		return Result{BackupDir: filepath.Dir(manifestPath)}, err
-	}
-	controlNext, controlNextExists, err := claudedesktop.RestoreControl(currentControl, currentControlExists, controlOriginal, controlFile.OriginalExists, restoreMCP)
-	if err != nil {
-		return Result{BackupDir: filepath.Dir(manifestPath)}, err
-	}
-
 	plan := clientWrite{originals: map[string][]byte{}}
-	if restoreMCP {
-		addRestoreWrite(&plan, root.ControlPath, currentControl, currentControlExists, controlMode, controlNext, controlNextExists)
-	} else {
-		profileFile := desktopProfileManifestFile(manifest, root.ProfileDir)
-		metaFile := manifestFileAt(manifest, root.MetaPath)
-		if profileFile == nil || metaFile == nil {
-			return Result{BackupDir: filepath.Dir(manifestPath)}, errors.New("backup manifest does not contain Claude Desktop inference files")
-		}
-		profileOriginal, err := loadOriginal(filepath.Dir(manifestPath), *profileFile)
-		if err != nil {
-			return Result{BackupDir: filepath.Dir(manifestPath)}, err
-		}
-		metaOriginal, err := loadOriginal(filepath.Dir(manifestPath), *metaFile)
-		if err != nil {
-			return Result{BackupDir: filepath.Dir(manifestPath)}, err
-		}
-		profileCurrent, profileCurrentExists, profileMode, err := readFile(profileFile.Target)
-		if err != nil {
-			return Result{BackupDir: filepath.Dir(manifestPath)}, err
-		}
-		metaCurrent, metaCurrentExists, metaMode, err := readFile(metaFile.Target)
-		if err != nil {
-			return Result{BackupDir: filepath.Dir(manifestPath)}, err
-		}
-		addRestoreWrite(&plan, profileFile.Target, profileCurrent, profileCurrentExists, profileMode, profileOriginal, profileFile.OriginalExists)
-		addRestoreWrite(&plan, metaFile.Target, metaCurrent, metaCurrentExists, metaMode, metaOriginal, metaFile.OriginalExists)
-		addRestoreWrite(&plan, root.ControlPath, currentControl, currentControlExists, controlMode, controlNext, controlNextExists)
+	profileFile := desktopProfileManifestFile(manifest, root.ProfileDir)
+	metaFile := manifestFileAt(manifest, root.MetaPath)
+	if profileFile == nil || metaFile == nil {
+		return Result{BackupDir: filepath.Dir(manifestPath)}, errors.New("backup manifest does not contain Claude Desktop inference files")
 	}
+	profileOriginal, err := loadOriginal(filepath.Dir(manifestPath), *profileFile)
+	if err != nil {
+		return Result{BackupDir: filepath.Dir(manifestPath)}, err
+	}
+	metaOriginal, err := loadOriginal(filepath.Dir(manifestPath), *metaFile)
+	if err != nil {
+		return Result{BackupDir: filepath.Dir(manifestPath)}, err
+	}
+	profileCurrent, profileCurrentExists, profileMode, err := readFile(profileFile.Target)
+	if err != nil {
+		return Result{BackupDir: filepath.Dir(manifestPath)}, err
+	}
+	metaCurrent, metaCurrentExists, metaMode, err := readFile(metaFile.Target)
+	if err != nil {
+		return Result{BackupDir: filepath.Dir(manifestPath)}, err
+	}
+	addRestoreWrite(&plan, profileFile.Target, profileCurrent, profileCurrentExists, profileMode, profileOriginal, profileFile.OriginalExists)
+	addRestoreWrite(&plan, metaFile.Target, metaCurrent, metaCurrentExists, metaMode, metaOriginal, metaFile.OriginalExists)
 	if len(plan.writes) == 0 {
 		return Result{Status: m.checkClaudeDesktop(baseURL, settings), BackupDir: filepath.Dir(manifestPath), Changed: false}, nil
 	}
@@ -430,11 +326,7 @@ func (m *Manager) restoreClaudeDesktop(baseURL string, settings Settings, restor
 		return Result{BackupDir: filepath.Dir(manifestPath)}, cause
 	}
 	now := m.now().UTC()
-	if restoreMCP {
-		manifest.MCPRestoredAt = &now
-	} else {
-		manifest.RestoredAt = &now
-	}
+	manifest.RestoredAt = &now
 	if err := writeManifest(manifestPath, manifest); err != nil {
 		return rollback(err)
 	}
@@ -476,35 +368,7 @@ func desktopProfileManifestFile(manifest Manifest, profileDir string) *ManifestF
 	return match
 }
 
-func (m *Manager) latestDesktopManifestAny() string {
-	root := filepath.Join(m.dataRoot, "backups", string(ClientClaudeDesktop))
-	var candidates []string
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if !d.IsDir() && d.Name() == "manifest.json" {
-			candidates = append(candidates, path)
-		}
-		return nil
-	})
-	for i := range candidates {
-		for j := i + 1; j < len(candidates); j++ {
-			if candidates[j] > candidates[i] {
-				candidates[i], candidates[j] = candidates[j], candidates[i]
-			}
-		}
-	}
-	for _, path := range candidates {
-		manifest, err := readManifest(path)
-		if err == nil && manifest.Version == 1 && manifest.Client == ClientClaudeDesktop && manifest.Completed && (manifest.RestoredAt == nil || manifest.MCPRestoredAt == nil) {
-			return path
-		}
-	}
-	return ""
-}
-
-func (m *Manager) latestDesktopManifest(restoreMCP bool) string {
+func (m *Manager) latestDesktopManifest() string {
 	root := filepath.Join(m.dataRoot, "backups", string(ClientClaudeDesktop))
 	var candidates []string
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -528,21 +392,9 @@ func (m *Manager) latestDesktopManifest(restoreMCP bool) string {
 		if err != nil || manifest.Version != 1 || manifest.Client != ClientClaudeDesktop || !manifest.Completed {
 			continue
 		}
-		if restoreMCP && manifest.MCPRestoredAt == nil {
-			return path
-		}
-		if !restoreMCP && manifest.RestoredAt == nil {
+		if manifest.RestoredAt == nil {
 			return path
 		}
 	}
 	return ""
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return "unknown error"
 }

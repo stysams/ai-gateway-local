@@ -148,17 +148,7 @@ func (s *Server) handleRestoreClient(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var result point.Result
-	var err error
-	if client == point.ClientClaudeDesktop && r.Body != nil && r.Body != http.NoBody && r.ContentLength != 0 {
-		var req restoreRequest
-		if !decodeJSON(w, r, &req) {
-			return
-		}
-		result, err = s.points.Restore(client, baseURL, settings, req.RestoreMCP)
-	} else {
-		result, err = s.points.Restore(client, baseURL, settings)
-	}
+	result, err := s.points.Restore(client, baseURL, settings)
 	if err != nil {
 		s.writePointError(w, "restore", result.BackupDir, err)
 		return
@@ -168,10 +158,6 @@ func (s *Server) handleRestoreClient(w http.ResponseWriter, r *http.Request) {
 
 type remoteCompactionRequest struct {
 	Enabled *bool `json:"enabled"`
-}
-
-type restoreRequest struct {
-	RestoreMCP bool `json:"restore_mcp"`
 }
 
 type helperModelsRequest struct {

@@ -84,7 +84,7 @@
 | 已完成 | 关闭桌面窗口不会关闭网关；网关与桌面均避免重复实例。 | 单实例、进程行为和桌面流程测试。 |
 | 已完成 | 支持当前用户登录启动开关及诊断。 | `autostart` 管理接口、命令行和平台实现。 |
 | 已完成 | Codex 与 Claude Code 可分别选择子代理模型和标题生成模型。 | OpenCodex 2.15.1 契约复核、管理接口、数据面与客户端同步测试。 |
-| 已完成 | Claude Desktop 支持推理 profile 与 MCP 配置的独立指向、状态检查、路由同步和还原。 | `internal/point/claudedesktop` 单元测试、`TestClaudeDesktopPointRouteAndSeparateRestoreAPI` 和桌面客户端测试。 |
+| 已完成 | Claude Desktop 只管理推理 profile，支持状态检查、路由同步和还原，不修改客户端 MCP 配置。 | `internal/point/claudedesktop` 单元测试、`TestClaudeDesktopPointRouteAndRestoreLeavesMCPUntouched` 和桌面客户端测试。 |
 
 ## 六、Windows 桌面管理程序
 
@@ -93,7 +93,7 @@
 | 已完成 | 总览、AI 中台、提供商、路由、客户端、日志、用量和设置八个工作页面。 | `desktop/src/App.tsx` 导航和页面实现。 |
 | 已完成 | 提供商、模型、密钥、请求头和能力设置。 | 提供商编辑器与字段级校验。 |
 | 已完成 | 路由模型选择、提供商或模型可用性管理。 | 路由页面和模型目录。 |
-| 已完成 | 客户端指向、状态、漂移、还原、Claude Desktop MCP 独立还原、Codex 远程压缩和辅助模型高级设置。 | 客户端页面与管理接口。 |
+| 已完成 | 客户端指向、状态、漂移、还原、Codex 远程压缩和辅助模型高级设置；Claude Desktop 不修改客户端 MCP 配置。 | 客户端页面与管理接口。 |
 | 已完成 | 日志详情渐进加载、脱敏复制、下载、删除和批量清理。 | 日志页面、接口和端到端测试。 |
 | 已完成 | 用量筛选、覆盖率、趋势图、缓存统计和明细表。 | 用量页面、接口和前端测试。 |
 | 已完成 | 明亮、暗色和跟随系统主题；中英文界面。 | 主题状态、国际化和前端测试。 |

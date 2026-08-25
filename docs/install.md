@@ -184,15 +184,12 @@ and is shown in that form:
   names `127.0.0.1:10100` is ignored until this rewrite.
 - Claude Desktop is discovered under `%LOCALAPPDATA%\Claude`, `%APPDATA%\Claude`,
   or `%LOCALAPPDATA%\Claude-3p`. Point writes the gateway inference profile under
-  `configLibrary` and sets `deploymentMode` to `3p` in
-  `claude_desktop_config.json`. The Clients page reports these as separate
-  inference and MCP states. Route changes update the managed profile without a
-  new restore point. `POST /api/v1/clients/claude-desktop/restore` with
-  `{"restore_mcp":true}` restores the complete MCP file; use
-  `{"restore_mcp":false}` to restore the inference profile and the gateway-owned
-  deployment field. When multiple Claude directories exist, the discovery logic
-  prefers the unique directory containing `configLibrary`; it still refuses to
-  guess when multiple profile directories are present.
+  `configLibrary`. The Clients page reports the inference profile only; the
+  gateway does not read or modify `claude_desktop_config.json` or any MCP
+  server configuration. Route changes update the managed profile without a
+  new restore point. When multiple Claude directories exist, the discovery
+  logic prefers the unique directory containing `configLibrary`; it still
+  refuses to guess when multiple profile directories are present.
 - Grok Build additionally receives one native
   `[model."ai-gateway:<provider-id>/<model-id>"]` entry per enabled model, so
   its own picker lists the whole catalog. Restore removes only the entries the
@@ -212,7 +209,7 @@ startup.
 | --- | --- | --- |
 | Codex | `%USERPROFILE%\.codex\config.toml` | `CODEX_HOME` |
 | Claude Code | `%USERPROFILE%\.claude\settings.json` | `CLAUDE_CONFIG_DIR` |
-| Claude Desktop | `%LOCALAPPDATA%\Claude\configLibrary\<active-profile>.json` and `%LOCALAPPDATA%\Claude\claude_desktop_config.json` | `%LOCALAPPDATA%`, `%APPDATA%` discovery |
+| Claude Desktop | `%LOCALAPPDATA%\Claude\configLibrary\<active-profile>.json` | `%LOCALAPPDATA%`, `%APPDATA%` discovery |
 | Grok Build | `%USERPROFILE%\.grok\config.toml` | `GROK_HOME` |
 
 Provider API keys remain in the operating-system secret store and are never

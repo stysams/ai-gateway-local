@@ -12,7 +12,7 @@
 
 ### 2026-08-25
 
-- Claude Desktop 已接入客户端指向、状态检查、默认路由同步、推理 profile 还原和独立 MCP 配置还原；配置发现支持 `%LOCALAPPDATA%\Claude`、`%APPDATA%\Claude` 和 `%LOCALAPPDATA%\Claude-3p`，会优先使用唯一包含 `configLibrary` 的 profile 目录，避免把运行时目录误判为活动安装。
+- Claude Desktop 已接入客户端指向、状态检查、默认路由同步和推理 profile 还原；配置发现支持 `%LOCALAPPDATA%\Claude`、`%APPDATA%\Claude` 和 `%LOCALAPPDATA%\Claude-3p`，会优先使用唯一包含 `configLibrary` 的 profile 目录，且完全不修改客户端 MCP 配置。
 
 [查看完整发布说明](docs/releases/release-notes.md)
 
@@ -155,14 +155,14 @@ Models URL: http://127.0.0.1:12600/v1/models
 
 ### 5. 指向客户端
 
-桌面程序的“客户端”页面可以为 Codex、Claude Code、Claude Desktop 和 Grok Build 执行指向、查看状态和还原。Claude Desktop 会分别显示推理 profile 与 MCP 配置状态；两者使用独立的还原操作。指向操作会：
+桌面程序的“客户端”页面可以为 Codex、Claude Code、Claude Desktop 和 Grok Build 执行指向、查看状态和还原。Claude Desktop 只管理推理 profile，不读取或修改客户端 MCP 配置。指向操作会：
 
 - 创建带有 SHA-256 清单的备份。
 - 原子写入客户端配置。
 - 将客户端默认地址改为本机网关对应的客户端路径。
 - 同步该客户端可用的模型目录。
 - 按高级设置同步子代理和标题生成模型；Codex 在请求到达时分类，Claude Code 写入对应模型槽位。
-- 对 Claude Desktop 同步 `configLibrary` 推理 profile 和 `claude_desktop_config.json` 的部署模式；路由更新只同步网关管理字段，不创建新的还原点。
+- 对 Claude Desktop 只同步 `configLibrary` 推理 profile；路由更新只同步网关管理字段，不创建新的还原点，也不写入 `claude_desktop_config.json`。
 - 在失败时尝试还原原始内容。
 
 也可以使用管理接口执行相同操作，具体接口见下方“管理接口”。开始真实客户端验收前，请确认客户端已经安装，并准备好至少一个可用的上游提供商。

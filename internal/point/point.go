@@ -105,12 +105,7 @@ type Status struct {
 	Target           string     `json:"target"`
 	BackupAvailable  bool       `json:"backup_available"`
 	Message          string     `json:"message,omitempty"`
-	MCPPointState    State      `json:"mcp_point_state,omitempty"`
-	MCPTarget        string     `json:"mcp_target,omitempty"`
-	MCPBackup        bool       `json:"mcp_backup_available,omitempty"`
-	MCPMessage       string     `json:"mcp_message,omitempty"`
 	RestoredAt       *time.Time `json:"restored_at,omitempty"`
-	MCPRestoredAt    *time.Time `json:"mcp_restored_at,omitempty"`
 	RemoteCompaction *bool      `json:"remote_compaction,omitempty"`
 	SubagentModel    string     `json:"subagent_model,omitempty"`
 	TitleModel       string     `json:"title_model,omitempty"`
@@ -133,14 +128,13 @@ func (e *PartialFailureError) Error() string {
 func (e *PartialFailureError) Unwrap() error { return e.Cause }
 
 type Manifest struct {
-	Version       int                   `json:"version"`
-	Client        Client                `json:"client"`
-	CreatedAt     time.Time             `json:"created_at"`
-	Completed     bool                  `json:"completed"`
-	RestoredAt    *time.Time            `json:"restored_at"`
-	MCPRestoredAt *time.Time            `json:"mcp_restored_at,omitempty"`
-	Files         []ManifestFile        `json:"files"`
-	Environment   []ManifestEnvironment `json:"environment,omitempty"`
+	Version     int                   `json:"version"`
+	Client      Client                `json:"client"`
+	CreatedAt   time.Time             `json:"created_at"`
+	Completed   bool                  `json:"completed"`
+	RestoredAt  *time.Time            `json:"restored_at"`
+	Files       []ManifestFile        `json:"files"`
+	Environment []ManifestEnvironment `json:"environment,omitempty"`
 }
 
 type ManifestFile struct {
@@ -401,12 +395,11 @@ func (m *Manager) syncSettingsLocked(client Client, baseURL string, settings Set
 	return true, nil
 }
 
-func (m *Manager) Restore(client Client, baseURL string, settings Settings, restoreMCP ...bool) (Result, error) {
+func (m *Manager) Restore(client Client, baseURL string, settings Settings) (Result, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if client == ClientClaudeDesktop {
-		wantMCP := len(restoreMCP) > 0 && restoreMCP[0]
-		return m.restoreClaudeDesktop(baseURL, settings, wantMCP)
+		return m.restoreClaudeDesktop(baseURL, settings)
 	}
 	manifestPath := m.latestManifest(client)
 	if manifestPath == "" {

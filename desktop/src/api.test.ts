@@ -39,10 +39,11 @@ describe("management API client", () => {
     expect(fetcher).toHaveBeenCalledWith("http://127.0.0.1:12600/api/v1/clients/claude/helper-models", expect.objectContaining({ method: "PUT", body: "{\"subagent_model\":\"p/large\",\"title_model\":\"p/small\"}" }));
   });
 
-  it("sends the Claude Desktop MCP restore mode explicitly", async () => {
+  it("restores Claude Desktop without an MCP request body", async () => {
     const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ client: "claude-desktop" }));
-    await api.restore("claude-desktop", true);
-    expect(fetcher).toHaveBeenCalledWith("http://127.0.0.1:12600/api/v1/clients/claude-desktop/restore", expect.objectContaining({ method: "POST", body: "{\"restore_mcp\":true}" }));
+    await api.restore("claude-desktop");
+    expect(fetcher).toHaveBeenCalledWith("http://127.0.0.1:12600/api/v1/clients/claude-desktop/restore", expect.objectContaining({ method: "POST" }));
+    expect(fetcher.mock.calls[0][1]).not.toHaveProperty("body");
   });
 
   it("updates autostart through its dedicated endpoint", async () => {

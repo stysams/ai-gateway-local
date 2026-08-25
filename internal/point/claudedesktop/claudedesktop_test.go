@@ -1,7 +1,6 @@
 package claudedesktop
 
 import (
-	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -40,29 +39,6 @@ func TestTransformProfilePreservesUnknownRootValues(t *testing.T) {
 	}
 }
 
-func TestRestoreControlSeparatesDeploymentModeFromFullMCPRestore(t *testing.T) {
-	original := []byte(`{"mcpServers":{"demo":{"command":"node"}},"custom":1}`)
-	pointed, err := TransformControl(original)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok, err := CheckControl(pointed, true); err != nil || !ok {
-		t.Fatalf("CheckControl = %v, %v", ok, err)
-	}
-
-	profileRestore, changed, err := RestoreControl(pointed, true, original, true, false)
-	if err != nil || !changed {
-		t.Fatalf("pointed=%s; profile restore = %v, %v, %v", pointed, profileRestore, changed, err)
-	}
-	if matches, err := MCPMatches(profileRestore, true, original, true); err != nil || !matches {
-		t.Fatalf("MCPMatches after profile restore = %v, %v", matches, err)
-	}
-	fullRestore, changed, err := RestoreControl(pointed, true, original, true, true)
-	if err != nil || !changed || !bytes.Equal(fullRestore, original) {
-		t.Fatalf("full restore = %s, %v, %v", fullRestore, changed, err)
-	}
-}
-
 func TestSelectPrefersProfileRootOverRuntimeDirectories(t *testing.T) {
 	localAppData := t.TempDir()
 	appData := t.TempDir()
@@ -71,9 +47,6 @@ func TestSelectPrefersProfileRootOverRuntimeDirectories(t *testing.T) {
 		filepath.Join(appData, "Claude"),
 	} {
 		if err := os.MkdirAll(base, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(base, ControlFileName), []byte(`{"deploymentMode":"3p"}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}

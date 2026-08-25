@@ -21,9 +21,6 @@ import (
 const (
 	ProfileDirName     = "configLibrary"
 	MetaFileName       = "_meta.json"
-	ControlFileName    = "claude_desktop_config.json"
-	DeploymentModeKey  = "deploymentMode"
-	DeploymentMode3P   = "3p"
 	InferenceProvider  = "gateway"
 	CredentialKind     = "static"
 	AuthScheme         = "bearer"
@@ -37,11 +34,9 @@ type Root struct {
 	MetaPath         string
 	ProfileDir       string
 	ProfilePath      string
-	ControlPath      string
 	ProfileID        string
 	ProfileDirExists bool
 	MetaExists       bool
-	ControlExists    bool
 	ProfileExists    bool
 }
 
@@ -118,16 +113,12 @@ func roots(candidates []string) []Root {
 	for _, base := range candidates {
 		profileDir := filepath.Join(base, ProfileDirName)
 		metaPath := filepath.Join(profileDir, MetaFileName)
-		controlPath := filepath.Join(base, ControlFileName)
-		root := Root{Base: base, MetaPath: metaPath, ProfileDir: profileDir, ControlPath: controlPath}
+		root := Root{Base: base, MetaPath: metaPath, ProfileDir: profileDir}
 		if info, err := os.Stat(profileDir); err == nil {
 			root.ProfileDirExists = info.IsDir()
 		}
 		if _, err := os.Stat(metaPath); err == nil {
 			root.MetaExists = true
-		}
-		if _, err := os.Stat(controlPath); err == nil {
-			root.ControlExists = true
 		}
 		meta, err := os.ReadFile(metaPath)
 		if err != nil {
@@ -353,96 +344,6 @@ func NewProfileID() (string, error) {
 	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:32], nil
 }
 
-func TransformControl(data []byte) ([]byte, error) {
-	if data != nil && len(bytes.TrimSpace(data)) == 0 {
-		return nil, errors.New("Claude Desktop control file is empty")
-	}
-	return jsonedit.SetRootStrings(data, []jsonedit.KV{{Key: DeploymentModeKey, Value: DeploymentMode3P}})
-}
-
-func CheckControl(data []byte, exists bool) (bool, error) {
-	if !exists {
-		return false, nil
-	}
-	var doc struct {
-		DeploymentMode string `json:"deploymentMode"`
-	}
-	if err := decode(data, &doc); err != nil {
-		return false, err
-	}
-	return doc.DeploymentMode == DeploymentMode3P, nil
-}
-
-// RestoreControl restores only deploymentMode when restoreMCP is false. When
-// true, it restores the complete original control file after explicit consent.
-func RestoreControl(current []byte, currentExists bool, original []byte, originalExists bool, restoreMCP bool) ([]byte, bool, error) {
-	if restoreMCP {
-		if originalExists {
-			if err := validateObject(original); err != nil {
-				return nil, false, err
-			}
-			return append([]byte(nil), original...), true, nil
-		}
-		return nil, false, nil
-	}
-	if !currentExists {
-		return nil, false, nil
-	}
-	if err := validateObject(current); err != nil {
-		return nil, false, err
-	}
-	originalValue, hasOriginal, err := jsonedit.RootValue(original, DeploymentModeKey)
-	if originalExists && err != nil {
-		return nil, false, err
-	}
-	if hasOriginal {
-		updated, err := jsonedit.SetRootValues(current, []jsonedit.RawKV{{Key: DeploymentModeKey, Value: originalValue}})
-		return updated, true, err
-	}
-	updated, err := jsonedit.RemoveRootKeys(current, DeploymentModeKey)
-	if err != nil {
-		return nil, false, err
-	}
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(updated, &object); err != nil {
-		return nil, false, err
-	}
-	if len(object) == 0 {
-		return nil, false, nil
-	}
-	return updated, true, nil
-}
-
-// MCPMatches compares the control-file content after removing the gateway-owned
-// deploymentMode field. Formatting is irrelevant for this drift check, while
-// every remaining user field participates in the comparison.
-func MCPMatches(current []byte, currentExists bool, original []byte, originalExists bool) (bool, error) {
-	currentCanonical, err := withoutDeploymentMode(current, currentExists)
-	if err != nil {
-		return false, err
-	}
-	originalCanonical, err := withoutDeploymentMode(original, originalExists)
-	if err != nil {
-		return false, err
-	}
-	return bytes.Equal(currentCanonical, originalCanonical), nil
-}
-
-func withoutDeploymentMode(data []byte, exists bool) ([]byte, error) {
-	if !exists {
-		return []byte("{}"), nil
-	}
-	if err := validateObject(data); err != nil {
-		return nil, err
-	}
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(data, &object); err != nil {
-		return nil, err
-	}
-	delete(object, DeploymentModeKey)
-	return json.Marshal(object)
-}
-
 func sameGatewayURL(a, b string) bool {
 	x, err1 := url.Parse(a)
 	y, err2 := url.Parse(b)
@@ -468,17 +369,6 @@ func appliedID(data []byte) (string, error) {
 		return "", fmt.Errorf("Claude Desktop metadata appliedId must be a string: %w", err)
 	}
 	return id, nil
-}
-
-func validateObject(data []byte) error {
-	if len(bytes.TrimSpace(data)) == 0 {
-		return errors.New("Claude Desktop JSON is empty")
-	}
-	var object map[string]json.RawMessage
-	if err := decode(data, &object); err != nil {
-		return err
-	}
-	return nil
 }
 
 func decode(data []byte, target any) error {

@@ -50,10 +50,7 @@ export const api = {
   point: (client: PointClient) => request<PointStatus>(`/api/v1/clients/${client}/point`, { method: "POST" }),
   setCodexRemoteCompaction: (enabled: boolean) => request<PointStatus>("/api/v1/clients/codex/remote-compaction", { method: "PUT", body: JSON.stringify({ enabled }) }),
   setClientHelperModels: (client: "codex" | "claude", subagentModel: string, titleModel: string) => request<PointStatus>(`/api/v1/clients/${client}/helper-models`, { method: "PUT", body: JSON.stringify({ subagent_model: subagentModel, title_model: titleModel }) }),
-  restore: (client: PointClient, restoreMCP = false) => request<PointStatus>(`/api/v1/clients/${client}/restore`, {
-    method: "POST",
-    ...(client === "claude-desktop" ? { body: JSON.stringify({ restore_mcp: restoreMCP }) } : {}),
-  }),
+  restore: (client: PointClient) => request<PointStatus>(`/api/v1/clients/${client}/restore`, { method: "POST" }),
   logs: (cursor?: string) => {
     const query = new URLSearchParams({ limit: "20" });
     if (cursor) query.set("cursor", cursor);

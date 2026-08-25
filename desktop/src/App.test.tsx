@@ -227,14 +227,16 @@ describe("desktop workflow", () => {
     expect(confirm).toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/point"), expect.anything());
   });
 
-  it("separates Claude Desktop profile and MCP restore actions", async () => {
+  it("restores only the Claude Desktop inference profile", async () => {
     const user = userEvent.setup();
     vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<App />); await ready(); await user.click(screen.getByRole("button", { name: "Clients" }));
     expect(screen.getByRole("heading", { name: "Claude Desktop" })).toBeVisible();
-    expect(screen.getByText("MCP configuration")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Restore MCP configuration" }));
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/clients/claude-desktop/restore"), expect.objectContaining({ method: "POST", body: "{\"restore_mcp\":true}" })));
+    expect(screen.queryByText("MCP configuration")).not.toBeInTheDocument();
+    const desktopCard = screen.getByRole("heading", { name: "Claude Desktop" }).closest("article");
+    expect(desktopCard).not.toBeNull();
+    await user.click(within(desktopCard!).getByRole("button", { name: "Restore" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/clients/claude-desktop/restore"), expect.objectContaining({ method: "POST" })));
   });
 
   it("toggles Codex remote compaction from the clients page", async () => {
