@@ -123,7 +123,7 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleStatus reports version, pid, listener, config-derived flags and the
-// fixed four client routes and live point state.
+// fixed five client routes and live point state.
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	cfg := s.cfg.View()
 	if cfg == nil {
@@ -133,6 +133,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	baseURL := s.ClientBaseURL(cfg)
 	codexState := s.points.Check("codex", baseURL, s.clientSettings(cfg, "codex"))
 	claudeState := s.points.Check("claude", baseURL, s.clientSettings(cfg, "claude"))
+	claudeDesktopState := s.points.Check("claude-desktop", baseURL, s.clientSettings(cfg, "claude-desktop"))
 	grokState := s.points.Check("grok", baseURL, s.clientSettings(cfg, "grok"))
 	st := StatusResponse{
 		Version:            s.version,
@@ -143,16 +144,18 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		LoggingBodyEnabled: cfg.Logging.BodyValue(),
 		AutostartEnabled:   cfg.Autostart.Enabled,
 		Clients: map[string]ClientStatus{
-			"codex":   {PointState: string(codexState.PointState)},
-			"claude":  {PointState: string(claudeState.PointState)},
-			"grok":    {PointState: string(grokState.PointState)},
-			"generic": {PointState: "unknown"},
+			"codex":          {PointState: string(codexState.PointState)},
+			"claude":         {PointState: string(claudeState.PointState)},
+			"claude-desktop": {PointState: string(claudeDesktopState.PointState)},
+			"grok":           {PointState: string(grokState.PointState)},
+			"generic":        {PointState: "unknown"},
 		},
 		Routes: map[string]RouteStatus{
-			"codex":   {Provider: cfg.Routes.Codex.Provider, Model: cfg.Routes.Codex.Model},
-			"claude":  {Provider: cfg.Routes.Claude.Provider, Model: cfg.Routes.Claude.Model},
-			"grok":    {Provider: cfg.Routes.Grok.Provider, Model: cfg.Routes.Grok.Model},
-			"generic": {Provider: cfg.Routes.Generic.Provider, Model: cfg.Routes.Generic.Model},
+			"codex":          {Provider: cfg.Routes.Codex.Provider, Model: cfg.Routes.Codex.Model},
+			"claude":         {Provider: cfg.Routes.Claude.Provider, Model: cfg.Routes.Claude.Model},
+			"claude-desktop": {Provider: cfg.Routes.ClaudeDesktop.Provider, Model: cfg.Routes.ClaudeDesktop.Model},
+			"grok":           {Provider: cfg.Routes.Grok.Provider, Model: cfg.Routes.Grok.Model},
+			"generic":        {Provider: cfg.Routes.Generic.Provider, Model: cfg.Routes.Generic.Model},
 		},
 	}
 	writeJSON(w, http.StatusOK, st)

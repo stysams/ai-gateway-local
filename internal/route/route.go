@@ -10,15 +10,16 @@ import (
 	"ai-gateway/internal/config"
 )
 
-// ClientID is one of the four fixed first-class clients
+// ClientID is one of the fixed first-class clients
 // (docs/v1-scheme.md §7.1).
 type ClientID string
 
 const (
-	Codex   ClientID = "codex"
-	Claude  ClientID = "claude"
-	Grok    ClientID = "grok"
-	Generic ClientID = "generic"
+	Codex         ClientID = "codex"
+	Claude        ClientID = "claude"
+	ClaudeDesktop ClientID = "claude-desktop"
+	Grok          ClientID = "grok"
+	Generic       ClientID = "generic"
 )
 
 // ReservedModel is the gateway-reserved model name meaning "use the model of
@@ -26,7 +27,7 @@ const (
 const ReservedModel = "gateway-default"
 
 var validClients = map[ClientID]bool{
-	Codex: true, Claude: true, Grok: true, Generic: true,
+	Codex: true, Claude: true, ClaudeDesktop: true, Grok: true, Generic: true,
 }
 
 // Valid reports whether id is one of the four fixed client ids.
@@ -53,6 +54,8 @@ func RouteFor(cfg *config.Config, client ClientID) config.Route {
 		return cfg.Routes.Codex
 	case Claude:
 		return cfg.Routes.Claude
+	case ClaudeDesktop:
+		return cfg.Routes.ClaudeDesktop
 	case Grok:
 		return cfg.Routes.Grok
 	default:
@@ -90,6 +93,9 @@ type Resolution struct {
 // unique ownership must not fail with "provider <route> is disabled".
 func Resolve(client ClientID, requestedModel string, cfg *config.Config) (Resolution, error) {
 	requestedModel = DecodeClaudePickerID(requestedModel)
+	if client == ClaudeDesktop && isClaudeDesktopFamilyModel(requestedModel) {
+		requestedModel = ReservedModel
+	}
 	r := RouteFor(cfg, client)
 	if r.Provider == "" {
 		return Resolution{}, fmt.Errorf("route for client %q is not configured", client)
@@ -152,6 +158,15 @@ func Resolve(client ClientID, requestedModel string, cfg *config.Config) (Resolu
 		return Resolution{}, fmt.Errorf("model %q is disabled for provider %q", requestedModel, r.Provider)
 	}
 	return Resolution{Provider: r.Provider, Model: requestedModel}, nil
+}
+
+func isClaudeDesktopFamilyModel(model string) bool {
+	switch model {
+	case "claude-sonnet-5", "claude-opus-5", "claude-fable-5", "claude-haiku-4-5":
+		return true
+	default:
+		return false
+	}
 }
 
 func loadEnabledRouteProvider(cfg *config.Config, client ClientID, r config.Route) (config.Provider, error) {

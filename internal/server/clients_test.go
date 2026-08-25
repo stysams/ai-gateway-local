@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -135,6 +136,131 @@ func TestClientPointAndRestoreAPI(t *testing.T) {
 				t.Fatalf("restored bytes = %q, want %q", restored, tt.original)
 			}
 		})
+	}
+}
+
+func TestClaudeDesktopPointRouteAndSeparateRestoreAPI(t *testing.T) {
+	dataRoot := t.TempDir()
+	localAppData := filepath.Join(dataRoot, "localappdata")
+	desktopRoot := filepath.Join(localAppData, "Claude")
+	profileDir := filepath.Join(desktopRoot, "configLibrary")
+	profileID := "existing-profile"
+	profilePath := filepath.Join(profileDir, profileID+".json")
+	metaPath := filepath.Join(profileDir, "_meta.json")
+	controlPath := filepath.Join(desktopRoot, "claude_desktop_config.json")
+	profileOriginal := []byte(`{"custom":{"keep":true},"modelDiscoveryEnabled":true}`)
+	metaOriginal := []byte(`{"appliedId":"existing-profile","entries":[{"id":"existing-profile","name":"Personal"}],"custom":true}`)
+	controlOriginal := []byte(`{"mcpServers":{"demo":{"command":"node"}},"custom":1}`)
+	if err := os.MkdirAll(profileDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for path, data := range map[string][]byte{profilePath: profileOriginal, metaPath: metaOriginal, controlPath: controlOriginal} {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s := newTestServer(t)
+	s.points = point.NewWithOptions(dataRoot, point.Options{
+		HomeDir: filepath.Join(dataRoot, "home"),
+		LookupEnv: func(name string) (string, bool) {
+			if name == "LOCALAPPDATA" {
+				return localAppData, true
+			}
+			return "", false
+		},
+		CommandExists:           func(string) bool { return false },
+		Environment:             point.NewMemoryEnvironment(),
+		LoadCodexBundledCatalog: testCodexCatalogLoader(),
+	})
+	ts := httptest.NewServer(s.routes())
+	defer ts.Close()
+	clientPath := "/api/v1/clients/claude-desktop"
+
+	resp, body := clientJSON(t, ts, http.MethodGet, clientPath)
+	assertPointState(t, resp, body, http.StatusOK, point.StateNotPointed)
+	var initial point.Status
+	if err := json.Unmarshal(body, &initial); err != nil {
+		t.Fatal(err)
+	}
+	if initial.MCPPointState != point.StateDrifted {
+		t.Fatalf("initial MCP state = %q, want drifted for an existing non-3p control file", initial.MCPPointState)
+	}
+
+	resp, body = clientJSON(t, ts, http.MethodPost, clientPath+"/point")
+	assertPointState(t, resp, body, http.StatusOK, point.StatePointed)
+	var pointed point.Result
+	if err := json.Unmarshal(body, &pointed); err != nil {
+		t.Fatal(err)
+	}
+	if pointed.MCPPointState != point.StatePointed || !pointed.Changed || pointed.BackupDir == "" {
+		t.Fatalf("point result = %+v", pointed)
+	}
+	pointedProfile, err := os.ReadFile(pointed.Target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pointedProfile), `"inferenceProvider": "gateway"`) {
+		t.Fatalf("profile was not transformed: %s", pointedProfile)
+	}
+	pointedControl, err := os.ReadFile(controlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pointedControl), `"deploymentMode": "3p"`) {
+		t.Fatalf("control file was not transformed: %s", pointedControl)
+	}
+	backupsBefore, _ := filepath.Glob(filepath.Join(dataRoot, "backups", string(point.ClientClaudeDesktop), "*", "manifest.json"))
+
+	resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPut, "/api/v1/routes/claude-desktop", RouteRequest{Provider: "ollama", Model: "qwen3"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Claude Desktop route update = %d, body = %s", resp.StatusCode, body)
+	}
+	updatedProfile, err := os.ReadFile(pointed.Target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(updatedProfile), `"labelOverride":"ollama/qwen3"`) {
+		t.Fatalf("route update did not sync profile: %s", updatedProfile)
+	}
+	backupsAfter, _ := filepath.Glob(filepath.Join(dataRoot, "backups", string(point.ClientClaudeDesktop), "*", "manifest.json"))
+	if len(backupsAfter) != len(backupsBefore) {
+		t.Fatalf("route update created a new restore point: before=%d after=%d", len(backupsBefore), len(backupsAfter))
+	}
+	if got := s.cfg.View().Routes.ClaudeDesktop; got.Provider != "ollama" || got.Model != "qwen3" {
+		t.Fatalf("persisted Claude Desktop route = %+v", got)
+	}
+
+	resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPost, clientPath+"/restore", map[string]any{"restore_mcp": true})
+	assertPointState(t, resp, body, http.StatusOK, point.StatePointed)
+	var mcpRestored point.Result
+	if err := json.Unmarshal(body, &mcpRestored); err != nil {
+		t.Fatal(err)
+	}
+	if mcpRestored.MCPPointState == point.StatePointed {
+		t.Fatalf("MCP state after explicit MCP restore = %q, want not pointed or drifted", mcpRestored.MCPPointState)
+	}
+	restoredControl, err := os.ReadFile(controlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(restoredControl, controlOriginal) {
+		t.Fatalf("MCP restore bytes = %q, want %q", restoredControl, controlOriginal)
+	}
+
+	resp, body = httpJSON(t, ts.Listener.Addr().String(), http.MethodPost, clientPath+"/restore", map[string]any{"restore_mcp": false})
+	assertPointState(t, resp, body, http.StatusOK, point.StateNotPointed)
+	var profileRestored point.Result
+	if err := json.Unmarshal(body, &profileRestored); err != nil {
+		t.Fatal(err)
+	}
+	if profileRestored.MCPPointState == point.StatePointed {
+		t.Fatalf("MCP state after full inference restore = %q", profileRestored.MCPPointState)
+	}
+	if restored, err := os.ReadFile(profilePath); err != nil {
+		t.Fatal(err)
+	} else if !bytes.Equal(restored, profileOriginal) {
+		t.Fatalf("original Claude Desktop profile bytes = %q, want %q", restored, profileOriginal)
 	}
 }
 

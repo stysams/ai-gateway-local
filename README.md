@@ -1,6 +1,6 @@
 # ai-gateway
 
-`ai-gateway` 是一个运行在本机当前用户会话中的单用户人工智能代理网关。它让 Codex、Claude Code、Grok Build，以及兼容 OpenAI 或 Anthropic 协议的本地应用统一通过一个本地地址访问多个上游模型。
+`ai-gateway` 是一个运行在本机当前用户会话中的单用户人工智能代理网关。它让 Codex、Claude Code、Claude Desktop、Grok Build，以及兼容 OpenAI 或 Anthropic 协议的本地应用统一通过一个本地地址访问多个上游模型。
 
 网关负责本地路由、协议转换、模型目录、请求日志和用量统计。上游 API 密钥保存在操作系统的密钥存储中，不写入 `config.yaml`、客户端配置文件、管理接口响应或正文日志。
 
@@ -10,17 +10,16 @@
 
 ## 最新更新
 
-### 2026-08-24
+### 2026-08-25
 
-- 供应商伪装客户端新增 Pi。第三方 `/v1` 请求可按 Pi 客户端身份发送 `User-Agent: Pi Agent/1.0`，桌面供应商表单同时提供 Pi 预设。
-- 客户端高级设置新增 Codex 与 Claude Code 的子代理模型、标题生成模型选择；空值跟随当前客户端路由。
+- Claude Desktop 已接入客户端指向、状态检查、默认路由同步、推理 profile 还原和独立 MCP 配置还原；配置发现支持 `%LOCALAPPDATA%\Claude`、`%APPDATA%\Claude` 和 `%LOCALAPPDATA%\Claude-3p`。
 
 [查看完整发布说明](docs/releases/release-notes.md)
 
 ## 功能概览
 
 - 支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages，包括三协议间的 JSON Schema 结构化输出和严格函数工具转换。
-- 为 Codex、Claude Code、Grok Build 和通用应用分别配置默认路由。
+- 为 Codex、Claude Code、Claude Desktop、Grok Build 和通用应用分别配置默认路由。
 - 一个提供商可以维护多个模型，每个模型可以单独选择 Chat、Responses 或 Messages 接口，并可从上游模型接口发现模型元数据。
 - 支持图片输入、推理或思考内容，以及不支持能力时的明确降级提示。
 - 为每个请求记录脱敏的 JSONL 事件，并汇总上游真实返回的令牌用量。
@@ -156,13 +155,14 @@ Models URL: http://127.0.0.1:12600/v1/models
 
 ### 5. 指向客户端
 
-桌面程序的“客户端”页面可以为 Codex、Claude Code 和 Grok Build 执行指向、查看状态和还原。指向操作会：
+桌面程序的“客户端”页面可以为 Codex、Claude Code、Claude Desktop 和 Grok Build 执行指向、查看状态和还原。Claude Desktop 会分别显示推理 profile 与 MCP 配置状态；两者使用独立的还原操作。指向操作会：
 
 - 创建带有 SHA-256 清单的备份。
 - 原子写入客户端配置。
 - 将客户端默认地址改为本机网关对应的客户端路径。
 - 同步该客户端可用的模型目录。
 - 按高级设置同步子代理和标题生成模型；Codex 在请求到达时分类，Claude Code 写入对应模型槽位。
+- 对 Claude Desktop 同步 `configLibrary` 推理 profile 和 `claude_desktop_config.json` 的部署模式；路由更新只同步网关管理字段，不创建新的还原点。
 - 在失败时尝试还原原始内容。
 
 也可以使用管理接口执行相同操作，具体接口见下方“管理接口”。开始真实客户端验收前，请确认客户端已经安装，并准备好至少一个可用的上游提供商。

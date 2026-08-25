@@ -61,10 +61,11 @@ type ConfigProviderPayload struct {
 	Capabilities   CapabilitiesPayload    `json:"capabilities"`
 }
 type ConfigRoutesPayload struct {
-	Codex   RouteStatus `json:"codex"`
-	Claude  RouteStatus `json:"claude"`
-	Grok    RouteStatus `json:"grok"`
-	Generic RouteStatus `json:"generic"`
+	Codex         RouteStatus `json:"codex"`
+	Claude        RouteStatus `json:"claude"`
+	ClaudeDesktop RouteStatus `json:"claude_desktop"`
+	Grok          RouteStatus `json:"grok"`
+	Generic       RouteStatus `json:"generic"`
 }
 
 func configPayload(cfg *config.Config) ConfigPayload {
@@ -78,7 +79,8 @@ func configPayload(cfg *config.Config) ConfigPayload {
 		Providers: make(map[string]ConfigProviderPayload, len(cfg.Providers)),
 		Routes: ConfigRoutesPayload{
 			Codex: routeStatus(cfg.Routes.Codex), Claude: routeStatus(cfg.Routes.Claude),
-			Grok: routeStatus(cfg.Routes.Grok), Generic: routeStatus(cfg.Routes.Generic),
+			ClaudeDesktop: routeStatus(cfg.Routes.ClaudeDesktop),
+			Grok:          routeStatus(cfg.Routes.Grok), Generic: routeStatus(cfg.Routes.Generic),
 		},
 	}
 	for id, p := range cfg.Providers {
@@ -128,10 +130,11 @@ func (p ConfigPayload) toConfig() *config.Config {
 		Autostart: config.Autostart{Enabled: p.Autostart.Enabled},
 		Providers: providers,
 		Routes: config.Routes{
-			Codex:   config.Route{Provider: p.Routes.Codex.Provider, Model: p.Routes.Codex.Model},
-			Claude:  config.Route{Provider: p.Routes.Claude.Provider, Model: p.Routes.Claude.Model},
-			Grok:    config.Route{Provider: p.Routes.Grok.Provider, Model: p.Routes.Grok.Model},
-			Generic: config.Route{Provider: p.Routes.Generic.Provider, Model: p.Routes.Generic.Model},
+			Codex:         config.Route{Provider: p.Routes.Codex.Provider, Model: p.Routes.Codex.Model},
+			Claude:        config.Route{Provider: p.Routes.Claude.Provider, Model: p.Routes.Claude.Model},
+			ClaudeDesktop: config.Route{Provider: p.Routes.ClaudeDesktop.Provider, Model: p.Routes.ClaudeDesktop.Model},
+			Grok:          config.Route{Provider: p.Routes.Grok.Provider, Model: p.Routes.Grok.Model},
+			Generic:       config.Route{Provider: p.Routes.Generic.Provider, Model: p.Routes.Generic.Model},
 		},
 	}
 }

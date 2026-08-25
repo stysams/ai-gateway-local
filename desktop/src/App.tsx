@@ -24,8 +24,8 @@ type Toast = { id: number; kind: ToastKind; message: string };
 type RefreshResource = "status" | "localAccess" | "config" | "providers" | "clients" | "logs" | "usage";
 type RunOperation = (operation: () => Promise<unknown>, message?: string, resources?: RefreshResource[]) => Promise<void>;
 type UsageQuery = { from?: string; to?: string; provider?: string; model?: string; client?: string; status?: string };
-const pointClients: PointClient[] = ["codex", "claude", "grok"];
-const allClients: ClientID[] = ["codex", "claude", "grok", "generic"];
+const pointClients: PointClient[] = ["codex", "claude", "claude-desktop", "grok"];
+const allClients: ClientID[] = ["codex", "claude", "claude-desktop", "grok", "generic"];
 
 type NavigationGroup = "workspace" | "configuration" | "observe" | "systemGroup";
 
@@ -110,6 +110,17 @@ function discoveryAdapter(form: Pick<ProviderFormValue, "adapter" | "default_mod
 
 function protocolLabel(adapter: string, t: (key: MessageKey) => string): string {
   return adapter === "custom" ? t("customProtocol") : adapter;
+}
+
+function clientDisplayName(client: ClientID, t: (key: MessageKey) => string): string {
+  const labels: Record<ClientID, MessageKey> = {
+    codex: "codexClient",
+    claude: "claudeCode",
+    "claude-desktop": "claudeDesktop",
+    grok: "grokBuild",
+    generic: "genericClient",
+  };
+  return t(labels[client]);
 }
 
 function displayedEndpoint(model: ProviderModel, fallback: string): string {
@@ -309,7 +320,7 @@ function Overview({ status, usage, logs, t, navigate }: { status: Status | null;
         {recentLogs.length === 0 ? <Empty text={t("noLogs")} /> : <div className="overview-request-table" role="table" aria-label={t("liveTraffic")}><div className="overview-request-row overview-request-head" role="row"><span>{t("requestTime")}</span><span>{t("clients")}</span><span>{t("upstreamModel")}</span><span>{t("duration")}</span><span>{t("status")}</span></div>{recentLogs.map((item) => <div className="overview-request-row" role="row" key={item.request_id}><time className="mono" dateTime={item.started_at}>{new Date(item.started_at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time><span>{item.client || "generic"}</span><span><strong>{item.provider || t("unknown")}</strong><small className="mono">{item.model || t("unknown")}</small></span><span className="mono overview-duration">{item.duration_ms || 0} ms</span><State value={item.status} /></div>)}</div>}
       </div>
       <aside className="overview-panel route-watch"><SectionHeader title={t("routeAttention")} description={t("routeAttentionDescription")} />
-        <div className="route-watch-list">{routeIssues.length === 0 ? <div className="route-watch-empty"><ShieldCheck size={18} /><span>{t("noRouteIssues")}</span></div> : routeIssues.map((client) => <button className="route-watch-item" key={client} onClick={() => navigate("clients")}><span className="watch-icon"><CircleAlert size={16} /></span><span><b>{client}</b><State value={status.clients[client].point_state} /></span><ChevronRight size={16} /></button>)}</div>
+        <div className="route-watch-list">{routeIssues.length === 0 ? <div className="route-watch-empty"><ShieldCheck size={18} /><span>{t("noRouteIssues")}</span></div> : routeIssues.map((client) => <button className="route-watch-item" key={client} onClick={() => navigate("clients")}><span className="watch-icon"><CircleAlert size={16} /></span><span><b>{clientDisplayName(client, t)}</b><State value={status.clients[client].point_state} /></span><ChevronRight size={16} /></button>)}</div>
         <button className="secondary overview-wide-action" onClick={() => navigate("routes")}><RoutesIcon size={15} />{t("checkAllRoutes")}</button>
       </aside>
     </section>
@@ -496,7 +507,7 @@ function Routes({ status, providers, t, run }: { status: Status; providers: Prov
       const currentId = currentKnown ? catalogId(draft[client]) : "";
       const savedId = catalogId(status.routes[client]);
       const canApply = currentKnown && currentId !== savedId;
-      return <div className="route-row" key={client}><div><strong className="mono">{client}</strong><small>/c/{client}/v1</small></div><label><span>{t("defaultSelectedModel")}</span><select className="mono" required aria-required="true" aria-invalid={!currentKnown} aria-label={`${client} ${t("defaultSelectedModel")}`} title={currentId} value={currentId} onChange={(event) => selectRoute(client, event.target.value)}><option value="" disabled>{t("selectDefaultModel")}</option>{catalog.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select>{currentId && <small className="route-selected-value mono">{t("fullValue")}: {currentId}</small>}{!currentKnown && <small className="field-error">{t("routeUnavailable")}</small>}</label><button className="secondary" disabled={!canApply} onClick={() => applyRoute(client)}><Check size={16} />{t("apply")}</button></div>;
+      return <div className="route-row" key={client}><div><strong className="mono">{clientDisplayName(client, t)}</strong><small>/c/{client}/v1</small></div><label><span>{t("defaultSelectedModel")}</span><select className="mono" required aria-required="true" aria-invalid={!currentKnown} aria-label={`${client} ${t("defaultSelectedModel")}`} title={currentId} value={currentId} onChange={(event) => selectRoute(client, event.target.value)}><option value="" disabled>{t("selectDefaultModel")}</option>{catalog.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select>{currentId && <small className="route-selected-value mono">{t("fullValue")}: {currentId}</small>}{!currentKnown && <small className="field-error">{t("routeUnavailable")}</small>}</label><button className="secondary" disabled={!canApply} onClick={() => applyRoute(client)}><Check size={16} />{t("apply")}</button></div>;
     })}</div></div>
     <div className="route-catalog-header"><div><h3>{t("routeCatalog")}</h3><p className="muted">{t("availabilityDescription")}</p></div><span className="mono muted">{providers.length} {t("providers")}</span></div>
     <div className="route-tree" aria-label={t("routeCatalog")}>{providers.map((provider) => { const treeModels = provider.models?.length ? provider.models : [{ id: provider.default_model, name: "" }]; const expanded = expandedProviders.has(provider.id); const enabledCount = treeModels.filter((model) => model.enabled !== false).length; return <div className="tree-provider" key={provider.id}><div className="tree-provider-row"><button className="tree-provider-toggle" onClick={() => toggleExpanded(provider.id)} aria-expanded={expanded} aria-label={`${provider.name} ${expanded ? t("hideModels") : t("showModels")}`}><ChevronRight className={expanded ? "expanded" : ""} size={15} /><span><b>{provider.name}</b><small>{enabledCount}/{treeModels.length} {t("models")}</small></span></button><span className="mono muted">{provider.id}</span><label className="switch"><input type="checkbox" checked={provider.enabled !== false} onChange={(event) => toggleProvider(provider, event.target.checked)} aria-label={`${t("provider")} ${provider.name}`} /><span /><b>{provider.enabled === false ? t("disabled") : t("enabled")}</b></label></div>{expanded && <div className="tree-models">{treeModels.map((model) => <div className="tree-model-row" key={model.id}><span className="tree-branch" aria-hidden="true"><ChevronRight size={14} /></span><span className="mono">{`${provider.id}/${model.id}`}</span><label className="switch"><input type="checkbox" checked={provider.enabled !== false && model.enabled !== false} disabled={provider.enabled === false} onChange={(event) => toggleModel(provider, model, event.target.checked)} aria-label={`${provider.id}/${model.id} ${t("enabled")}`} /><span /><b>{model.enabled === false ? t("disabled") : t("enabled")}</b></label></div>)}</div>}</div>; })}</div>
@@ -507,13 +518,18 @@ function Clients({ clients, providers, t, run }: { clients: Record<string, Point
   const catalog = useMemo(() => enabledCatalog(providers), [providers]);
   return <section><SectionHeader title={t("clients")} hideTitle description={t("clientsDescription")} /><div className="client-list">{pointClients.map((client) => {
     const value = clients[client];
+    const isClaudeDesktop = client === "claude-desktop";
+    const profilePointed = value?.point_state === "pointed";
+    const mcpPointed = value?.mcp_point_state === "pointed";
+    const fullyPointed = profilePointed && (!isClaudeDesktop || mcpPointed);
     return <article className="client-item" key={client}>
       <div className="client-main">
-        <div className="client-title"><div className="client-icon"><ClientsIcon size={18} /></div><div><h3>{client}</h3><State value={value?.point_state || "unknown"} /></div></div>
-        <dl><dt>{t("target")}</dt><dd className="mono">{value?.target || "—"}</dd></dl>
-        <div className="client-actions"><button className="primary" disabled={value?.point_state === "pointed" || value?.point_state === "client_not_installed"} onClick={() => { if (confirm(t("confirmPoint"))) void run(() => api.point(client), t("success"), ["clients", "status"]); }}><Cable size={16} />{t("point")}</button><button className="secondary" disabled={!value?.backup_available} onClick={() => { if (confirm(t("confirmRestore"))) void run(() => api.restore(client), t("success"), ["clients", "status"]); }}><RotateCcw size={16} />{t("restore")}</button></div>
+        <div className="client-title"><div className="client-icon"><ClientsIcon size={18} /></div><div><h3>{clientDisplayName(client, t)}</h3><div className="client-state-list"><State value={value?.point_state || "unknown"} />{isClaudeDesktop && <State value={value?.mcp_point_state || "unknown"} />}</div></div></div>
+        <div className="client-targets"><dl><dt>{t("target")}</dt><dd className="mono">{value?.target || "—"}</dd></dl>{isClaudeDesktop && <dl><dt>{t("mcpTarget")}</dt><dd className="mono">{value?.mcp_target || "—"}</dd></dl>}</div>
+        <div className="client-actions"><button className="primary" disabled={fullyPointed || value?.point_state === "client_not_installed"} onClick={() => { if (confirm(t("confirmPoint"))) void run(() => api.point(client), t("success"), ["clients", "status"]); }}><Cable size={16} />{t("point")}</button>{isClaudeDesktop ? <><button className="secondary" disabled={!value?.backup_available} onClick={() => { if (confirm(t("confirmRestore"))) void run(() => api.restore(client, false), t("success"), ["clients", "status"]); }}><RotateCcw size={16} />{t("restoreInference")}</button><button className="secondary" disabled={!value?.mcp_backup_available} onClick={() => { if (confirm(t("confirmRestoreMcp"))) void run(() => api.restore(client, true), t("success"), ["clients", "status"]); }}><RotateCcw size={16} />{t("restoreMcp")}</button></> : <button className="secondary" disabled={!value?.backup_available} onClick={() => { if (confirm(t("confirmRestore"))) void run(() => api.restore(client), t("success"), ["clients", "status"]); }}><RotateCcw size={16} />{t("restore")}</button>}</div>
       </div>
       {value?.message && <p className="client-message muted">{value.message}</p>}
+      {isClaudeDesktop && value?.mcp_message && <p className="client-message muted">{value.mcp_message}</p>}
       {(client === "codex" || client === "claude") && <ClientAdvancedSettings key={`${client}:${value?.subagent_model || ""}:${value?.title_model || ""}`} client={client} value={value} catalog={catalog} t={t} run={run} />}
     </article>;
   })}</div></section>;

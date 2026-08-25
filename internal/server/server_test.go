@@ -343,7 +343,7 @@ func TestStatusFields(t *testing.T) {
 	if st.AutostartEnabled {
 		t.Error("AutostartEnabled = true, want false (default)")
 	}
-	for _, name := range []string{"codex", "claude", "grok", "generic"} {
+	for _, name := range []string{"codex", "claude", "claude-desktop", "grok", "generic"} {
 		cs, ok := st.Clients[name]
 		if !ok {
 			t.Errorf("client %q missing", name)

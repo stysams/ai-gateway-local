@@ -1,4 +1,4 @@
-export type ClientID = "codex" | "claude" | "grok" | "generic";
+export type ClientID = "codex" | "claude" | "claude-desktop" | "grok" | "generic";
 export type PointClient = Exclude<ClientID, "generic">;
 
 export interface Route { provider: string; model: string }
@@ -10,7 +10,7 @@ export interface Status {
   logging_enabled: boolean;
   logging_body_enabled: boolean;
   autostart_enabled: boolean;
-  clients: Record<ClientID, { point_state: string }>;
+  clients: Record<ClientID, { point_state: string; mcp_point_state?: string }>;
   routes: Record<ClientID, Route>;
 }
 export interface LocalAccessModel {
@@ -93,6 +93,11 @@ export interface PointStatus {
   remote_compaction?: boolean;
   subagent_model?: string;
   title_model?: string;
+  mcp_point_state?: string;
+  mcp_target?: string;
+  mcp_backup_available?: boolean;
+  mcp_message?: string;
+  mcp_restored_at?: string;
 }
 export interface LogSummary {
   request_id: string;

@@ -26,7 +26,7 @@ func testConfig() *config.Config {
 }
 
 func TestParseClientID(t *testing.T) {
-	valid := []string{"codex", "claude", "grok", "generic"}
+	valid := []string{"codex", "claude", "claude-desktop", "grok", "generic"}
 	for _, s := range valid {
 		id, err := ParseClientID(s)
 		if err != nil || !id.Valid() {
@@ -48,6 +48,7 @@ func TestRouteFor(t *testing.T) {
 	}{
 		{Codex, "openrouter"},
 		{Claude, "openrouter"},
+		{ClaudeDesktop, "openrouter"},
 		{Grok, "openrouter"},
 		{Generic, "ollama"},
 	}
@@ -106,6 +107,37 @@ func TestResolveClaudePickerAlias(t *testing.T) {
 			t.Errorf("Resolve(%q) = %+v, want provider=%s model=%s",
 				tc.requested, res, tc.provider, tc.model)
 		}
+	}
+}
+
+func TestResolveClaudeDesktopFamilyModelsUseDesktopRoute(t *testing.T) {
+	cfg := testConfig()
+	cfg.Routes.Claude = config.Route{Provider: "ollama", Model: "qwen3"}
+	cfg.Routes.ClaudeDesktop = config.Route{Provider: "openrouter", Model: "anthropic/claude-opus-5"}
+	for _, model := range []string{"claude-sonnet-5", "claude-opus-5", "claude-fable-5", "claude-haiku-4-5"} {
+		res, err := Resolve(ClaudeDesktop, model, cfg)
+		if err != nil {
+			t.Fatalf("Resolve(ClaudeDesktop, %q): %v", model, err)
+		}
+		if res.Provider != "openrouter" || res.Model != "anthropic/claude-opus-5" {
+			t.Errorf("Resolve(ClaudeDesktop, %q) = %+v, want Desktop route", model, res)
+		}
+	}
+	res, err := Resolve(Claude, "claude-sonnet-5", cfg)
+	if err == nil || err.Error() != UnmatchedModelMessage("claude-sonnet-5") {
+		t.Fatalf("Claude Code family name = %v, want unchanged routing semantics", err)
+	}
+	res, err = Resolve(Generic, "claude-sonnet-5", cfg)
+	if err == nil || res.Provider != "" {
+		t.Fatalf("Generic family name = %+v, %v, want no Desktop mapping", res, err)
+	}
+}
+
+func TestResolveClaudeDesktopWithoutRouteIsNotConfigured(t *testing.T) {
+	cfg := testConfig()
+	cfg.Routes.ClaudeDesktop = config.Route{}
+	if _, err := Resolve(ClaudeDesktop, "claude-sonnet-5", cfg); err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("Desktop without route error = %v", err)
 	}
 }
 

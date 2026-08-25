@@ -37,6 +37,7 @@ type KV struct {
 
 type member struct {
 	key       string
+	keyFrom   int
 	indent    string
 	valueFrom int
 	valueTo   int
@@ -54,6 +55,148 @@ type splice struct {
 	to   int
 	seq  int
 	text string
+}
+
+// RawKV is one root-object key and its already encoded JSON value.
+type RawKV struct {
+	Key   string
+	Value []byte
+}
+
+// SetRootStrings merges string values into the root object. Unnamed members
+// keep their original bytes, order and formatting.
+func SetRootStrings(data []byte, kvs []KV) ([]byte, error) {
+	raw := make([]RawKV, 0, len(kvs))
+	for _, kv := range kvs {
+		raw = append(raw, RawKV{Key: kv.Key, Value: []byte(encodeString(kv.Value))})
+	}
+	return SetRootValues(data, raw)
+}
+
+// SetRootValues replaces or appends named root-object values without
+// re-encoding unrelated members.
+func SetRootValues(data []byte, kvs []RawKV) ([]byte, error) {
+	for _, kv := range kvs {
+		if kv.Key == "" || !json.Valid(kv.Value) {
+			return nil, errors.New("invalid root JSON value")
+		}
+	}
+	newline := detectNewline(data)
+	if len(bytes.TrimSpace(data)) == 0 {
+		return renderRoot(kvs, newline), nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	root, err := scanObject(data, decoder, "", 0)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("trailing JSON data")
+	}
+	var edits []splice
+	var appended []RawKV
+	for _, kv := range kvs {
+		existing := root.member(kv.Key)
+		if existing == nil {
+			appended = append(appended, kv)
+			continue
+		}
+		edits = append(edits, splice{from: existing.valueFrom, to: existing.valueTo, text: string(kv.Value)})
+	}
+	if len(appended) > 0 {
+		edits = append(edits, appendRootMembers(root, appended, newline))
+	}
+	return apply(data, edits)
+}
+
+// RemoveRootKeys removes named root-object members while leaving every other
+// byte untouched.
+func RemoveRootKeys(data []byte, names ...string) ([]byte, error) {
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		var err error
+		data, err = removeRootKey(data, name)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return data, nil
+}
+
+// RootValue returns the original JSON bytes of one root-object value.
+func RootValue(data []byte, name string) ([]byte, bool, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	root, err := scanObject(data, decoder, "", 0)
+	if err != nil {
+		return nil, false, err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return nil, false, errors.New("trailing JSON data")
+	}
+	member := root.member(name)
+	if member == nil {
+		return nil, false, nil
+	}
+	return append([]byte(nil), data[member.valueFrom:member.valueTo]...), true, nil
+}
+
+// RootKeys returns root-object member names in their original order.
+func RootKeys(data []byte) ([]string, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	root, err := scanObject(data, decoder, "", 0)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("trailing JSON data")
+	}
+	keys := make([]string, 0, len(root.members))
+	for _, member := range root.members {
+		keys = append(keys, member.key)
+	}
+	return keys, nil
+}
+
+// AppendRootArrayValue appends one encoded value to a root array member.
+func AppendRootArrayValue(data []byte, name string, value []byte) ([]byte, error) {
+	if name == "" || !json.Valid(value) {
+		return nil, errors.New("invalid root array value")
+	}
+	newline := detectNewline(data)
+	if len(bytes.TrimSpace(data)) == 0 {
+		return SetRootValues(data, []RawKV{{Key: name, Value: append([]byte{'['}, append(value, ']')...)}})
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	root, err := scanObject(data, decoder, "", 0)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("trailing JSON data")
+	}
+	member := root.member(name)
+	if member == nil {
+		return SetRootValues(data, []RawKV{{Key: name, Value: append([]byte{'['}, append(value, ']')...)}})
+	}
+	if member.valueFrom >= len(data) || data[member.valueFrom] != '[' || member.valueTo <= member.valueFrom+1 || data[member.valueTo-1] != ']' {
+		return nil, fmt.Errorf("JSON member is not an array: %s", name)
+	}
+	var values []json.RawMessage
+	if err := json.Unmarshal(data[member.valueFrom:member.valueTo], &values); err != nil {
+		return nil, fmt.Errorf("parse JSON array %s: %w", name, err)
+	}
+	if len(values) == 0 {
+		return apply(data, []splice{{from: member.valueFrom, to: member.valueTo, text: "[" + string(value) + "]"}})
+	}
+	indent := arrayItemIndent(data, member.valueFrom, member.valueTo, member.indent+"  ")
+	text := "," + newline + indent + string(value)
+	return apply(data, []splice{{from: member.valueTo - 1, to: member.valueTo - 1, text: text}})
 }
 
 // SetObjectStrings merges kvs into the object held by the root object's member,
@@ -155,6 +298,111 @@ func renderMembers(indent string, kvs []KV, newline string) string {
 	return strings.Join(lines, ","+newline)
 }
 
+func renderRoot(kvs []RawKV, newline string) []byte {
+	lines := make([]string, 0, len(kvs))
+	for _, kv := range kvs {
+		lines = append(lines, "  "+encodeString(kv.Key)+": "+string(kv.Value))
+	}
+	return []byte("{" + newline + strings.Join(lines, ","+newline) + newline + "}" + newline)
+}
+
+func appendRootMembers(root *object, kvs []RawKV, newline string) splice {
+	indent := root.memberIndent("  ")
+	if len(root.members) == 0 {
+		var b strings.Builder
+		b.WriteString("{" + newline)
+		for i, kv := range kvs {
+			if i > 0 {
+				b.WriteString("," + newline)
+			}
+			b.WriteString(indent)
+			b.WriteString(encodeString(kv.Key))
+			b.WriteString(": ")
+			b.Write(kv.Value)
+		}
+		b.WriteString(newline + "}")
+		return splice{from: root.openAt, to: root.closeAt + 1, text: b.String()}
+	}
+	last := root.members[len(root.members)-1]
+	var b strings.Builder
+	for _, kv := range kvs {
+		b.WriteString("," + newline + indent + encodeString(kv.Key) + ": " + string(kv.Value))
+	}
+	return splice{from: last.valueTo, to: last.valueTo, text: b.String()}
+}
+
+func stringStart(data []byte, keyEnd int) int {
+	end := keyEnd - 1
+	if end < 0 || data[end] != '"' {
+		return keyEnd
+	}
+	for end--; end >= 0; end-- {
+		if data[end] == '"' && (end == 0 || data[end-1] != '\\') {
+			return end
+		}
+	}
+	return keyEnd
+}
+
+func removeRootKey(data []byte, name string) ([]byte, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	root, err := scanObject(data, decoder, "", 0)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("trailing JSON data")
+	}
+	member := root.member(name)
+	if member == nil {
+		return data, nil
+	}
+	from, to := member.keyFrom, member.valueTo
+	if member == &root.members[0] {
+		to = nextMemberEnd(data, root, 0)
+	} else {
+		index := 0
+		for i := range root.members {
+			if root.members[i].key == name {
+				index = i
+				break
+			}
+		}
+		// Remove the previous separator together with the member. Keeping the
+		// comma before a deleted trailing member would leave an invalid object.
+		from = root.members[index-1].valueTo
+	}
+	return apply(data, []splice{{from: from, to: to, text: ""}})
+}
+
+func nextMemberEnd(data []byte, root *object, index int) int {
+	to := root.members[index].valueTo
+	for to < len(data) && isSpace(data[to]) {
+		to++
+	}
+	if to < len(data) && data[to] == ',' {
+		return to + 1
+	}
+	return root.members[index].valueTo
+}
+
+func arrayItemIndent(data []byte, from, to int, fallback string) string {
+	for i := from; i < to; i++ {
+		if data[i] == '\n' {
+			start := i + 1
+			end := start
+			for end < to && (data[end] == ' ' || data[end] == '\t') {
+				end++
+			}
+			if end > start {
+				return string(data[start:end])
+			}
+		}
+	}
+	return fallback
+}
+
 // scanObject reads one JSON object and records the byte range of every member
 // value. The member named want is descended into so its own members can be
 // edited; every other value is skipped.
@@ -184,7 +432,7 @@ func scanObject(data []byte, decoder *json.Decoder, want string, depth int) (*ob
 		if err != nil {
 			return nil, err
 		}
-		entry := member{key: name, indent: indentAt(data, keyEnd), valueFrom: from}
+		entry := member{key: name, keyFrom: stringStart(data, keyEnd), indent: indentAt(data, keyEnd), valueFrom: from}
 		if name == want && from < len(data) && data[from] == '{' {
 			nested, err := scanObject(data, decoder, "", depth+1)
 			if err != nil {

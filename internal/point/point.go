@@ -30,9 +30,10 @@ type Settings = clientcatalog.Settings
 type Client string
 
 const (
-	ClientCodex  Client = "codex"
-	ClientClaude Client = "claude"
-	ClientGrok   Client = "grok"
+	ClientCodex         Client = "codex"
+	ClientClaude        Client = "claude"
+	ClientClaudeDesktop Client = "claude-desktop"
+	ClientGrok          Client = "grok"
 )
 
 type State string
@@ -99,14 +100,20 @@ func NewWithOptions(dataRoot string, opts Options) *Manager {
 func commandExists(name string) bool { _, err := exec.LookPath(name); return err == nil }
 
 type Status struct {
-	Client           Client `json:"client"`
-	PointState       State  `json:"point_state"`
-	Target           string `json:"target"`
-	BackupAvailable  bool   `json:"backup_available"`
-	Message          string `json:"message,omitempty"`
-	RemoteCompaction *bool  `json:"remote_compaction,omitempty"`
-	SubagentModel    string `json:"subagent_model,omitempty"`
-	TitleModel       string `json:"title_model,omitempty"`
+	Client           Client     `json:"client"`
+	PointState       State      `json:"point_state"`
+	Target           string     `json:"target"`
+	BackupAvailable  bool       `json:"backup_available"`
+	Message          string     `json:"message,omitempty"`
+	MCPPointState    State      `json:"mcp_point_state,omitempty"`
+	MCPTarget        string     `json:"mcp_target,omitempty"`
+	MCPBackup        bool       `json:"mcp_backup_available,omitempty"`
+	MCPMessage       string     `json:"mcp_message,omitempty"`
+	RestoredAt       *time.Time `json:"restored_at,omitempty"`
+	MCPRestoredAt    *time.Time `json:"mcp_restored_at,omitempty"`
+	RemoteCompaction *bool      `json:"remote_compaction,omitempty"`
+	SubagentModel    string     `json:"subagent_model,omitempty"`
+	TitleModel       string     `json:"title_model,omitempty"`
 }
 
 type Result struct {
@@ -126,13 +133,14 @@ func (e *PartialFailureError) Error() string {
 func (e *PartialFailureError) Unwrap() error { return e.Cause }
 
 type Manifest struct {
-	Version     int                   `json:"version"`
-	Client      Client                `json:"client"`
-	CreatedAt   time.Time             `json:"created_at"`
-	Completed   bool                  `json:"completed"`
-	RestoredAt  *time.Time            `json:"restored_at"`
-	Files       []ManifestFile        `json:"files"`
-	Environment []ManifestEnvironment `json:"environment,omitempty"`
+	Version       int                   `json:"version"`
+	Client        Client                `json:"client"`
+	CreatedAt     time.Time             `json:"created_at"`
+	Completed     bool                  `json:"completed"`
+	RestoredAt    *time.Time            `json:"restored_at"`
+	MCPRestoredAt *time.Time            `json:"mcp_restored_at,omitempty"`
+	Files         []ManifestFile        `json:"files"`
+	Environment   []ManifestEnvironment `json:"environment,omitempty"`
 }
 
 type ManifestFile struct {
@@ -150,7 +158,7 @@ type ManifestEnvironment struct {
 
 func ParseClient(raw string) (Client, error) {
 	switch Client(raw) {
-	case ClientCodex, ClientClaude, ClientGrok:
+	case ClientCodex, ClientClaude, ClientClaudeDesktop, ClientGrok:
 		return Client(raw), nil
 	default:
 		return "", fmt.Errorf("unknown pointable client %q", raw)
@@ -160,6 +168,9 @@ func ParseClient(raw string) (Client, error) {
 func (m *Manager) Check(client Client, baseURL string, settings Settings) Status {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if client == ClientClaudeDesktop {
+		return m.checkClaudeDesktop(baseURL, settings)
+	}
 	return m.check(client, baseURL, settings)
 }
 
@@ -213,6 +224,9 @@ func (m *Manager) check(client Client, baseURL string, settings Settings) Status
 func (m *Manager) Point(client Client, baseURL string, settings Settings) (Result, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if client == ClientClaudeDesktop {
+		return m.pointClaudeDesktop(baseURL, settings)
+	}
 	// A configuration this gateway already owns is updated in place. Creating a
 	// second restore point over it would lose the user's pre-point configuration
 	// (docs/v1-scheme.md §12.1).
@@ -316,6 +330,9 @@ func (m *Manager) checkUnlocked(client Client, baseURL string, settings Settings
 func (m *Manager) SyncSettings(client Client, baseURL string, settings Settings) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if client == ClientClaudeDesktop {
+		return m.syncClaudeDesktop(baseURL, settings)
+	}
 	return m.syncSettingsLocked(client, baseURL, settings)
 }
 
@@ -384,9 +401,13 @@ func (m *Manager) syncSettingsLocked(client Client, baseURL string, settings Set
 	return true, nil
 }
 
-func (m *Manager) Restore(client Client, baseURL string, settings Settings) (Result, error) {
+func (m *Manager) Restore(client Client, baseURL string, settings Settings, restoreMCP ...bool) (Result, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if client == ClientClaudeDesktop {
+		wantMCP := len(restoreMCP) > 0 && restoreMCP[0]
+		return m.restoreClaudeDesktop(baseURL, settings, wantMCP)
+	}
 	manifestPath := m.latestManifest(client)
 	if manifestPath == "" {
 		return Result{Status: m.checkUnlocked(client, baseURL, settings)}, ErrNoRestore

@@ -48,6 +48,8 @@ func (s *Server) handlePutRoute(w http.ResponseWriter, r *http.Request) {
 		cfg.Routes.Codex = next
 	case route.Claude:
 		cfg.Routes.Claude = next
+	case route.ClaudeDesktop:
+		cfg.Routes.ClaudeDesktop = next
 	case route.Grok:
 		cfg.Routes.Grok = next
 	case route.Generic:

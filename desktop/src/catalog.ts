@@ -6,7 +6,7 @@ export interface CatalogModel {
   id: string;
 }
 
-export const CLIENT_ROUTE_IDS: ClientID[] = ["codex", "claude", "grok", "generic"];
+export const CLIENT_ROUTE_IDS: ClientID[] = ["codex", "claude", "claude-desktop", "grok", "generic"];
 export const EMPTY_ROUTE: Route = { provider: "", model: "" };
 
 // enabledCatalog is the flat list a client picker must show: every enabled

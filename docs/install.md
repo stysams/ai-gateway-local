@@ -138,7 +138,7 @@ Linux and macOS and explicitly reports the native desktop build as skipped.
 
 ## Point a client
 
-The management API supports `codex`, `claude`, and `grok`:
+The management API supports `codex`, `claude`, `claude-desktop`, and `grok`:
 
 ```powershell
 $base = "http://127.0.0.1:12600"
@@ -147,7 +147,7 @@ Invoke-RestMethod -Method Post "$base/api/v1/clients/codex/point"
 Invoke-RestMethod "$base/api/v1/clients/codex"
 ```
 
-Replace `codex` with `claude` or `grok`. Point is idempotent. It creates a
+Replace `codex` with `claude`, `claude-desktop`, or `grok`. Point is idempotent. It creates a
 timestamped backup under the gateway data root, writes the client file
 atomically, updates the Codex placeholder environment variable when required,
 and verifies the final state. A failed write triggers rollback; a rollback
@@ -182,6 +182,15 @@ and is shown in that form:
   place. Restart Claude Code after pointing or changing availability so the
   in-memory picker reloads the cache. A leftover OpenCodex cache that still
   names `127.0.0.1:10100` is ignored until this rewrite.
+- Claude Desktop is discovered under `%LOCALAPPDATA%\Claude`, `%APPDATA%\Claude`,
+  or `%LOCALAPPDATA%\Claude-3p`. Point writes the gateway inference profile under
+  `configLibrary` and sets `deploymentMode` to `3p` in
+  `claude_desktop_config.json`. The Clients page reports these as separate
+  inference and MCP states. Route changes update the managed profile without a
+  new restore point. `POST /api/v1/clients/claude-desktop/restore` with
+  `{"restore_mcp":true}` restores the complete MCP file; use
+  `{"restore_mcp":false}` to restore the inference profile and the gateway-owned
+  deployment field.
 - Grok Build additionally receives one native
   `[model."ai-gateway:<provider-id>/<model-id>"]` entry per enabled model, so
   its own picker lists the whole catalog. Restore removes only the entries the
@@ -201,6 +210,7 @@ startup.
 | --- | --- | --- |
 | Codex | `%USERPROFILE%\.codex\config.toml` | `CODEX_HOME` |
 | Claude Code | `%USERPROFILE%\.claude\settings.json` | `CLAUDE_CONFIG_DIR` |
+| Claude Desktop | `%LOCALAPPDATA%\Claude\configLibrary\<active-profile>.json` and `%LOCALAPPDATA%\Claude\claude_desktop_config.json` | `%LOCALAPPDATA%`, `%APPDATA%` discovery |
 | Grok Build | `%USERPROFILE%\.grok\config.toml` | `GROK_HOME` |
 
 Provider API keys remain in the operating-system secret store and are never
@@ -220,7 +230,7 @@ Invoke-RestMethod -Method Post "$base/api/v1/clients/codex/restore"
 digest, then recovers the exact original bytes or removes a file that did not
 exist before point. It also restores the prior Codex environment value.
 
-Before removing the installed directory, restore all three clients, run
+Before removing the installed directory, restore all four pointable clients, run
 `autostart off`, stop the gateway, and exit the desktop tray. Removing an
 installation without `autostart off` leaves a stale task that `doctor` will
 report.

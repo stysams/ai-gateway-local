@@ -25,3 +25,9 @@
 - 全局滚动条采用更窄的尺寸和稳定的滚动槽，日志表与详情抽屉滚动时不会造成内容跳动或横向溢出。
 - 供应商伪装客户端新增 Pi。第三方 `/v1` 请求可使用 `User-Agent: Pi Agent/1.0` 模拟 Pi 身份；桌面供应商表单同步提供可编辑的 Pi 请求头预设。
 - 客户端高级设置支持为 Codex 与 Claude Code 分别指定子代理模型和标题生成模型；未指定、已禁用或失效的模型会跟随当前客户端路由。
+
+### 2026-08-25
+
+- Claude Desktop 支持在客户端页面中完成指向网关、状态检查和默认路由同步。
+- Claude Desktop 的推理 profile 与 MCP 配置分别显示状态，并提供独立的还原操作；MCP 完整还原需要明确确认。
+- Claude Desktop 的配置发现覆盖 `%LOCALAPPDATA%\Claude`、`%APPDATA%\Claude` 和 `%LOCALAPPDATA%\Claude-3p`。

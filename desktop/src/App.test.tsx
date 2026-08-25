@@ -3,14 +3,14 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 
-const status = { version: "test", pid: 42, listen: "127.0.0.1:12600", logging_enabled: false, logging_body_enabled: false, autostart_enabled: false, clients: { codex: { point_state: "not_pointed" }, claude: { point_state: "client_not_installed" }, grok: { point_state: "drifted" }, generic: { point_state: "unknown" } }, routes: { codex: { provider: "ollama", model: "qwen3" }, claude: { provider: "ollama", model: "qwen3" }, grok: { provider: "ollama", model: "qwen3" }, generic: { provider: "ollama", model: "qwen3" } } };
+const status = { version: "test", pid: 42, listen: "127.0.0.1:12600", logging_enabled: false, logging_body_enabled: false, autostart_enabled: false, clients: { codex: { point_state: "not_pointed" }, claude: { point_state: "client_not_installed" }, "claude-desktop": { point_state: "not_pointed", mcp_point_state: "not_pointed" }, grok: { point_state: "drifted" }, generic: { point_state: "unknown" } }, routes: { codex: { provider: "ollama", model: "qwen3" }, claude: { provider: "ollama", model: "qwen3" }, "claude-desktop": { provider: "ollama", model: "qwen3" }, grok: { provider: "ollama", model: "qwen3" }, generic: { provider: "ollama", model: "qwen3" } } };
 const localAccess = { base_url: "http://127.0.0.1:12600/v1", api_key: "ai-gateway", auth_required: false, default_model: "gateway-default", default_route: status.routes.generic, endpoints: { models: "http://127.0.0.1:12600/v1/models", chat_completions: "http://127.0.0.1:12600/v1/chat/completions", responses: "http://127.0.0.1:12600/v1/responses", messages: "http://127.0.0.1:12600/v1/messages" }, models: [{ id: "gateway-default", object: "model", created: 0, owned_by: "ai-gateway", display_name: "gateway-default" }, { id: "ollama/qwen3", object: "model", created: 0, owned_by: "ollama", display_name: "ollama/qwen3" }] };
 const config = { version: 1, listen: { port: 12600 }, logging: { enabled: false, body: false, redact: true, dir: "logs" }, ui: { language: "en-US", logging_notice_accepted: true }, autostart: { enabled: false }, providers: { ollama: { name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", models: [{ id: "qwen3", name: "Qwen 3" }], capabilities: { image_input: false, reasoning: false } }, openrouter: { name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", models: [{ id: "gpt-5", name: "GPT-5" }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4" }], capabilities: { image_input: true, reasoning: true } } }, routes: status.routes };
 const providers = [
   { id: "ollama", name: "Ollama", adapter: "openai-chat", base_url: "http://127.0.0.1:11434/v1", default_model: "qwen3", enabled: true, models: [{ id: "qwen3", name: "Qwen 3" }], has_secret: false, capabilities: { image_input: false, reasoning: false } },
   { id: "openrouter", name: "OpenRouter", adapter: "openai-responses", base_url: "https://openrouter.ai/api/v1", default_model: "gpt-5", enabled: true, models: [{ id: "gpt-5", name: "GPT-5" }, { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4" }], has_secret: true, capabilities: { image_input: true, reasoning: true } },
 ];
-const pointStatus = (client: string) => ({ client, point_state: client === "codex" ? "not_pointed" : "client_not_installed", target: `C:/${client}/config`, backup_available: false, ...(["codex", "claude"].includes(client) ? { subagent_model: "", title_model: "" } : {}), ...(client === "codex" ? { remote_compaction: false } : {}) });
+const pointStatus = (client: string) => ({ client, point_state: client === "codex" || client === "claude-desktop" ? "not_pointed" : "client_not_installed", target: `C:/${client}/config`, backup_available: client === "claude-desktop", ...(client === "claude-desktop" ? { mcp_point_state: "not_pointed", mcp_target: "C:/Claude/claude_desktop_config.json", mcp_backup_available: true } : {}), ...(["codex", "claude"].includes(client) ? { subagent_model: "", title_model: "" } : {}), ...(client === "codex" ? { remote_compaction: false } : {}) });
 
 let liveProviders: typeof providers;
 
@@ -44,11 +44,13 @@ beforeEach(() => {
     if (url.endsWith("/api/v1/logs/req-copy/export")) return new Response('{"request_id":"req-copy","type":"request","headers":{"Authorization":["[REDACTED]"]},"body":{"model":"qwen3"}}\n', { headers: { "Content-Type": "application/x-ndjson" } });
     if (url.endsWith("/api/v1/logs/req-copy")) return Response.json({ request_id: "req-copy", events: [{ type: "request", headers: { "X-Debug-Trace": ["trace-value"] }, body: { model: "qwen3" } }] });
     if (url.includes("/api/v1/usage")) return Response.json({ total: { requests: 12, success: 10, failed: 1, cancelled: 1, usage_requests: 11, usage: { input_tokens: 1200, output_tokens: 480, reasoning_tokens: 80, cache_creation_input_tokens: 60, cache_read_input_tokens: 540, cache_input_tokens: 1800, total_tokens: 1680 }, incomplete: true }, by_provider: { openrouter: { requests: 12, success: 10, failed: 1, cancelled: 1, usage_requests: 11, usage: { input_tokens: 1200, output_tokens: 480, reasoning_tokens: 80, cache_creation_input_tokens: 60, cache_read_input_tokens: 540, cache_input_tokens: 1800, total_tokens: 1680 }, incomplete: true } }, by_model: { "gpt-5": { requests: 12, success: 10, failed: 1, cancelled: 1, usage_requests: 11, usage: { input_tokens: 1200, output_tokens: 480, reasoning_tokens: 80, cache_creation_input_tokens: 60, cache_read_input_tokens: 540, cache_input_tokens: 1800, total_tokens: 1680 }, incomplete: true } }, by_client: { codex: { requests: 12, success: 10, failed: 1, cancelled: 1, usage_requests: 11, usage: { input_tokens: 1200, output_tokens: 480, reasoning_tokens: 80, cache_creation_input_tokens: 60, cache_read_input_tokens: 540, cache_input_tokens: 1800, total_tokens: 1680 }, incomplete: true } }, by_date: { "2026-08-23": { requests: 12, success: 10, failed: 1, cancelled: 1, usage_requests: 11, usage: { input_tokens: 1200, output_tokens: 480, reasoning_tokens: 80, cache_creation_input_tokens: 60, cache_read_input_tokens: 540, cache_input_tokens: 1800, total_tokens: 1680 }, incomplete: true } } });
-    for (const client of ["codex", "claude", "grok"]) if (url.endsWith(`/api/v1/clients/${client}`)) return Response.json(pointStatus(client));
+    for (const client of ["codex", "claude", "claude-desktop", "grok"]) if (url.endsWith(`/api/v1/clients/${client}`)) return Response.json(pointStatus(client));
     if (url.includes("/api/v1/routes/codex") && init?.method === "PUT") return Response.json({ client: "codex", provider: "openrouter", model: "anthropic/claude-sonnet-4" });
     if (url.endsWith("/api/v1/logging") && init?.method === "PUT") return Response.json({ enabled: true, body: true });
     if (url.endsWith("/api/v1/autostart") && init?.method === "PUT") return Response.json({ enabled: true, valid: true });
     if (url.endsWith("/api/v1/clients/codex/point")) return Response.json({ ...pointStatus("codex"), point_state: "pointed", changed: true });
+    if (url.endsWith("/api/v1/clients/claude-desktop/point")) return Response.json({ ...pointStatus("claude-desktop"), point_state: "pointed", mcp_point_state: "pointed", changed: true });
+    if (url.endsWith("/api/v1/clients/claude-desktop/restore") && init?.method === "POST") return Response.json({ ...pointStatus("claude-desktop"), point_state: "not_pointed", mcp_point_state: "not_pointed" });
     if (url.endsWith("/api/v1/clients/codex/remote-compaction") && init?.method === "PUT") return Response.json({ ...pointStatus("codex"), remote_compaction: true });
     if (url.endsWith("/api/v1/clients/claude/helper-models") && init?.method === "PUT") return Response.json({ ...pointStatus("claude"), ...JSON.parse(String(init.body || "{}")) });
     return Response.json({ error: { code: "not_mocked", message: url } }, { status: 500 });
@@ -94,7 +96,7 @@ describe("desktop workflow", () => {
     await user.click(screen.getByRole("checkbox", { name: "Provider Ollama" }));
     await waitFor(() => expect(modelSelect).toHaveValue(""));
     expect(within(modelSelect).queryByRole("option", { name: "ollama/qwen3" })).not.toBeInTheDocument();
-    expect(screen.getAllByText("The current default route is no longer available. Select another model and apply it.").length).toBe(4);
+    expect(screen.getAllByText("The current default route is no longer available. Select another model and apply it.").length).toBe(5);
     expect(screen.getAllByRole("button", { name: "Apply" })[0]).toBeDisabled();
     await user.selectOptions(modelSelect, "openrouter/gpt-5");
     expect(modelSelect).toHaveValue("openrouter/gpt-5");
@@ -223,6 +225,16 @@ describe("desktop workflow", () => {
     const user = userEvent.setup(); const confirm = vi.spyOn(window, "confirm").mockReturnValue(false); render(<App />); await ready();
     await user.click(screen.getByRole("button", { name: "Clients" })); await user.click(screen.getAllByRole("button", { name: "Point to gateway" })[0]);
     expect(confirm).toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/point"), expect.anything());
+  });
+
+  it("separates Claude Desktop profile and MCP restore actions", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />); await ready(); await user.click(screen.getByRole("button", { name: "Clients" }));
+    expect(screen.getByRole("heading", { name: "Claude Desktop" })).toBeVisible();
+    expect(screen.getByText("MCP configuration")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Restore MCP configuration" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/clients/claude-desktop/restore"), expect.objectContaining({ method: "POST", body: "{\"restore_mcp\":true}" })));
   });
 
   it("toggles Codex remote compaction from the clients page", async () => {

@@ -50,12 +50,13 @@ describe("enabledCatalog", () => {
     ]);
     const next = reconcileClientRoutes(
       { codex: { provider: "ollama", model: "qwen3" }, claude: { provider: "openrouter", model: "gpt-5" } },
-      { codex: { provider: "ollama", model: "qwen3" }, claude: { provider: "ollama", model: "qwen3" }, grok: { provider: "openrouter", model: "gpt-5" }, generic: { provider: "missing", model: "x" } },
+      { codex: { provider: "ollama", model: "qwen3" }, claude: { provider: "ollama", model: "qwen3" }, "claude-desktop": { provider: "ollama", model: "qwen3" }, grok: { provider: "openrouter", model: "gpt-5" }, generic: { provider: "missing", model: "x" } },
       catalog,
     );
     expect(next).toEqual({
       codex: { provider: "", model: "" },
       claude: { provider: "openrouter", model: "gpt-5" },
+      "claude-desktop": { provider: "", model: "" },
       grok: { provider: "openrouter", model: "gpt-5" },
       generic: { provider: "", model: "" },
     });

@@ -266,12 +266,13 @@ type Capabilities struct {
 	ContextManagement bool `yaml:"context_management,omitempty"`
 }
 
-// Routes is the fixed set of four first-class client routes.
+// Routes contains the required client routes and the optional Claude Desktop route.
 type Routes struct {
-	Codex   Route `yaml:"codex"`
-	Claude  Route `yaml:"claude"`
-	Grok    Route `yaml:"grok"`
-	Generic Route `yaml:"generic"`
+	Codex         Route `yaml:"codex"`
+	Claude        Route `yaml:"claude"`
+	ClaudeDesktop Route `yaml:"claude_desktop,omitempty"`
+	Grok          Route `yaml:"grok"`
+	Generic       Route `yaml:"generic"`
 }
 
 // Route points one client at one provider/model pair.
@@ -287,6 +288,8 @@ func (r Routes) route(name string) Route {
 		return r.Codex
 	case "claude":
 		return r.Claude
+	case "claude_desktop":
+		return r.ClaudeDesktop
 	case "grok":
 		return r.Grok
 	case "generic":
@@ -323,10 +326,11 @@ func Defaults() *Config {
 			},
 		},
 		Routes: Routes{
-			Codex:   Route{Provider: "openrouter", Model: "anthropic/claude-sonnet-4"},
-			Claude:  Route{Provider: "openrouter", Model: "anthropic/claude-sonnet-4"},
-			Grok:    Route{Provider: "openrouter", Model: "anthropic/claude-sonnet-4"},
-			Generic: Route{Provider: "ollama", Model: "qwen3"},
+			ClaudeDesktop: Route{Provider: "openrouter", Model: "anthropic/claude-sonnet-4"},
+			Codex:         Route{Provider: "openrouter", Model: "anthropic/claude-sonnet-4"},
+			Claude:        Route{Provider: "openrouter", Model: "anthropic/claude-sonnet-4"},
+			Grok:          Route{Provider: "openrouter", Model: "anthropic/claude-sonnet-4"},
+			Generic:       Route{Provider: "ollama", Model: "qwen3"},
 		},
 	}
 	return c
