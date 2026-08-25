@@ -31,3 +31,4 @@
 - Claude Desktop 支持在客户端页面中完成指向网关、状态检查和默认路由同步。
 - Claude Desktop 的推理 profile 与 MCP 配置分别显示状态，并提供独立的还原操作；MCP 完整还原需要明确确认。
 - Claude Desktop 的配置发现覆盖 `%LOCALAPPDATA%\Claude`、`%APPDATA%\Claude` 和 `%LOCALAPPDATA%\Claude-3p`。
+- Claude Desktop 同时存在多个运行时目录时，会优先选择唯一包含 `configLibrary` 的 profile 目录；多个 profile 目录仍然要求人工消除歧义。

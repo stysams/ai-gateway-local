@@ -190,7 +190,9 @@ and is shown in that form:
   new restore point. `POST /api/v1/clients/claude-desktop/restore` with
   `{"restore_mcp":true}` restores the complete MCP file; use
   `{"restore_mcp":false}` to restore the inference profile and the gateway-owned
-  deployment field.
+  deployment field. When multiple Claude directories exist, the discovery logic
+  prefers the unique directory containing `configLibrary`; it still refuses to
+  guess when multiple profile directories are present.
 - Grok Build additionally receives one native
   `[model."ai-gateway:<provider-id>/<model-id>"]` entry per enabled model, so
   its own picker lists the whole catalog. Restore removes only the entries the

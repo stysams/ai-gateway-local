@@ -12,7 +12,7 @@
 
 ### 2026-08-25
 
-- Claude Desktop 已接入客户端指向、状态检查、默认路由同步、推理 profile 还原和独立 MCP 配置还原；配置发现支持 `%LOCALAPPDATA%\Claude`、`%APPDATA%\Claude` 和 `%LOCALAPPDATA%\Claude-3p`。
+- Claude Desktop 已接入客户端指向、状态检查、默认路由同步、推理 profile 还原和独立 MCP 配置还原；配置发现支持 `%LOCALAPPDATA%\Claude`、`%APPDATA%\Claude` 和 `%LOCALAPPDATA%\Claude-3p`，会优先使用唯一包含 `configLibrary` 的 profile 目录，避免把运行时目录误判为活动安装。
 
 [查看完整发布说明](docs/releases/release-notes.md)
 

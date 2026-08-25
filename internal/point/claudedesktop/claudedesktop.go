@@ -33,15 +33,16 @@ const (
 )
 
 type Root struct {
-	Base          string
-	MetaPath      string
-	ProfileDir    string
-	ProfilePath   string
-	ControlPath   string
-	ProfileID     string
-	MetaExists    bool
-	ControlExists bool
-	ProfileExists bool
+	Base             string
+	MetaPath         string
+	ProfileDir       string
+	ProfilePath      string
+	ControlPath      string
+	ProfileID        string
+	ProfileDirExists bool
+	MetaExists       bool
+	ControlExists    bool
+	ProfileExists    bool
 }
 
 type Entry struct {
@@ -119,6 +120,9 @@ func roots(candidates []string) []Root {
 		metaPath := filepath.Join(profileDir, MetaFileName)
 		controlPath := filepath.Join(base, ControlFileName)
 		root := Root{Base: base, MetaPath: metaPath, ProfileDir: profileDir, ControlPath: controlPath}
+		if info, err := os.Stat(profileDir); err == nil {
+			root.ProfileDirExists = info.IsDir()
+		}
 		if _, err := os.Stat(metaPath); err == nil {
 			root.MetaExists = true
 		}
@@ -145,8 +149,9 @@ func roots(candidates []string) []Root {
 	return out
 }
 
-// Select returns the only root proven to belong to the current gateway, or the
-// only discovered root. Multiple unproven roots are never guessed between.
+// Select returns the only root with Claude Desktop's profile catalog, the only
+// root proven to belong to the current gateway, or the only discovered root.
+// Runtime-only directories are ignored when a single profile root is present.
 func Select(roots []Root, baseURL string) (Root, error) {
 	var managedRoot *Root
 	for i := range roots {
@@ -171,6 +176,18 @@ func Select(roots []Root, baseURL string) (Root, error) {
 	}
 	if managedRoot != nil {
 		return *managedRoot, nil
+	}
+	profileRoots := make([]Root, 0, len(roots))
+	for _, root := range roots {
+		if root.ProfileDirExists || root.MetaExists || root.ProfileExists {
+			profileRoots = append(profileRoots, root)
+		}
+	}
+	if len(profileRoots) == 1 {
+		return profileRoots[0], nil
+	}
+	if len(profileRoots) > 1 {
+		return Root{}, errors.New("multiple Claude Desktop profile directories found; refusing to guess the active installation")
 	}
 	if len(roots) == 1 {
 		return roots[0], nil
